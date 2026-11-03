@@ -59,6 +59,15 @@ npm run dev
 
 `dist/maplibre-gl-worker.js` 必须和 `dist/index.js` 一起在仓库里；本项目的 `.gitignore` 已故意不忽略 `dist/`。
 
+本地已经初始化 git 并完成首个提交；推到远程：
+
+```bash
+git remote add origin https://github.com/<user>/tavern-map.git
+git push -u origin main
+```
+
+之后每次改源码：`npm run build` → `git add dist` → commit → push。ST 不会在安装时构建。
+
 #### 本地开发回归（不是发布安装）
 
 如果只是在本机验证，可以把目录链接或复制到 `data/<user-handle>/extensions/tavern-map`，然后重载页面：
