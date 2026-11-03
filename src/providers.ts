@@ -139,19 +139,31 @@ export async function nearbyPlaces(lat: number, lng: number, radiusM: number): P
     }
   })
 
-  try {
-    // Race mirrors so one blocked/slow instance does not hold the UI for the full timeout.
-    return await Promise.any(attempts)
-  } catch {
-    // Every mirror failed; fall through to the OSM API.
-  }
+  // Start the heavier OSM fallback after a short head start, not after
+  // Overpass has already timed out. Whichever source answers first wins.
+  let fallbackTimer: number | undefined
+  const fallback = new Promise<Place[]>((resolve, reject) => {
+    fallbackTimer = window.setTimeout(() => {
+      osmNearby(lat, lng, radius).then(
+        (places) => {
+          console.warn('[tavern-map] OSM API fallback used')
+          resolve(places)
+        },
+        (error) => {
+          console.warn('[tavern-map] OSM API fallback failed', errorMessage(error))
+          reject(error)
+        },
+      )
+    }, 1200)
+  })
 
   try {
-    const places = await osmNearby(lat, lng, radius)
-    console.warn('[tavern-map] Overpass unavailable; OSM API fallback used')
+    const places = await Promise.any([Promise.any(attempts), fallback])
+    if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer)
     return remember(cacheKey, places)
-  } catch (fallbackError) {
-    throw new Error(`Overpass 与 OSM API 回退都不可用（${errorMessage(fallbackError)}）`)
+  } catch (error) {
+    if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer)
+    throw new Error(`周边数据源暂时不可用（${errorMessage(error)}）`)
   }
 }
 

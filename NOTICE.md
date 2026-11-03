@@ -47,6 +47,7 @@ under a BSD-3-Clause license. The full upstream notice is in
 - OpenFreeMap provides the default vector style and tiles.
 - Photon and BigDataCloud provide reverse geocoding.
 - Overpass API and the OpenStreetMap API provide nearby POI data.
+- OSRM / FOSSGIS provide walking route geometry and turn-by-turn steps.
 - Wikipedia text is CC BY-SA 4.0. The injected scene block keeps a
   `(CC BY-SA 4.0)` label and asks the model not to reproduce long passages.
 

@@ -1,4 +1,60 @@
-import type { MapState, StContext } from './types'
+import type { MapState, RouteItinerary, StContext } from './types'
+
+function validItinerary(raw: unknown): RouteItinerary | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = raw as Partial<RouteItinerary>
+  const from = value.from
+  const to = value.to
+  if (
+    !from ||
+    !to ||
+    typeof from.name !== 'string' ||
+    typeof to.name !== 'string' ||
+    !Number.isFinite(from.lat) ||
+    !Number.isFinite(from.lng) ||
+    !Number.isFinite(to.lat) ||
+    !Number.isFinite(to.lng)
+  ) {
+    return undefined
+  }
+  const steps = Array.isArray(value.steps)
+    ? value.steps
+        .filter(
+          (step) =>
+            step &&
+            typeof step.instruction === 'string' &&
+            Number.isFinite(step.distance) &&
+            Number.isFinite(step.duration),
+        )
+        .slice(0, 40)
+        .map((step) => ({
+          instruction: step.instruction,
+          name: typeof step.name === 'string' ? step.name : undefined,
+          distance: step.distance,
+          duration: step.duration,
+        }))
+    : []
+  return {
+    from: {
+      id: typeof from.id === 'string' ? from.id : undefined,
+      name: from.name,
+      lat: from.lat,
+      lng: from.lng,
+    },
+    to: {
+      id: typeof to.id === 'string' ? to.id : undefined,
+      name: to.name,
+      lat: to.lat,
+      lng: to.lng,
+    },
+    distance: Number.isFinite(value.distance) ? Number(value.distance) : 0,
+    duration: Number.isFinite(value.duration) ? Number(value.duration) : 0,
+    steps,
+    fallback: Boolean(value.fallback),
+    showToAI: Boolean(value.showToAI),
+    updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
+  }
+}
 
 export const DEFAULT_STATE: MapState = {
   version: 1,
@@ -8,6 +64,7 @@ export const DEFAULT_STATE: MapState = {
   nearby: [],
   wiki: [],
   stars: [],
+  savedPlaces: [],
   updatedAt: Date.now(),
 }
 
@@ -63,8 +120,61 @@ export function loadState(ctx: StContext): MapState {
           .map((page) => ({
             ...page,
             lang: typeof page.lang === 'string' ? page.lang : 'en',
+            note: typeof page.note === 'string' ? page.note : '',
+            savedAt: typeof page.savedAt === 'number' ? page.savedAt : Date.now(),
+            aiLang: typeof page.aiLang === 'string' ? page.aiLang : undefined,
+            aiTitle: typeof page.aiTitle === 'string' ? page.aiTitle : undefined,
+            aiExtract: typeof page.aiExtract === 'string' ? page.aiExtract : undefined,
           }))
       : [],
+    savedPlaces: Array.isArray(value.savedPlaces)
+      ? value.savedPlaces
+          .filter(
+            (place) =>
+              place && typeof place.name === 'string' && Number.isFinite(place.lat) && Number.isFinite(place.lng),
+          )
+          .map((place) => ({
+            ...place,
+            note: typeof place.note === 'string' ? place.note : '',
+            savedAt: typeof place.savedAt === 'number' ? place.savedAt : Date.now(),
+          }))
+      : [],
+    view:
+      value.view &&
+      value.view.center &&
+      Number.isFinite(value.view.center.lat) &&
+      Number.isFinite(value.view.center.lng) &&
+      typeof value.view.zoom === 'number' &&
+      Number.isFinite(value.view.zoom)
+        ? {
+            center: { lat: value.view.center.lat, lng: value.view.center.lng },
+            zoom: value.view.zoom,
+          }
+        : undefined,
+    lastTab:
+      value.lastTab === 'nearby' ||
+      value.lastTab === 'wiki' ||
+      value.lastTab === 'saved' ||
+      value.lastTab === 'route'
+        ? value.lastTab
+        : undefined,
+    lastWiki:
+      value.lastWiki &&
+      typeof value.lastWiki.lang === 'string' &&
+      typeof value.lastWiki.title === 'string' &&
+      Number.isFinite(value.lastWiki.pageId)
+        ? {
+            lang: value.lastWiki.lang,
+            pageId: value.lastWiki.pageId,
+            title: value.lastWiki.title,
+            lat: typeof value.lastWiki.lat === 'number' ? value.lastWiki.lat : undefined,
+            lng: typeof value.lastWiki.lng === 'number' ? value.lastWiki.lng : undefined,
+          }
+        : undefined,
+    lastWikiMode:
+      value.lastWikiMode === 'intro' || value.lastWikiMode === 'full' ? value.lastWikiMode : undefined,
+    wikiOpen: typeof value.wikiOpen === 'boolean' ? value.wikiOpen : undefined,
+    itinerary: validItinerary(value.itinerary),
   }
 }
 

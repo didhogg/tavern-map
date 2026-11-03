@@ -278,10 +278,21 @@
     </div>
 
     <script>
-      const chatStores = [{}, {}]
-      let chatIndex = 0
+      let chatStores
+      try {
+        const stored = JSON.parse(localStorage.getItem('tm-dev-chats') || 'null')
+        chatStores = Array.isArray(stored) && stored.length >= 2 ? stored.slice(0, 2) : [{}, {}]
+      } catch {
+        chatStores = [{}, {}]
+      }
+      let chatIndex = Math.min(1, Math.max(0, Number(localStorage.getItem('tm-dev-chat-index') || 0)))
       let currentChatMetadata = chatStores[chatIndex]
-      const extensionSettings = {}
+      let extensionSettings
+      try {
+        extensionSettings = JSON.parse(localStorage.getItem('tm-dev-settings') || '{}')
+      } catch {
+        extensionSettings = {}
+      }
       const prompts = {}
 
       const listeners = new Map()
@@ -322,9 +333,11 @@
         chatMetadata: currentChatMetadata,
         saveSettingsDebounced() {
           console.info('[dev] saveSettingsDebounced', structuredClone(extensionSettings))
+          localStorage.setItem('tm-dev-settings', JSON.stringify(extensionSettings))
         },
         saveMetadataDebounced() {
           console.info('[dev] saveMetadataDebounced', structuredClone(currentChatMetadata))
+          localStorage.setItem('tm-dev-chats', JSON.stringify(chatStores))
         },
         setExtensionPrompt(key, value, position, depth, scan, role, filter) {
           prompts[key] = { value, position, depth, scan, role, filter }
@@ -347,9 +360,12 @@
         toggle?.parentElement?.classList.toggle('closed')
       })
 
+      document.getElementById('dev-chat-name').textContent = `Chat ${chatIndex === 0 ? 'A' : 'B'}`
+
       document.getElementById('dev-switch-chat').addEventListener('click', () => {
         chatIndex = (chatIndex + 1) % chatStores.length
         currentChatMetadata = chatStores[chatIndex]
+        localStorage.setItem('tm-dev-chat-index', String(chatIndex))
         document.getElementById('dev-chat-name').textContent = `Chat ${chatIndex === 0 ? 'A' : 'B'}`
         eventSource.emit('chat_id_changed', `dev-chat-${chatIndex}`)
         renderPrompt()

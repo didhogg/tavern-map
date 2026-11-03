@@ -21,6 +21,10 @@ async function fetchWithTimeout(input: URL | string, init?: RequestInit, timeout
 }
 
 export function errorMessage(error: unknown): string {
+  if (error instanceof AggregateError) {
+    const reasons = error.errors.map((reason) => errorMessage(reason)).filter(Boolean)
+    return reasons[0] ?? '请求失败'
+  }
   if (error instanceof Error) {
     if (error.name === 'AbortError') return '请求超时'
     return error.message

@@ -48,6 +48,10 @@ export async function cachePut(key: string, value: unknown): Promise<void> {
   }
 }
 
-export function wikiCacheKey(lang: string, pageId: number): string {
-  return `${lang}:${pageId}`
+export function wikiCacheKey(lang: string, title: string): string {
+  return `${lang}:${title.trim().toLowerCase()}`
+}
+
+export function wikiFullCacheKey(lang: string, title: string): string {
+  return `${wikiCacheKey(lang, title)}:full`
 }

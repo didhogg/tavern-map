@@ -59,13 +59,15 @@ async function wikiNearbyOne(
     gslimit: '20',
   }).toString()
   const data = await fetchJson<{
-    query?: { geosearch?: Array<{ pageid: number; title: string; dist: number }> }
+    query?: { geosearch?: Array<{ pageid: number; title: string; dist: number; lat: number; lon: number }> }
   }>(url)
   return (data.query?.geosearch ?? []).map((item) => ({
     pageId: item.pageid,
     title: item.title,
     dist: item.dist,
     lang,
+    lat: item.lat,
+    lng: item.lon,
   }))
 }
 
@@ -97,6 +99,45 @@ type WikiPageResponse = {
   }
 }
 
+type LangLinksResponse = {
+  query?: {
+    pages?: Record<
+      string,
+      {
+        title?: string
+        missing?: string
+        langlinks?: Array<{ lang: string; '*': string }>
+      }
+    >
+  }
+}
+
+/** Find the same article's titles in the requested languages. */
+export async function wikiLangLinks(
+  lang: string,
+  title: string,
+  targets: string[],
+): Promise<Record<string, string>> {
+  const url = new URL(api(lang))
+  url.search = new URLSearchParams({
+    action: 'query',
+    format: 'json',
+    origin: '*',
+    prop: 'langlinks',
+    lllimit: '500',
+    redirects: '1',
+    titles: title,
+  }).toString()
+  const data = await fetchJson<LangLinksResponse>(url)
+  const page = Object.values(data.query?.pages ?? {})[0]
+  const wanted = new Set(targets)
+  const result: Record<string, string> = {}
+  for (const link of page?.langlinks ?? []) {
+    if (wanted.has(link.lang) && link['*']) result[link.lang] = link['*']
+  }
+  return result
+}
+
 export async function wikiPage(candidate: WikiCandidate): Promise<WikiPage> {
   const lang = candidate.lang
   const url = new URL(api(lang))
@@ -124,7 +165,28 @@ export async function wikiPage(candidate: WikiCandidate): Promise<WikiPage> {
     extract: page.extract ?? '',
     url: `https://${lang}.wikipedia.org/?curid=${pageId}`,
     lang,
+    lat: candidate.lat,
+    lng: candidate.lng,
     fetchedAt: Date.now(),
     revId: page.revisions?.[0]?.revid,
   }
+}
+
+/** Full plaintext article. The caller decides how much to render/store. */
+export async function wikiPageFull(lang: string, title: string): Promise<string> {
+  const url = new URL(api(lang))
+  url.search = new URLSearchParams({
+    action: 'query',
+    format: 'json',
+    origin: '*',
+    prop: 'extracts',
+    explaintext: '1',
+    redirects: '1',
+    titles: title,
+    exlimit: '1',
+  }).toString()
+  const data = await fetchJson<WikiPageResponse>(url, undefined, 20000)
+  const page = Object.values(data.query?.pages ?? {})[0]
+  if (!page || page.missing !== undefined) throw new Error('该条目不存在')
+  return page.extract ?? ''
 }

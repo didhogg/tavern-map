@@ -15,6 +15,8 @@ export type WikiCandidate = {
   title: string
   dist: number
   lang: string
+  lat?: number
+  lng?: number
 }
 
 export type WikiPage = {
@@ -23,8 +25,55 @@ export type WikiPage = {
   extract: string
   url: string
   lang: string
+  lat?: number
+  lng?: number
   fetchedAt: number
   revId?: number
+}
+
+export type StarredWiki = WikiPage & {
+  note: string
+  savedAt: number
+  /** Language chosen for the prompt when it differs from the starred page. */
+  aiLang?: string
+  aiTitle?: string
+  aiExtract?: string
+}
+
+export type SavedPlace = Place & {
+  note: string
+  savedAt: number
+}
+
+export type WikiRef = {
+  lang: string
+  pageId: number
+  title: string
+  lat?: number
+  lng?: number
+}
+
+export type MapView = {
+  center: LatLng
+  zoom: number
+}
+
+export type ItineraryStep = {
+  instruction: string
+  name?: string
+  distance: number
+  duration: number
+}
+
+export type RouteItinerary = {
+  from: { id?: string; name: string; lat: number; lng: number }
+  to: { id?: string; name: string; lat: number; lng: number }
+  distance: number
+  duration: number
+  steps: ItineraryStep[]
+  fallback?: boolean
+  showToAI: boolean
+  updatedAt: number
 }
 
 export type MapState = {
@@ -32,10 +81,18 @@ export type MapState = {
   enabled: boolean
   center: LatLng
   zoom: number
+  /** Last map camera position, which can differ from the selected marker. */
+  view?: MapView
   place?: Place
   nearby: Place[]
   wiki: WikiCandidate[]
-  stars: WikiPage[]
+  stars: StarredWiki[]
+  savedPlaces: SavedPlace[]
+  lastTab?: 'nearby' | 'wiki' | 'saved' | 'route'
+  lastWiki?: WikiRef
+  lastWikiMode?: 'intro' | 'full'
+  wikiOpen?: boolean
+  itinerary?: RouteItinerary
   updatedAt: number
 }
 
