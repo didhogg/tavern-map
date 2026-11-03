@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
+    />
+    <title>Tavern Map · dev harness</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --dev-bg: #090d11;
+        --dev-panel: #111820;
+        --dev-line: rgba(255, 255, 255, 0.09);
+        --dev-text: #e7edf2;
+        --dev-muted: #8e9ca7;
+        --dev-brass: #e6b56a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 70% 10%, rgba(230, 181, 106, 0.07), transparent 34%),
+          var(--dev-bg);
+        color: var(--dev-text);
+        font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
+      }
+
+      #dev-banner {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--dev-line);
+        background: rgba(230, 181, 106, 0.06);
+        color: var(--dev-brass);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      #dev-banner::before {
+        content: "DEV";
+        padding: 2px 5px;
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        font-size: 9px;
+      }
+
+      #dev-shell {
+        display: grid;
+        grid-template-columns: 330px minmax(0, 1fr);
+        min-height: calc(100vh - 33px);
+      }
+
+      #dev-side {
+        padding: 18px 16px;
+        border-right: 1px solid var(--dev-line);
+        background: rgba(17, 24, 32, 0.55);
+        overflow-y: auto;
+      }
+
+      #dev-side h2 {
+        margin: 0 0 4px;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      #dev-side p {
+        margin: 0 0 16px;
+        color: var(--dev-muted);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      #extensions_settings2 {
+        margin-bottom: 20px;
+      }
+
+      .dev-inline-drawer {
+        border: 1px solid var(--dev-line);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.02);
+        overflow: hidden;
+      }
+
+      .dev-inline-drawer > .inline-drawer-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 9px 12px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .dev-inline-drawer > .inline-drawer-content {
+        padding: 0 12px 12px;
+        border-top: 1px solid var(--dev-line);
+      }
+
+      .dev-inline-drawer .inline-drawer-icon {
+        color: var(--dev-muted);
+        transition: transform 140ms ease;
+      }
+
+      .dev-inline-drawer.closed .inline-drawer-content {
+        display: none;
+      }
+
+      .dev-inline-drawer.closed .inline-drawer-icon {
+        transform: rotate(-90deg);
+      }
+
+      #tm-settings .tm-row {
+        color: var(--dev-muted);
+      }
+
+      .dev-chat {
+        padding: 26px clamp(18px, 6vw, 80px);
+      }
+
+      .dev-chat-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 22px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--dev-line);
+      }
+
+      .dev-chat-head strong {
+        font-size: 15px;
+      }
+
+      .dev-chat-head span {
+        color: var(--dev-muted);
+        font-size: 11px;
+      }
+
+      .dev-msg {
+        max-width: 640px;
+        margin-bottom: 16px;
+        padding: 12px 15px;
+        border: 1px solid var(--dev-line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.025);
+        color: #c6d1da;
+        font-size: 13px;
+        line-height: 1.7;
+        white-space: pre-wrap;
+      }
+
+      .dev-msg.user {
+        margin-left: auto;
+        border-color: rgba(120, 198, 192, 0.22);
+        background: rgba(120, 198, 192, 0.05);
+      }
+
+      .dev-msg small {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--dev-muted);
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .dev-prompt {
+        margin-top: 28px;
+        padding-top: 14px;
+        border-top: 1px solid var(--dev-line);
+      }
+
+      .dev-prompt h3 {
+        margin: 0 0 8px;
+        color: var(--dev-muted);
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      #dev-prompt-out {
+        margin: 0;
+        padding: 12px 14px;
+        overflow: auto;
+        border: 1px solid var(--dev-line);
+        border-radius: 10px;
+        background: #0b1116;
+        color: var(--dev-brass);
+        font-family: ui-monospace, "SFMono-Regular", monospace;
+        font-size: 11px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .dev-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .dev-actions button {
+        padding: 7px 11px;
+        border: 1px solid var(--dev-line);
+        border-radius: 8px;
+        background: var(--dev-panel);
+        color: var(--dev-text);
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .dev-actions button:hover {
+        border-color: var(--dev-brass);
+        color: var(--dev-brass);
+      }
+
+      @media (max-width: 860px) {
+        #dev-shell {
+          grid-template-columns: 1fr;
+        }
+
+        #dev-side {
+          border-right: 0;
+          border-bottom: 1px solid var(--dev-line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="dev-banner">Tavern Map dev harness — mock SillyTavern context, not a live instance</div>
+
+    <div id="dev-shell">
+      <aside id="dev-side">
+        <h2>Extension settings</h2>
+        <p>
+          这是独立的浏览器测试页。地图、周边、Wikipedia、星标与 prompt 注入都可以在这里验证；
+          “AI 上下文”显示的是 mock 的 <code>setExtensionPrompt</code> 收到的文本。
+        </p>
+        <div id="extensions_settings2"></div>
+
+        <h2>Mock chat</h2>
+        <p id="dev-chat-name">Chat A</p>
+        <div class="dev-actions">
+          <button type="button" id="dev-switch-chat">切换聊天</button>
+          <button type="button" id="dev-log-state">打印 chatMetadata</button>
+        </div>
+      </aside>
+
+      <main class="dev-chat">
+        <div class="dev-chat-head">
+          <strong>Field Notes</strong>
+          <span>click the brass button → pick a point → open Wiki → star</span>
+        </div>
+        <div class="dev-msg">
+          <small>Narrator</small>
+          雨刚停。石板路上还浮着一层薄光，旧城区的钟楼在雾里只露出半截。
+        </div>
+        <div class="dev-msg user">
+          <small>You</small>
+          我沿着河岸往前走，看看附近有什么值得留意的地方。
+        </div>
+        <div class="dev-prompt">
+          <h3>Captured extension prompt</h3>
+          <pre id="dev-prompt-out">（尚未注入）</pre>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const chatStores = [{}, {}]
+      let chatIndex = 0
+      let currentChatMetadata = chatStores[chatIndex]
+      const extensionSettings = {}
+      const prompts = {}
+
+      const listeners = new Map()
+      const eventSource = {
+        on(name, handler) {
+          if (!listeners.has(name)) listeners.set(name, new Set())
+          listeners.get(name).add(handler)
+        },
+        off(name, handler) {
+          listeners.get(name)?.delete(handler)
+        },
+        removeListener(name, handler) {
+          listeners.get(name)?.delete(handler)
+        },
+        emit(name, ...args) {
+          for (const handler of listeners.get(name) ?? []) handler(...args)
+        },
+      }
+
+      const promptOut = document.getElementById('dev-prompt-out')
+
+      function renderPrompt() {
+        const entry = prompts['tavern-map-scene']
+        promptOut.textContent = entry && entry.value ? entry.value : '（尚未注入）'
+      }
+
+      const mockContext = {
+        eventSource,
+        eventTypes: {
+          CHAT_CHANGED: 'chat_id_changed',
+          GENERATION_STARTED: 'generation_started',
+        },
+        event_types: {
+          CHAT_CHANGED: 'chat_id_changed',
+          GENERATION_STARTED: 'generation_started',
+        },
+        extensionSettings,
+        chatMetadata: currentChatMetadata,
+        saveSettingsDebounced() {
+          console.info('[dev] saveSettingsDebounced', structuredClone(extensionSettings))
+        },
+        saveMetadataDebounced() {
+          console.info('[dev] saveMetadataDebounced', structuredClone(currentChatMetadata))
+        },
+        setExtensionPrompt(key, value, position, depth, scan, role, filter) {
+          prompts[key] = { value, position, depth, scan, role, filter }
+          console.info('[dev] setExtensionPrompt', key, { position, depth, scan, role, enabled: filter?.() })
+          renderPrompt()
+        },
+        extension_prompt_types: { NONE: -1, IN_PROMPT: 0, IN_CHAT: 1, BEFORE_PROMPT: 2 },
+        extension_prompt_roles: { SYSTEM: 0, USER: 1, ASSISTANT: 2 },
+        chat: [],
+      }
+
+      window.SillyTavern = {
+        getContext() {
+          return { ...mockContext, chatMetadata: currentChatMetadata }
+        },
+      }
+
+      document.getElementById('extensions_settings2').addEventListener('click', (event) => {
+        const toggle = event.target.closest('.inline-drawer-toggle')
+        toggle?.parentElement?.classList.toggle('closed')
+      })
+
+      document.getElementById('dev-switch-chat').addEventListener('click', () => {
+        chatIndex = (chatIndex + 1) % chatStores.length
+        currentChatMetadata = chatStores[chatIndex]
+        document.getElementById('dev-chat-name').textContent = `Chat ${chatIndex === 0 ? 'A' : 'B'}`
+        eventSource.emit('chat_id_changed', `dev-chat-${chatIndex}`)
+        renderPrompt()
+      })
+
+      document.getElementById('dev-log-state').addEventListener('click', () => {
+        console.info('[dev] chatMetadata', structuredClone(currentChatMetadata))
+        console.info('[dev] extensionSettings', structuredClone(extensionSettings))
+      })
+    </script>
+
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

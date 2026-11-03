@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+*.log
+
+# dist/ is intentionally committed: SillyTavern installs the extension from
+# the repository root and needs manifest.json + dist/index.js + dist/style.css
+# + dist/maplibre-gl-worker.js at that path.

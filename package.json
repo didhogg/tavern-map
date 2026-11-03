@@ -1,0 +1,19 @@
+{
+  "name": "tavern-map",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone SillyTavern map extension: real-world map, nearby places, Wikipedia, prompt injection.",
+  "scripts": {
+    "dev": "vite --open /dev.html",
+    "check": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "maplibre-gl": "^6.16.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
