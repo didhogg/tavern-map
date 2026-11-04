@@ -16,15 +16,6 @@ function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-function truncate(text: string, maxChars: number): string {
-  const normalized = clean(text)
-  if (normalized.length <= maxChars) return normalized
-  const cut = normalized.slice(0, maxChars)
-  const lastSentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
-  const body = lastSentence > maxChars * 0.55 ? cut.slice(0, lastSentence + 1) : cut
-  return `${body.trim()}…`
-}
-
 function formatPlace(place: Place): string {
   const category = place.category ? `, ${clean(place.category)}` : ''
   const distance = place.distanceM == null ? '' : `, ${Math.round(place.distanceM)}m`
@@ -46,7 +37,6 @@ function render(
   savedPlaces: SavedPlace[],
   stars: StarredWiki[],
   poiBriefs: PoiBrief[],
-  wikiChars: number,
   routeSteps: ItineraryStep[],
 ): string {
   const lines: string[] = [
@@ -95,9 +85,7 @@ function render(
       const note = page.note ? ` — note: ${clean(page.note)}` : ''
       const mode = fullText ? ' · full text' : ''
       lines.push(
-        `- ${language}${clean(aiTitle)} (CC BY-SA 4.0)${mode}${note}: ${
-          fullText ? aiExtract.trim() : truncate(aiExtract, wikiChars)
-        }`,
+        `- ${language}${clean(aiTitle)} (CC BY-SA 4.0)${mode}${note}: ${aiExtract.trim()}`,
       )
     }
   }
@@ -116,9 +104,9 @@ function render(
 }
 
 /**
- * Build a deterministic, token-budgeted scene block.
- * Trim order: nearby places → intro wiki length → route steps. POI briefs,
- * full-text stars, saved places and notes are always kept.
+ * Build a deterministic scene block. No character/token trimming: Wiki intros,
+ * full text, notes, POI briefs, saved places and route steps are all included.
+ * The token estimate is display-only.
  */
 export function buildContext(state: MapState, settings: Settings): string {
   // Do not inject the default Tokyo coordinates into every prompt before the
@@ -134,28 +122,13 @@ export function buildContext(state: MapState, settings: Settings): string {
     return ''
   }
 
-  let nearby = state.nearby.slice(0, Math.max(0, settings.maxNearby))
+  const nearby = state.nearby.slice(0, Math.max(0, settings.maxNearby))
   const savedPlaces = state.savedPlaces
-  let poiBriefs = state.poiAllToAI ? state.poiBriefs : []
+  const poiBriefs = state.poiAllToAI ? state.poiBriefs : []
   const stars = state.stars.filter(
     (page) => page.aiFullText || page.fullText || page.aiExtract || page.extract,
   )
-  let routeSteps = state.itinerary?.showToAI ? state.itinerary.steps.slice(0, 10) : []
-  let wikiChars = Math.max(120, settings.maxWikiChars)
-  let text = render(state, nearby, savedPlaces, stars, poiBriefs, wikiChars, routeSteps)
+  const routeSteps = state.itinerary?.showToAI ? state.itinerary.steps : []
 
-  while (estimateTokens(text) > settings.tokenBudget) {
-    if (nearby.length > 0) {
-      nearby = nearby.slice(0, -1)
-    } else if (wikiChars > 180) {
-      wikiChars = Math.max(180, Math.floor(wikiChars * 0.7))
-    } else if (routeSteps.length > 0) {
-      routeSteps = routeSteps.slice(0, -1)
-    } else {
-      break
-    }
-    text = render(state, nearby, savedPlaces, stars, poiBriefs, wikiChars, routeSteps)
-  }
-
-  return text
+  return render(state, nearby, savedPlaces, stars, poiBriefs, routeSteps)
 }

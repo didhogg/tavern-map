@@ -120,8 +120,6 @@ export type Settings = {
   wikiLangs: string[]
   radiusM: number
   maxNearby: number
-  maxWikiChars: number
-  tokenBudget: number
   depth: number
   showPois: boolean
 }

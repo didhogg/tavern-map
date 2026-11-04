@@ -33,7 +33,6 @@ import { wikiLangLinks, wikiNearby, wikiPage, wikiPageFull } from './wiki'
 
 const PANEL_ID = 'tm-panel'
 const WIKI_TTL_MS = 7 * 24 * 60 * 60 * 1000
-const FULL_TEXT_MAX_CHARS = 100000
 const FAB_POS_KEY = 'tavern-map:fab-position'
 const PANEL_GEOMETRY_KEY = 'tavern-map:panel-geometry'
 const ROUTE_SOURCE = 'tm-route'
@@ -260,8 +259,6 @@ const SETTINGS_HTML = `
       </div>
       <label class="tm-row">周边半径（米）<input type="number" id="tm-set-radius" min="50" max="1000" step="50"></label>
       <label class="tm-row">周边地点数<input type="number" id="tm-set-nearby" min="0" max="12" step="1"></label>
-      <label class="tm-row">每篇 Wiki 字符数<input type="number" id="tm-set-wiki" min="200" max="1200" step="50"></label>
-      <label class="tm-row">上下文预算（token）<input type="number" id="tm-set-budget" min="300" max="2000" step="50"></label>
       <label class="tm-row">注入深度<input type="number" id="tm-set-depth" min="0" max="10" step="1"></label>
       <div class="tm-settings-actions">
         <button type="button" id="tm-open">打开地图</button>
@@ -366,8 +363,6 @@ export class MapUI {
   private langEls: HTMLInputElement[] = []
   private radiusEl!: HTMLInputElement
   private nearbyEl!: HTMLInputElement
-  private wikiCharsEl!: HTMLInputElement
-  private budgetEl!: HTMLInputElement
   private depthEl!: HTMLInputElement
 
   private readonly onUnload = (): void => this.cleanup()
@@ -487,8 +482,6 @@ export class MapUI {
     this.langEls = Array.from(document.querySelectorAll<HTMLInputElement>('#tm-settings [data-tm-lang]'))
     this.radiusEl = document.getElementById('tm-set-radius') as HTMLInputElement
     this.nearbyEl = document.getElementById('tm-set-nearby') as HTMLInputElement
-    this.wikiCharsEl = document.getElementById('tm-set-wiki') as HTMLInputElement
-    this.budgetEl = document.getElementById('tm-set-budget') as HTMLInputElement
     this.depthEl = document.getElementById('tm-set-depth') as HTMLInputElement
     if (!this.enabledEl) return
     this.writeSettingsToForm()
@@ -562,8 +555,6 @@ export class MapUI {
       this.scheduleRefresh(0)
     })
     this.nearbyEl.addEventListener('change', () => this.readSettings())
-    this.wikiCharsEl.addEventListener('change', () => this.readSettings())
-    this.budgetEl.addEventListener('change', () => this.readSettings())
     this.depthEl.addEventListener('change', () => this.readSettings())
 
     document.getElementById('tm-open')?.addEventListener('click', () => this.openPanel())
@@ -2270,6 +2261,11 @@ export class MapUI {
     if (star) {
       this.wikiMode = star.contextMode ?? 'intro'
       if (this.wikiMode === 'full' && star.fullText) this.wikiFullText = star.fullText
+      if (page.extract && star.extract !== page.extract) {
+        star.extract = page.extract
+        this.sync()
+        saveState(this.ctx, this.state)
+      }
       if (
         this.wikiMode === 'full' &&
         star.aiLang &&
@@ -2332,11 +2328,7 @@ export class MapUI {
       return
     }
     if (this.wikiFullText !== null) {
-      const text = this.wikiFullText
-      this.wikiBodyEl.textContent =
-        text.length > FULL_TEXT_MAX_CHARS
-          ? `${text.slice(0, FULL_TEXT_MAX_CHARS)}\n\n…（已截断，打开 Wikipedia 查看完整条目）`
-          : text || '（全文为空）'
+      this.wikiBodyEl.textContent = this.wikiFullText || '（全文为空）'
       return
     }
     this.wikiBodyEl.textContent = '正在加载全文…'
@@ -2709,7 +2701,7 @@ export class MapUI {
     this.previewTextEl.textContent =
       text || '（尚未选择地点，也没有收藏条目；当前不会注入场景块。）'
     this.tokenEstimateEl.textContent = text
-      ? `≈ ${estimateTokens(text)} tokens · 预算 ${this.settings.tokenBudget}`
+      ? `≈ ${estimateTokens(text)} tokens · 不裁剪`
       : '当前不会注入'
     this.previewEl.hidden = false
   }
@@ -2736,8 +2728,6 @@ export class MapUI {
       wikiLangs: selectedLangs.length > 0 ? selectedLangs : ['en'],
       radiusM: numberValue(this.radiusEl, this.settings.radiusM, 50, 1000),
       maxNearby: Math.round(numberValue(this.nearbyEl, this.settings.maxNearby, 0, 12)),
-      maxWikiChars: Math.round(numberValue(this.wikiCharsEl, this.settings.maxWikiChars, 200, 1200)),
-      tokenBudget: Math.round(numberValue(this.budgetEl, this.settings.tokenBudget, 300, 2000)),
       depth: Math.round(numberValue(this.depthEl, this.settings.depth, 0, 10)),
     }
     saveSettings(this.ctx, this.settings)
@@ -2752,8 +2742,6 @@ export class MapUI {
     for (const input of this.langEls) input.checked = this.settings.wikiLangs.includes(input.value)
     this.radiusEl.value = String(this.settings.radiusM)
     this.nearbyEl.value = String(this.settings.maxNearby)
-    this.wikiCharsEl.value = String(this.settings.maxWikiChars)
-    this.budgetEl.value = String(this.settings.tokenBudget)
     this.depthEl.value = String(this.settings.depth)
     this.syncRadiusUi()
   }

@@ -148,7 +148,6 @@ export async function wikiPage(candidate: WikiCandidate): Promise<WikiPage> {
     prop: 'extracts|pageprops|revisions',
     explaintext: '1',
     exintro: '1',
-    exchars: '1200',
     redirects: '1',
     titles: candidate.title,
     rvprop: 'ids',
