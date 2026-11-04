@@ -118,7 +118,9 @@ function render(
     const address = state.place.address ? ` — ${clean(state.place.address)}` : ''
     const chinese = state.place.nameZh ? ` / ${clean(state.place.nameZh)}` : ''
     lines.push(`Where: ${clean(state.place.name)}${chinese}${address}`)
-    if (currentSaved?.note) lines.push(`Place note: ${clean(currentSaved.note)}`)
+    const currentNote =
+      (currentKey ? state.placeNotes?.[currentKey]?.note : undefined) ?? currentSaved?.note
+    if (currentNote) lines.push(`Place note: ${clean(currentNote)}`)
   }
   lines.push(`Coords: ${state.center.lat.toFixed(5)}, ${state.center.lng.toFixed(5)}`)
   if (nearby.length > 0) {
@@ -146,7 +148,8 @@ function render(
       const chinese = place.nameZh ? ` / ${clean(place.nameZh)}` : ''
       const cuisine = place.cuisine ? `, cuisine: ${clean(place.cuisine)}` : ''
       const hours = place.openingHours ? `, hours: ${clean(place.openingHours)}` : ''
-      const note = place.note ? ` — note: ${clean(place.note)}` : ''
+      const noteText = state.placeNotes?.[placeKey(place)]?.note ?? place.note
+      const note = noteText ? ` — note: ${clean(noteText)}` : ''
       lines.push(`- ${clean(place.name)}${chinese}${category}${cuisine}${hours}${note}`)
     }
   }
@@ -190,14 +193,15 @@ function render(
       const road = step.road ? ` — ${clean(step.road)}` : ''
       const stepDistance = step.distance > 0 ? ` (${formatDistance(step.distance)})` : ''
       lines.push(`${index + 1}. ${clean(step.instruction)}${road}${stepDistance}`)
-    }
-    if (itinerary.pois?.length) {
-      lines.push('Along the route:')
-      for (const poi of itinerary.pois) {
+      for (const poi of step.pois ?? []) {
         const category = poi.category ? ` (${clean(poi.category)})` : ''
         const cuisine = poi.cuisine ? `, cuisine: ${clean(poi.cuisine)}` : ''
         const chinese = poi.nameZh ? ` / ${clean(poi.nameZh)}` : ''
-        lines.push(`- ${clean(poi.name)}${chinese}${category}${cuisine}`)
+        const toLeg =
+          poi.distanceM == null ? '' : ` — ${formatDistance(poi.distanceM)} from this leg`
+        const along =
+          poi.alongM == null ? '' : `, ${formatDistance(poi.alongM)} from its start`
+        lines.push(`   - ${clean(poi.name)}${chinese}${category}${cuisine}${toLeg}${along}`)
       }
     }
   }
@@ -232,7 +236,11 @@ export function buildContext(state: MapState, settings: Settings): string {
       ? Boolean(page.aiFullText || page.aiExtract)
       : Boolean(page.fullText || page.extract),
   )
-  const routeSteps = state.itinerary?.showToAI ? state.itinerary.steps : []
+  const routeSteps = state.itinerary?.showToAI
+    ? settings.showRoutePois
+      ? state.itinerary.steps
+      : state.itinerary.steps.map((step) => ({ ...step, pois: [] }))
+    : []
 
   return render(state, nearby, savedPlaces, stars, poiBriefs, routeSteps)
 }

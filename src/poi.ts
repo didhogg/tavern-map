@@ -335,11 +335,13 @@ function sampleRoute(
 /** Named POIs within a ~120m corridor of a planned route. */
 export async function fetchRoutePois(
   coordinates: Array<[number, number]>,
+  radiusM = 100,
 ): Promise<RoutePoi[]> {
+  const corridor = Math.max(25, Math.min(500, radiusM))
   const points = sampleRoute(coordinates)
   if (points.length === 0) return []
   const clauses = points
-    .map((point) => `nwr(around:120,${point.lat.toFixed(6)},${point.lng.toFixed(6)})[name];`)
+    .map((point) => `nwr(around:${corridor},${point.lat.toFixed(6)},${point.lng.toFixed(6)})[name];`)
     .join('\n')
   const query = `[out:json][timeout:20];\n(\n${clauses}\n);\nout center 300;`
   const request = (endpoint: string) =>
@@ -378,13 +380,14 @@ export async function fetchRoutePois(
   } catch (error) {
     console.warn('[tavern-map] route POI lookup failed', errorMessage(error))
   }
-  return routeOsmFallback(coordinates)
+  return routeOsmFallback(coordinates, corridor)
 }
 
 /** Fallback when Overpass is unavailable: filter already-loaded POIs by route corridor. */
 export function filterPoisAlongRoute(
   coordinates: Array<[number, number]>,
   candidates: Poi[],
+  radiusM = 100,
 ): RoutePoi[] {
   if (coordinates.length === 0 || candidates.length === 0) return []
   const start = coordinates[0]
@@ -400,7 +403,7 @@ export function filterPoisAlongRoute(
         order = index
       }
     }
-    if (nearest <= 180) results.push({ poi, order })
+    if (nearest <= Math.max(25, Math.min(500, radiusM))) results.push({ poi, order })
   }
   return results
     .sort((a, b) => a.order - b.order)
@@ -421,6 +424,7 @@ export function filterPoisAlongRoute(
 
 async function routeOsmFallback(
   coordinates: Array<[number, number]>,
+  radiusM: number,
 ): Promise<RoutePoi[]> {
   const points = sampleRoute(coordinates, 1600, 6)
   const candidates: Poi[] = []
@@ -431,5 +435,50 @@ async function routeOsmFallback(
       console.warn('[tavern-map] route OSM fallback sample failed', errorMessage(error))
     }
   }
-  return filterPoisAlongRoute(coordinates, candidates)
+  return filterPoisAlongRoute(coordinates, candidates, radiusM)
+}
+
+/**
+ * Attach each POI to the nearest route leg. `distanceM` becomes the distance
+ * from that leg, while `alongM` is the distance from the leg's start.
+ */
+export function assignRoutePoisToSteps(
+  steps: Array<{ coordinates?: Array<[number, number]> }>,
+  pois: RoutePoi[],
+  radiusM: number,
+): RoutePoi[][] {
+  const result: RoutePoi[][] = steps.map(() => [])
+  const corridor = Math.max(25, Math.min(500, radiusM))
+  for (const poi of pois) {
+    let bestStep = -1
+    let bestDistance = Number.POSITIVE_INFINITY
+    let bestAlong = 0
+    for (let stepIndex = 0; stepIndex < steps.length; stepIndex += 1) {
+      const coordinates = steps[stepIndex].coordinates
+      if (!coordinates || coordinates.length < 2) continue
+      let along = 0
+      for (let index = 0; index < coordinates.length; index += 1) {
+        if (index > 0) {
+          const previous = coordinates[index - 1]
+          const current = coordinates[index]
+          along += haversine(previous[1], previous[0], current[1], current[0])
+        }
+        const [lng, lat] = coordinates[index]
+        const distance = haversine(poi.lat, poi.lng, lat, lng)
+        if (distance < bestDistance) {
+          bestDistance = distance
+          bestStep = stepIndex
+          bestAlong = along
+        }
+      }
+    }
+    if (bestStep >= 0 && bestDistance <= corridor) {
+      result[bestStep].push({
+        ...poi,
+        distanceM: bestDistance,
+        alongM: bestAlong,
+      })
+    }
+  }
+  return result.map((items) => items.sort((a, b) => (a.alongM ?? 0) - (b.alongM ?? 0)))
 }

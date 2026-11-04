@@ -13,6 +13,8 @@ export const DEFAULT_SETTINGS: Settings = {
   maxNearby: 6,
   depth: 2,
   showPois: true,
+  showRoutePois: true,
+  routePoiRadiusM: 100,
 }
 
 export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> }): Settings {
@@ -46,6 +48,13 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     maxNearby: Math.round(number(value.maxNearby, DEFAULT_SETTINGS.maxNearby, 0, 12)),
     depth: Math.round(number(value.depth, DEFAULT_SETTINGS.depth, 0, 10)),
     showPois: typeof value.showPois === 'boolean' ? value.showPois : true,
+    showRoutePois:
+      typeof value.showRoutePois === 'boolean'
+        ? value.showRoutePois
+        : DEFAULT_SETTINGS.showRoutePois,
+    routePoiRadiusM: Math.round(
+      number(value.routePoiRadiusM, DEFAULT_SETTINGS.routePoiRadiusM, 25, 500),
+    ),
   }
 }
 

@@ -33,6 +33,31 @@ function validItinerary(raw: unknown): RouteItinerary | undefined {
           road: typeof step.road === 'string' ? step.road : undefined,
           distance: step.distance,
           duration: step.duration,
+          pois: Array.isArray(step.pois)
+            ? step.pois
+                .filter(
+                  (poi) =>
+                    poi &&
+                    typeof poi.id === 'string' &&
+                    typeof poi.name === 'string' &&
+                    Number.isFinite(poi.lat) &&
+                    Number.isFinite(poi.lng),
+                )
+                .slice(0, 30)
+                .map((poi) => ({
+                  id: poi.id,
+                  name: poi.name,
+                  nameZh: typeof poi.nameZh === 'string' ? poi.nameZh : undefined,
+                  category: typeof poi.category === 'string' ? poi.category : undefined,
+                  address: typeof poi.address === 'string' ? poi.address : undefined,
+                  lat: poi.lat,
+                  lng: poi.lng,
+                  distanceM: typeof poi.distanceM === 'number' ? poi.distanceM : undefined,
+                  alongM: typeof poi.alongM === 'number' ? poi.alongM : undefined,
+                  cuisine: typeof poi.cuisine === 'string' ? poi.cuisine : undefined,
+                  openingHours: typeof poi.openingHours === 'string' ? poi.openingHours : undefined,
+                }))
+            : [],
         }))
     : []
   return {
@@ -55,30 +80,6 @@ function validItinerary(raw: unknown): RouteItinerary | undefined {
         ? value.profile
         : 'foot',
     steps,
-    pois: Array.isArray(value.pois)
-      ? value.pois
-          .filter(
-            (poi) =>
-              poi &&
-              typeof poi.id === 'string' &&
-              typeof poi.name === 'string' &&
-              Number.isFinite(poi.lat) &&
-              Number.isFinite(poi.lng),
-          )
-          .slice(0, 30)
-          .map((poi) => ({
-            id: poi.id,
-            name: poi.name,
-            nameZh: typeof poi.nameZh === 'string' ? poi.nameZh : undefined,
-            category: typeof poi.category === 'string' ? poi.category : undefined,
-            address: typeof poi.address === 'string' ? poi.address : undefined,
-            lat: poi.lat,
-            lng: poi.lng,
-            distanceM: typeof poi.distanceM === 'number' ? poi.distanceM : undefined,
-            cuisine: typeof poi.cuisine === 'string' ? poi.cuisine : undefined,
-            openingHours: typeof poi.openingHours === 'string' ? poi.openingHours : undefined,
-          }))
-      : [],
     fallback: Boolean(value.fallback),
     showToAI: Boolean(value.showToAI),
     updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
@@ -94,6 +95,7 @@ export const DEFAULT_STATE: MapState = {
   wiki: [],
   stars: [],
   savedPlaces: [],
+  placeNotes: {},
   poiBriefs: [],
   poiAllToAI: false,
   updatedAt: Date.now(),
@@ -176,6 +178,44 @@ export function loadState(ctx: StContext): MapState {
             savedAt: typeof place.savedAt === 'number' ? place.savedAt : Date.now(),
           }))
       : [],
+    placeNotes:
+      value.placeNotes && typeof value.placeNotes === 'object'
+        ? Object.fromEntries(
+            Object.entries(value.placeNotes)
+              .filter(
+                ([key, note]) =>
+                  typeof key === 'string' &&
+                  note &&
+                  typeof note === 'object' &&
+                  typeof (note as { note?: unknown }).note === 'string' &&
+                  typeof (note as { name?: unknown }).name === 'string' &&
+                  Number.isFinite((note as { lat?: unknown }).lat) &&
+                  Number.isFinite((note as { lng?: unknown }).lng),
+              )
+              .map(([key, note]) => {
+                const value = note as {
+                  note: string
+                  name: string
+                  nameZh?: unknown
+                  lat: number
+                  lng: number
+                  updatedAt?: unknown
+                }
+                return [
+                  key,
+                  {
+                    note: value.note,
+                    name: value.name,
+                    nameZh: typeof value.nameZh === 'string' ? value.nameZh : undefined,
+                    lat: value.lat,
+                    lng: value.lng,
+                    updatedAt:
+                      typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
+                  },
+                ]
+              }),
+          )
+        : {},
     poiBriefs: Array.isArray(value.poiBriefs)
       ? value.poiBriefs
           .filter(

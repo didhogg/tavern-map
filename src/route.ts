@@ -9,6 +9,8 @@ export type RouteStep = {
   road?: string
   distance: number
   duration: number
+  /** Geometry of this leg, used to attach route POIs to the right segment. */
+  coordinates?: Array<[number, number]>
 }
 
 export type Route = {
@@ -27,6 +29,7 @@ type OsrmStep = {
   name?: string
   ref?: string
   mode?: string
+  geometry?: { coordinates?: number[][] }
   maneuver?: { type?: string; modifier?: string; exit?: number }
 }
 
@@ -106,17 +109,34 @@ function parseSteps(raw: OsrmStep[] | undefined, profile: RouteProfile): RouteSt
     const road = roadName(item) ?? (profile === 'foot' ? '未命名步道' : '未命名道路')
     const distance = Number.isFinite(item.distance) ? Number(item.distance) : 0
     const duration = Number.isFinite(item.duration) ? Number(item.duration) : 0
+    const coordinates = (item.geometry?.coordinates ?? [])
+      .filter(
+        (point): point is [number, number] =>
+          Array.isArray(point) &&
+          point.length >= 2 &&
+          Number.isFinite(point[0]) &&
+          Number.isFinite(point[1]),
+      )
+      .map((point) => [point[0], point[1]] as [number, number])
     if (
       steps.length > 0 &&
       steps[steps.length - 1].instruction === text &&
-      steps[steps.length - 1].road === road
+      steps[steps.length - 1].road === road &&
+      steps[steps.length - 1].coordinates?.length === coordinates.length
     ) {
       const previous = steps[steps.length - 1]
       previous.distance += distance
       previous.duration += duration
       continue
     }
-    steps.push({ instruction: text, road, name: road, distance, duration })
+    steps.push({
+      instruction: text,
+      road,
+      name: road,
+      distance,
+      duration,
+      coordinates: coordinates.length >= 2 ? coordinates : undefined,
+    })
     if (steps.length >= 40) break
   }
   return steps
@@ -319,11 +339,15 @@ async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
     const previous = legs[index - 1]
     const next = legs[index + 1]
     const geometry = leg.legGeometry
+    const stepCoordinates: Array<[number, number]> = []
     if (geometry?.points) {
       for (const point of decodePolyline(geometry.points, geometry.precision ?? 6)) {
+        appendPoint(stepCoordinates, point[0], point[1])
         appendPoint(coordinates, point[0], point[1])
       }
     } else {
+      appendPoint(stepCoordinates, leg.from?.lon, leg.from?.lat)
+      appendPoint(stepCoordinates, leg.to?.lon, leg.to?.lat)
       appendPoint(coordinates, leg.from?.lon, leg.from?.lat)
       appendPoint(coordinates, leg.to?.lon, leg.to?.lat)
     }
@@ -344,12 +368,14 @@ async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
           instruction: `在 ${endName} 换乘 ${nextLabel}${heading}`,
           distance,
           duration,
+          coordinates: stepCoordinates.length >= 2 ? stepCoordinates : undefined,
         })
       } else {
         pushStep({
           instruction: `步行到 ${endName}`,
           distance,
           duration,
+          coordinates: stepCoordinates.length >= 2 ? stepCoordinates : undefined,
         })
       }
     } else {
@@ -372,6 +398,7 @@ async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
         name: line || undefined,
         distance,
         duration,
+        coordinates: stepCoordinates.length >= 2 ? stepCoordinates : undefined,
       })
     }
 

@@ -58,6 +58,15 @@ export type SavedPlace = Place & {
   savedAt: number
 }
 
+export type PlaceNote = {
+  note: string
+  name: string
+  nameZh?: string
+  lat: number
+  lng: number
+  updatedAt: number
+}
+
 export type WikiRef = {
   lang: string
   pageId: number
@@ -78,6 +87,8 @@ export type ItineraryStep = {
   road?: string
   distance: number
   duration: number
+  /** POIs within the route corridor for this leg. */
+  pois?: RoutePoi[]
 }
 
 export type RoutePoi = {
@@ -88,7 +99,10 @@ export type RoutePoi = {
   address?: string
   lat: number
   lng: number
+  /** Distance from this route leg. */
   distanceM?: number
+  /** Distance along this route leg from its start. */
+  alongM?: number
   cuisine?: string
   openingHours?: string
 }
@@ -112,8 +126,6 @@ export type RouteItinerary = {
   duration: number
   profile: RouteProfile
   steps: ItineraryStep[]
-  /** Named POIs found within the route corridor. */
-  pois?: RoutePoi[]
   fallback?: boolean
   showToAI: boolean
   updatedAt: number
@@ -131,6 +143,8 @@ export type MapState = {
   wiki: WikiCandidate[]
   stars: StarredWiki[]
   savedPlaces: SavedPlace[]
+  /** Notes for any place, independent of favorites. Keyed by placeKey. */
+  placeNotes?: Record<string, PlaceNote>
   poiBriefs: PoiBrief[]
   poiAllToAI: boolean
   lastTab?: 'nearby' | 'wiki' | 'saved' | 'route'
@@ -149,6 +163,10 @@ export type Settings = {
   maxNearby: number
   depth: number
   showPois: boolean
+  /** Show POIs attached to each route leg. */
+  showRoutePois: boolean
+  /** Corridor width for route POIs, in metres. */
+  routePoiRadiusM: number
 }
 
 /** A minimal subset of the SillyTavern context used by this extension. */

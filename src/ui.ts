@@ -10,7 +10,13 @@ import { cacheGet, cachePut, wikiCacheKey, wikiFullCacheKey } from './cache'
 import { buildContext, estimateTokens } from './context'
 import { formatDistance, haversine, placeKey } from './geo'
 import { errorMessage } from './http'
-import { fetchPois, fetchRoutePois, filterPoisAlongRoute, type Poi } from './poi'
+import {
+  assignRoutePoisToSteps,
+  fetchPois,
+  fetchRoutePois,
+  filterPoisAlongRoute,
+  type Poi,
+} from './poi'
 import { syncPrompt, clearPrompt } from './prompt'
 import { nearbyPlaces, reverseGeocode } from './providers'
 import { routeBetween, type Route } from './route'
@@ -21,7 +27,6 @@ import type {
   MapState,
   Place,
   RouteItinerary,
-  RoutePoi,
   RouteProfile,
   SavedPlace,
   Settings,
@@ -230,7 +235,13 @@ const PANEL_HTML = `
         </div>
         <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
         <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
-        <div id="tm-place-route-pois" class="tm-route-pois" hidden></div>
+        <div class="tm-route-poi-controls">
+          <label><input type="checkbox" data-route-pois> 显示沿途 POI</label>
+          <label class="tm-route-poi-radius">范围
+            <input type="range" data-route-poi-radius min="25" max="500" step="5" aria-label="沿途 POI 范围">
+            <span data-route-poi-radius-value>100m</span>
+          </label>
+        </div>
       </div>
       <div class="tm-place-note">
         <label for="tm-place-note">我的笔记</label>
@@ -312,6 +323,7 @@ export class MapUI {
   private currentRoute: Route | null = null
   private routeMode: RouteProfile = 'foot'
   private routeSeq = 0
+  private routePoiSeq = 0
   private routeEndMarker: Marker | null = null
   private moveFrame: number | null = null
   private moving = false
@@ -369,7 +381,6 @@ export class MapUI {
   private placeRouteSummaryEl!: HTMLElement
   private placeRouteTextEl!: HTMLElement
   private placeRouteModeEl!: HTMLSelectElement
-  private placeRoutePoisEl!: HTMLElement
   private placeStartEl!: HTMLButtonElement
   private placeStopEl!: HTMLButtonElement
   private placeClearEl!: HTMLButtonElement
@@ -474,7 +485,6 @@ export class MapUI {
     this.placeRouteSummaryEl = document.getElementById('tm-route-summary') as HTMLElement
     this.placeRouteTextEl = document.getElementById('tm-route-text') as HTMLElement
     this.placeRouteModeEl = document.getElementById('tm-place-route-mode') as HTMLSelectElement
-    this.placeRoutePoisEl = document.getElementById('tm-place-route-pois') as HTMLElement
     this.placeStartEl = document.querySelector('[data-action="place-start"]') as HTMLButtonElement
     this.placeStopEl = document.querySelector('[data-action="place-stop"]') as HTMLButtonElement
     this.placeClearEl = document.querySelector('[data-action="place-clear-route"]') as HTMLButtonElement
@@ -720,12 +730,49 @@ export class MapUI {
 
   private onPanelChange(event: Event): void {
     const target = event.target as HTMLElement
-    if (!target.matches('[data-route-ai]')) return
-    if (!this.state.itinerary) return
-    this.state.itinerary.showToAI = (target as HTMLInputElement).checked
-    this.sync()
-    this.flushNoteSave()
-    this.syncRouteAiCheckboxes()
+    if (target.matches('[data-route-ai]')) {
+      if (!this.state.itinerary) return
+      this.state.itinerary.showToAI = (target as HTMLInputElement).checked
+      this.sync()
+      this.flushNoteSave()
+      this.syncRouteAiCheckboxes()
+      return
+    }
+    if (target.matches('[data-route-pois]')) {
+      this.settings.showRoutePois = (target as HTMLInputElement).checked
+      saveSettings(this.ctx, this.settings)
+      if (
+        this.settings.showRoutePois &&
+        this.currentRoute &&
+        this.state.itinerary &&
+        !this.state.itinerary.steps.some((step) => step.pois?.length)
+      ) {
+        void this.loadRoutePois(this.currentRoute, this.routeSeq)
+      }
+      this.syncRoutePoiControls()
+      this.commit()
+      this.renderPlace()
+      if (this.tab === 'route') this.render()
+      return
+    }
+    if (target.matches('[data-route-poi-radius]')) {
+      const value = Number((target as HTMLInputElement).value)
+      this.settings.routePoiRadiusM = Math.max(25, Math.min(500, value))
+      saveSettings(this.ctx, this.settings)
+      this.syncRoutePoiControls()
+      if (this.state.itinerary) {
+        this.state.itinerary.steps.forEach((step) => {
+          step.pois = []
+        })
+      }
+      if (this.settings.showRoutePois && this.currentRoute && this.state.itinerary) {
+        void this.loadRoutePois(this.currentRoute, this.routeSeq)
+      } else {
+        this.commit()
+        this.renderPlace()
+        if (this.tab === 'route') this.render()
+      }
+    }
   }
 
   private onPreviewClick(event: MouseEvent): void {
@@ -1249,6 +1296,7 @@ export class MapUI {
     this.updateRouteCount()
     this.renderList()
     this.updateStarButton()
+    this.syncRoutePoiControls()
   }
 
   private updateRouteCount(): void {
@@ -1398,7 +1446,7 @@ export class MapUI {
   private renderSavedList(): void {
     if (this.state.savedPlaces.length === 0 && this.state.stars.length === 0) {
       this.listEl.append(
-        this.empty('还没有收藏。点周边地点的 ☆ 收藏地点，或在 Wiki 里点亮星标；收藏后可以写自己的笔记。'),
+        this.empty('还没有收藏。点周边地点的 ☆ 收藏地点，或在 Wiki 里点亮星标；地点笔记可直接在地点详情里写，不要求先收藏。'),
       )
       return
     }
@@ -1458,8 +1506,8 @@ export class MapUI {
     actions.append(detail, go, remove)
     head.append(title, actions)
 
-    const note = this.noteInput(place.note, (value) => {
-      place.note = value
+    const note = this.noteInput(this.getPlaceNote(place), (value) => {
+      this.setPlaceNote(place, value)
       this.sync()
       this.scheduleNoteSave()
     })
@@ -1570,10 +1618,13 @@ export class MapUI {
     this.placeSaveEl.textContent = saved ? '★' : '☆'
     this.placeSaveEl.title = saved ? '从 AI 上下文移除' : '加入 AI 上下文'
     this.placeSaveEl.setAttribute('aria-pressed', String(Boolean(saved)))
-    this.placeNoteEl.disabled = !saved
-    this.placeNoteEl.placeholder = saved ? '写下你想让 AI 记住的地点笔记…' : '点亮星星后可写笔记…'
-    if (document.activeElement !== this.placeNoteEl) this.placeNoteEl.value = saved?.note ?? ''
-    this.placeNoteStatusEl.textContent = saved ? '自动保存' : ''
+    const note = this.getPlaceNote(place)
+    this.placeNoteEl.disabled = false
+    this.placeNoteEl.placeholder = saved
+      ? '写下你想让 AI 记住的地点笔记…'
+      : '写下地点笔记（不收藏也会保存）…'
+    if (document.activeElement !== this.placeNoteEl) this.placeNoteEl.value = note
+    this.placeNoteStatusEl.textContent = note || saved ? '自动保存' : ''
     if (this.placeRouteModeEl) this.placeRouteModeEl.value = this.routeMode
     this.renderPlaceInfo(place)
     this.renderPlaceRoute()
@@ -1618,9 +1669,7 @@ export class MapUI {
   private onPlaceNoteInput(): void {
     const place = this.currentPlace
     if (!place) return
-    const saved = this.findSavedPlace(place)
-    if (!saved) return
-    saved.note = this.placeNoteEl.value
+    this.setPlaceNote(place, this.placeNoteEl.value)
     this.sync()
     this.placeNoteStatusEl.textContent = '保存中…'
     this.scheduleNoteSave()
@@ -1648,15 +1697,14 @@ export class MapUI {
       const road = step.road ? ` — ${step.road}` : ''
       const distance = step.distance > 0 ? `（${formatDistance(step.distance)}）` : ''
       lines.push(`${index + 1}. ${step.instruction}${road}${distance}`)
-    })
-    if (itinerary.pois?.length) {
-      lines.push('沿途 POI：')
-      itinerary.pois.forEach((poi) => {
+      for (const poi of this.settings.showRoutePois ? step.pois ?? [] : []) {
         const category = poi.category ? `（${poi.category}）` : ''
         const cuisine = poi.cuisine ? ` · ${poi.cuisine}` : ''
-        lines.push(`- ${poi.name}${category}${cuisine}`)
-      })
-    }
+        const toLeg = poi.distanceM == null ? '' : ` · 距本段 ${formatDistance(poi.distanceM)}`
+        const along = poi.alongM == null ? '' : ` · 距段首 ${formatDistance(poi.alongM)}`
+        lines.push(`   - ${poi.name}${category}${cuisine}${toLeg}${along}`)
+      }
+    })
     return lines.join('\n')
   }
 
@@ -1684,8 +1732,6 @@ export class MapUI {
       this.placeProgressEl.hidden = true
       this.placeBarEl.style.width = '0%'
       this.placeRouteStepsEl.replaceChildren()
-      this.placeRoutePoisEl.replaceChildren()
-      this.placeRoutePoisEl.hidden = true
       return
     }
     const fallback = itinerary.fallback ? ' · 直线估计' : ''
@@ -1695,48 +1741,49 @@ export class MapUI {
     this.placeProgressEl.hidden = !this.moving
     this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`
     this.fillRouteSteps(this.placeRouteStepsEl, itinerary)
-    this.renderRoutePois(this.placeRoutePoisEl, itinerary.pois ?? [])
+    this.syncRoutePoiControls()
     this.syncRouteAiCheckboxes()
   }
 
-  private renderRoutePois(container: HTMLElement, pois: RoutePoi[]): void {
-    container.replaceChildren()
-    container.hidden = pois.length === 0
-    if (pois.length === 0) return
-    const title = document.createElement('div')
-    title.className = 'tm-route-pois-title'
-    title.textContent = `沿途 POI（${pois.length}）`
-    container.append(title)
-    const list = document.createElement('div')
-    list.className = 'tm-route-pois-list'
-    for (const poi of pois) {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'tm-route-poi'
-      const parts = [
-        poi.nameZh && poi.nameZh !== poi.name ? `${poi.name} / ${poi.nameZh}` : poi.name,
-        poi.category,
-        poi.cuisine,
-        poi.distanceM == null ? '' : `距起点 ${formatDistance(poi.distanceM)}`,
-      ].filter(Boolean)
-      button.textContent = parts.join(' · ')
-      button.addEventListener('click', () => {
-        this.openPlace({
-          id: poi.id,
-          name: poi.name,
-          nameZh: poi.nameZh,
-          category: poi.category,
-          address: poi.address,
-          lat: poi.lat,
-          lng: poi.lng,
-          distanceM: poi.distanceM,
-          cuisine: poi.cuisine,
-          openingHours: poi.openingHours,
-        })
-      })
-      list.append(button)
+  private syncRoutePoiControls(): void {
+    if (!this.panelEl) return
+    for (const input of this.panelEl.querySelectorAll<HTMLInputElement>('[data-route-pois]')) {
+      input.checked = this.settings.showRoutePois
     }
-    container.append(list)
+    for (const input of this.panelEl.querySelectorAll<HTMLInputElement>('[data-route-poi-radius]')) {
+      input.value = String(this.settings.routePoiRadiusM)
+    }
+    for (const label of this.panelEl.querySelectorAll<HTMLElement>('[data-route-poi-radius-value]')) {
+      label.textContent = `${this.settings.routePoiRadiusM}m`
+    }
+  }
+
+  private routePoiControls(): HTMLElement {
+    const controls = document.createElement('div')
+    controls.className = 'tm-route-poi-controls'
+    const toggle = document.createElement('label')
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    checkbox.dataset.routePois = ''
+    checkbox.checked = this.settings.showRoutePois
+    toggle.append(checkbox, document.createTextNode(' 显示沿途 POI'))
+    const radius = document.createElement('label')
+    radius.className = 'tm-route-poi-radius'
+    radius.append(document.createTextNode('范围 '))
+    const range = document.createElement('input')
+    range.type = 'range'
+    range.min = '25'
+    range.max = '500'
+    range.step = '5'
+    range.dataset.routePoiRadius = ''
+    range.value = String(this.settings.routePoiRadiusM)
+    range.setAttribute('aria-label', '沿途 POI 范围')
+    const value = document.createElement('span')
+    value.dataset.routePoiRadiusValue = ''
+    value.textContent = `${this.settings.routePoiRadiusM}m`
+    radius.append(range, value)
+    controls.append(toggle, radius)
+    return controls
   }
 
   private fillRouteSteps(container: HTMLElement, itinerary: RouteItinerary): void {
@@ -1756,6 +1803,54 @@ export class MapUI {
         const distance = document.createElement('em')
         distance.textContent = formatDistance(step.distance)
         item.append(distance)
+      }
+      if (this.settings.showRoutePois && step.pois?.length) {
+        const list = document.createElement('div')
+        list.className = 'tm-route-step-pois'
+        const buttons: HTMLButtonElement[] = []
+        for (const poi of step.pois) {
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.className = 'tm-route-poi'
+          const parts = [
+            poi.nameZh && poi.nameZh !== poi.name ? `${poi.name} / ${poi.nameZh}` : poi.name,
+            poi.category,
+            poi.cuisine,
+            poi.distanceM == null ? '' : `距本段 ${formatDistance(poi.distanceM)}`,
+            poi.alongM == null ? '' : `距段首 ${formatDistance(poi.alongM)}`,
+          ].filter(Boolean)
+          button.textContent = parts.join(' · ')
+          button.addEventListener('click', () => {
+            this.openPlace({
+              id: poi.id,
+              name: poi.name,
+              nameZh: poi.nameZh,
+              category: poi.category,
+              address: poi.address,
+              lat: poi.lat,
+              lng: poi.lng,
+              distanceM: poi.distanceM,
+              cuisine: poi.cuisine,
+              openingHours: poi.openingHours,
+            })
+          })
+          buttons.push(button)
+          list.append(button)
+        }
+        const visible = 5
+        if (buttons.length > visible) {
+          buttons.slice(visible).forEach((button) => button.classList.add('tm-route-poi-extra'))
+          const more = document.createElement('button')
+          more.type = 'button'
+          more.className = 'tm-route-poi-more'
+          more.textContent = `再显示 ${buttons.length - visible} 个`
+          more.addEventListener('click', () => {
+            list.classList.add('expanded')
+            more.remove()
+          })
+          list.append(more)
+        }
+        item.append(list)
       }
       container.append(item)
     })
@@ -1796,10 +1891,14 @@ export class MapUI {
       this.currentRoute = route
       const fromName = this.state.place?.name ?? '当前位置'
       const steps = route.steps.map((step) => ({
-        ...step,
         instruction: step.instruction
           .replace(/\bSTART\b/g, fromName)
           .replace(/\bEND\b/g, place.name),
+        name: step.name,
+        road: step.road,
+        distance: step.distance,
+        duration: step.duration,
+        pois: [],
       }))
       const showToAI = this.state.itinerary?.showToAI ?? false
       this.state.itinerary = {
@@ -1814,7 +1913,6 @@ export class MapUI {
         duration: route.duration,
         profile: route.profile,
         steps,
-        pois: [],
         fallback: route.fallback,
         showToAI,
         updatedAt: Date.now(),
@@ -1824,15 +1922,17 @@ export class MapUI {
       this.renderPlace()
       this.setStatus(route.fallback ? `${ROUTE_MODE_LABELS[mode]}路线服务不可用，已显示直线估计` : '')
       this.toast('行程已生成，可在“行程”页查看和复制')
-      void this.loadRoutePois(route, seq)
+      if (this.settings.showRoutePois) void this.loadRoutePois(route, seq)
     } catch (error) {
       this.setStatus(`路线规划失败：${errorMessage(error)}`)
     }
   }
 
   private async loadRoutePois(route: Route, seq: number): Promise<void> {
-    let pois = await fetchRoutePois(route.coordinates)
-    if (seq !== this.routeSeq) return
+    const loadSeq = ++this.routePoiSeq
+    const radius = this.settings.routePoiRadiusM
+    let pois = await fetchRoutePois(route.coordinates, radius)
+    if (loadSeq !== this.routePoiSeq || seq !== this.routeSeq) return
     if (pois.length === 0) {
       let candidates = this.pois
       if (candidates.length === 0 && route.coordinates.length > 0) {
@@ -1843,12 +1943,16 @@ export class MapUI {
           console.warn('[tavern-map] route POI fallback failed', errorMessage(error))
         }
       }
-      if (seq !== this.routeSeq) return
-      pois = filterPoisAlongRoute(route.coordinates, candidates)
+      if (loadSeq !== this.routePoiSeq || seq !== this.routeSeq) return
+      pois = filterPoisAlongRoute(route.coordinates, candidates, radius)
     }
     const itinerary = this.state.itinerary
     if (!itinerary) return
-    itinerary.pois = pois
+    if (!this.settings.showRoutePois) return
+    const byStep = assignRoutePoisToSteps(route.steps, pois, radius)
+    itinerary.steps.forEach((step, index) => {
+      step.pois = byStep[index] ?? []
+    })
     this.commit()
     this.renderPlace()
     if (this.tab === 'route') this.render()
@@ -2022,13 +2126,19 @@ export class MapUI {
     steps.className = 'tm-route-steps'
     this.fillRouteSteps(steps, itinerary)
 
-    const routePois = document.createElement('div')
-    routePois.className = 'tm-route-pois'
-    this.renderRoutePois(routePois, itinerary.pois ?? [])
-
-    card.append(head, routeLine, modeRow, meta, ai, progress, steps, routePois)
+    card.append(
+      head,
+      routeLine,
+      modeRow,
+      meta,
+      ai,
+      progress,
+      this.routePoiControls(),
+      steps,
+    )
     this.listEl.append(card)
     this.syncRouteAiCheckboxes()
+    this.syncRoutePoiControls()
   }
 
   private startMovement(): void {
@@ -2321,6 +2431,30 @@ export class MapUI {
     return this.state.savedPlaces.find((item) => placeKey(item) === key)
   }
 
+  private getPlaceNote(place: Place): string {
+    const entry = this.state.placeNotes?.[placeKey(place)]
+    return entry?.note ?? this.findSavedPlace(place)?.note ?? ''
+  }
+
+  private setPlaceNote(place: Place, value: string): void {
+    const key = placeKey(place)
+    const notes = this.state.placeNotes ?? (this.state.placeNotes = {})
+    if (value.trim()) {
+      notes[key] = {
+        note: value,
+        name: place.name,
+        nameZh: place.nameZh,
+        lat: place.lat,
+        lng: place.lng,
+        updatedAt: Date.now(),
+      }
+    } else {
+      delete notes[key]
+    }
+    const saved = this.findSavedPlace(place)
+    if (saved) saved.note = value
+  }
+
   private toggleSavedPlace(place: Place): void {
     const key = placeKey(place)
     const index = this.state.savedPlaces.findIndex((item) => placeKey(item) === key)
@@ -2328,7 +2462,11 @@ export class MapUI {
       this.state.savedPlaces.splice(index, 1)
       this.toast('已从 AI 上下文移除')
     } else {
-      this.state.savedPlaces.push({ ...place, note: '', savedAt: Date.now() })
+      this.state.savedPlaces.push({
+        ...place,
+        note: this.getPlaceNote(place),
+        savedAt: Date.now(),
+      })
       this.toast('已加入 AI 上下文；可在“收藏”里写笔记')
     }
     this.commit()

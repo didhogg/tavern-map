@@ -1065,6 +1065,68 @@
   color: var(--tm-brass-strong);
 }
 
+.tm-route-step-pois {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding-left: 2px;
+}
+
+.tm-route-step-pois .tm-route-poi {
+  padding: 1px 0;
+  color: var(--tm-faint);
+  font-size: 9px;
+}
+
+.tm-route-step-pois:not(.expanded) .tm-route-poi-extra {
+  display: none;
+}
+
+.tm-route-poi-more {
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  color: var(--tm-brass);
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tm-route-poi-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 12px;
+  margin-top: 8px;
+  color: var(--tm-muted);
+  font-size: 9.5px;
+}
+
+.tm-route-poi-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tm-route-poi-controls input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--tm-brass);
+}
+
+.tm-route-poi-radius input[type="range"] {
+  width: 92px;
+  accent-color: var(--tm-brass);
+}
+
+.tm-route-poi-radius [data-route-poi-radius-value] {
+  min-width: 36px;
+  color: var(--tm-brass);
+  font-variant-numeric: tabular-nums;
+}
+
 .tm-place-route-steps {
   max-height: 260px;
   margin-top: 8px;

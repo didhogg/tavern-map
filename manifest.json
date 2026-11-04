@@ -5,7 +5,7 @@
   "css": "dist/style.css",
   "author": "TavernWeave prototype",
   "homePage": "https://github.com/didhogg/tavern-map",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "auto_update": false,
   "minimum_client_version": "1.18.0"
 }
