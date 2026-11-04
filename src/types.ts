@@ -1,5 +1,7 @@
 export type LatLng = { lat: number; lng: number }
 
+export type RouteProfile = 'foot' | 'driving' | 'transit'
+
 export type Place = {
   id: string
   name: string
@@ -10,6 +12,11 @@ export type Place = {
   lat: number
   lng: number
   distanceM?: number
+  /** Full OSM tags when the place came from Overpass/OSM. */
+  tags?: Record<string, string>
+  openingHours?: string
+  website?: string
+  cuisine?: string
 }
 
 export type WikiCandidate = {
@@ -78,6 +85,8 @@ export type PoiBrief = {
   category?: string
   address?: string
   distanceM?: number
+  cuisine?: string
+  openingHours?: string
   addedAt: number
 }
 
@@ -86,6 +95,7 @@ export type RouteItinerary = {
   to: { id?: string; name: string; lat: number; lng: number }
   distance: number
   duration: number
+  profile: RouteProfile
   steps: ItineraryStep[]
   fallback?: boolean
   showToAI: boolean

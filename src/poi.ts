@@ -95,7 +95,13 @@ function poiFromTags(
     name,
     nameZh: nameZh && nameZh !== name ? nameZh : undefined,
     category,
-    address: [tags['addr:street'], tags['addr:city']].filter(Boolean).join(', ') || undefined,
+    address:
+      [
+        [tags['addr:housenumber'], tags['addr:street']].filter(Boolean).join(' '),
+        tags['addr:city'] || tags['addr:town'] || tags['addr:suburb'],
+      ]
+        .filter(Boolean)
+        .join(', ') || undefined,
     lat,
     lng,
     distanceM: haversine(originLat, originLng, lat, lng),

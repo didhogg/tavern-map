@@ -49,6 +49,10 @@ function validItinerary(raw: unknown): RouteItinerary | undefined {
     },
     distance: Number.isFinite(value.distance) ? Number(value.distance) : 0,
     duration: Number.isFinite(value.duration) ? Number(value.duration) : 0,
+    profile:
+      value.profile === 'driving' || value.profile === 'transit' || value.profile === 'foot'
+        ? value.profile
+        : 'foot',
     steps,
     fallback: Boolean(value.fallback),
     showToAI: Boolean(value.showToAI),
@@ -160,6 +164,8 @@ export function loadState(ctx: StContext): MapState {
             category: typeof brief.category === 'string' ? brief.category : undefined,
             address: typeof brief.address === 'string' ? brief.address : undefined,
             distanceM: typeof brief.distanceM === 'number' ? brief.distanceM : undefined,
+            cuisine: typeof brief.cuisine === 'string' ? brief.cuisine : undefined,
+            openingHours: typeof brief.openingHours === 'string' ? brief.openingHours : undefined,
             addedAt: typeof brief.addedAt === 'number' ? brief.addedAt : Date.now(),
           }))
       : [],

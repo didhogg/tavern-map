@@ -1408,6 +1408,26 @@
   margin: 12px 0 10px;
 }
 
+.tm-route-mode,
+.tm-place-actions .tm-route-mode {
+  padding: 6px 8px;
+  border: 1px solid var(--tm-line);
+  border-radius: 8px;
+  background: var(--tm-bg-raised);
+  color: var(--tm-text);
+  font: inherit;
+  font-size: 10.5px;
+}
+
+.tm-route-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--tm-muted);
+  font-size: 10px;
+}
+
 .tm-place-actions button,
 .tm-route-actions button {
   padding: 6px 10px;

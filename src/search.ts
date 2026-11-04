@@ -1,10 +1,13 @@
+import { haversine } from './geo'
 import { fetchJson } from './http'
-import type { Place } from './types'
+import type { LatLng, Place } from './types'
 
 export type SearchResult = Place & {
   bounds?: [number, number, number, number]
   resultType?: string
   country?: string
+  /** Rank within the Photon response; a weak prominence signal. */
+  sourceRank?: number
 }
 
 type PhotonFeature = {
@@ -78,26 +81,133 @@ function toResult(feature: PhotonFeature): SearchResult | null {
   }
 }
 
+/**
+ * Rank by textual relevance first, then by distance from the current place.
+ * Exact name matches can still beat a nearby loose match; among equally good
+ * matches, the nearest result wins.
+ */
+export function rankSearchResults(
+  results: SearchResult[],
+  query: string,
+  near?: LatLng,
+): SearchResult[] {
+  const q = query.trim().toLowerCase()
+  const tokens = q.split(/\s+/).filter((token) => token.length > 0)
+  return results
+    .map((result) => {
+      const name = result.name.toLowerCase()
+      const nameZh = (result.nameZh ?? '').toLowerCase()
+      const address = (result.address ?? '').toLowerCase()
+      const exact = name === q || nameZh === q
+      const starts = name.startsWith(q) || nameZh.startsWith(q)
+      const includes = name.includes(q) || nameZh.includes(q)
+      const tokenHits = tokens.filter(
+        (token) => name.includes(token) || nameZh.includes(token) || address.includes(token),
+      ).length
+      const type = (result.resultType ?? '').toLowerCase()
+      const prominence = [
+        'country',
+        'state',
+        'region',
+        'county',
+        'city',
+        'town',
+        'village',
+        'municipality',
+        'district',
+        'locality',
+        'borough',
+        'suburb',
+      ].includes(type)
+        ? 35
+        : [
+              'attraction',
+              'museum',
+              'viewpoint',
+              'tourism',
+              'historic',
+              'monument',
+              'memorial',
+              'castle',
+              'park',
+              'station',
+              'airport',
+              'university',
+              'hospital',
+            ].includes(type)
+          ? 12
+          : 0
+      const sourceRank = result.sourceRank ?? 20
+      // Tiny tie-breaker only; distance and text/type still dominate. This
+      // keeps nearby branches ordered by distance while letting famous exact
+      // results beat distant namesakes.
+      const rankBonus = Math.max(0, 12 - sourceRank) * 0.05
+      const textScore =
+        (exact ? 100 : starts ? 70 : includes ? 45 : 0) +
+        tokenHits * 6 +
+        prominence +
+        rankBonus
+      const distanceM = near
+        ? haversine(near.lat, near.lng, result.lat, result.lng)
+        : result.distanceM
+      const proximity = distanceM == null ? 0 : 45 * Math.exp(-distanceM / 25000)
+      return { result: { ...result, distanceM }, score: textScore + proximity }
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        (a.result.distanceM ?? Number.POSITIVE_INFINITY) -
+          (b.result.distanceM ?? Number.POSITIVE_INFINITY),
+    )
+    .slice(0, 8)
+    .map(({ result }) => result)
+}
+
 /** Forward geocoding through Photon (CORS-enabled, no key). */
-export async function searchPlaces(query: string): Promise<SearchResult[]> {
+export async function searchPlaces(query: string, near?: LatLng): Promise<SearchResult[]> {
   const q = query.trim()
   if (q.length < 2) return []
 
-  const url = new URL('https://photon.komoot.io/api')
-  url.searchParams.set('q', q)
-  url.searchParams.set('limit', '8')
-  url.searchParams.set('lang', 'en')
-  const data = await fetchJson<PhotonResponse>(url, undefined, 10000)
+  const makeUrl = (bias: boolean): URL => {
+    const url = new URL('https://photon.komoot.io/api')
+    url.searchParams.set('q', q)
+    url.searchParams.set('limit', '20')
+    url.searchParams.set('lang', 'en')
+    if (near && bias) {
+      url.searchParams.set('lat', String(near.lat))
+      url.searchParams.set('lon', String(near.lng))
+      url.searchParams.set('location_bias_scale', '0.2')
+    }
+    return url
+  }
+
+  // Query both the nearby-biased and the neutral index. The neutral pass keeps
+  // famous / exact results from being pushed out by a nearby namesake.
+  const urls = near ? [makeUrl(true), makeUrl(false)] : [makeUrl(false)]
+  const responses = await Promise.allSettled(
+    urls.map((url) => fetchJson<PhotonResponse>(url, undefined, 10000)),
+  )
+  const features: Array<{ feature: PhotonFeature; rank: number }> = []
+  for (const response of responses) {
+    if (response.status !== 'fulfilled') continue
+    for (const [index, feature] of (response.value.features ?? []).entries()) {
+      features.push({ feature, rank: index })
+    }
+  }
+  if (responses.every((response) => response.status === 'rejected')) {
+    const first = responses[0]
+    if (first.status === 'rejected') throw first.reason
+  }
 
   const seen = new Set<string>()
   const results: SearchResult[] = []
-  for (const feature of data.features ?? []) {
+  for (const { feature, rank } of features) {
     const result = toResult(feature)
     if (!result) continue
     const key = `${result.name}|${result.lat.toFixed(4)}|${result.lng.toFixed(4)}`
     if (seen.has(key)) continue
     seen.add(key)
-    results.push(result)
+    results.push({ ...result, sourceRank: rank })
   }
-  return results.slice(0, 8)
+  return rankSearchResults(results, q, near)
 }

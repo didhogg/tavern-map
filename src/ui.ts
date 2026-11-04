@@ -21,6 +21,7 @@ import type {
   MapState,
   Place,
   RouteItinerary,
+  RouteProfile,
   SavedPlace,
   Settings,
   StContext,
@@ -37,6 +38,12 @@ const FAB_POS_KEY = 'tavern-map:fab-position'
 const PANEL_GEOMETRY_KEY = 'tavern-map:panel-geometry'
 const ROUTE_SOURCE = 'tm-route'
 const WIKI_LANG_LABELS: Record<string, string> = { en: 'EN', ja: 'JA', zh: 'ZH' }
+const ROUTE_MODE_LABELS: Record<RouteProfile, string> = {
+  foot: '步行',
+  driving: '驾车',
+  transit: '公共交通',
+}
+const ROUTE_MODES: RouteProfile[] = ['foot', 'driving', 'transit']
 
 function wikiKey(lang: string, pageId: number): string {
   return `${lang}:${pageId}`
@@ -201,6 +208,11 @@ const PANEL_HTML = `
       <div id="tm-place-meta" class="tm-place-detail-meta"></div>
       <div id="tm-place-info" class="tm-place-info"></div>
       <div class="tm-place-actions">
+        <select id="tm-place-route-mode" class="tm-route-mode" aria-label="路线方式" title="路线方式">
+          <option value="foot">步行</option>
+          <option value="driving">驾车</option>
+          <option value="transit">公共交通</option>
+        </select>
         <button type="button" data-action="place-route">路线</button>
         <button type="button" data-action="place-go">前往</button>
         <button type="button" data-action="place-clear-route" hidden>清除路线</button>
@@ -296,6 +308,8 @@ export class MapUI {
   private fullPromise: Promise<void> | null = null
   private wikiLangLinks: Record<string, string> = {}
   private currentRoute: Route | null = null
+  private routeMode: RouteProfile = 'foot'
+  private routeSeq = 0
   private routeEndMarker: Marker | null = null
   private moveFrame: number | null = null
   private moving = false
@@ -352,6 +366,7 @@ export class MapUI {
   private placeNoteStatusEl!: HTMLElement
   private placeRouteSummaryEl!: HTMLElement
   private placeRouteTextEl!: HTMLElement
+  private placeRouteModeEl!: HTMLSelectElement
   private placeStartEl!: HTMLButtonElement
   private placeStopEl!: HTMLButtonElement
   private placeClearEl!: HTMLButtonElement
@@ -396,6 +411,7 @@ export class MapUI {
     this.settings = loadSettings(ctx)
     this.state = loadState(ctx)
     this.state.enabled = this.settings.enabled
+    this.routeMode = this.state.itinerary?.profile ?? 'foot'
     this.mount()
     this.applyFabGeometry()
     this.applyPanelGeometry()
@@ -454,6 +470,7 @@ export class MapUI {
     this.placeNoteStatusEl = document.getElementById('tm-place-note-status') as HTMLElement
     this.placeRouteSummaryEl = document.getElementById('tm-route-summary') as HTMLElement
     this.placeRouteTextEl = document.getElementById('tm-route-text') as HTMLElement
+    this.placeRouteModeEl = document.getElementById('tm-place-route-mode') as HTMLSelectElement
     this.placeStartEl = document.querySelector('[data-action="place-start"]') as HTMLButtonElement
     this.placeStopEl = document.querySelector('[data-action="place-stop"]') as HTMLButtonElement
     this.placeClearEl = document.querySelector('[data-action="place-clear-route"]') as HTMLButtonElement
@@ -510,6 +527,7 @@ export class MapUI {
     this.wikiNoteEl.addEventListener('change', () => this.flushNoteSave())
     this.placeNoteEl.addEventListener('input', () => this.onPlaceNoteInput())
     this.placeNoteEl.addEventListener('change', () => this.flushNoteSave())
+    this.placeRouteModeEl.addEventListener('change', () => this.onPlaceRouteModeChange())
     this.aiLangEl.addEventListener('change', () => void this.onAiLangChange())
     this.recenterEl.addEventListener('click', () => this.recenterOnPerson())
     this.panelEl.addEventListener('change', (event) => this.onPanelChange(event))
@@ -626,7 +644,11 @@ export class MapUI {
       return
     }
     if (action === 'place-route') {
-      if (this.currentPlace) void this.planRouteTo(this.currentPlace)
+      if (this.currentPlace) {
+        const selected = this.placeRouteModeEl.value as RouteProfile
+        const mode = ROUTE_MODES.includes(selected) ? selected : this.routeMode
+        void this.planRouteTo(this.currentPlace, mode)
+      }
       return
     }
     if (action === 'place-go') {
@@ -997,6 +1019,8 @@ export class MapUI {
         category: poi.category,
         address: poi.address,
         distanceM: poi.distanceM,
+        cuisine: poi.cuisine,
+        openingHours: poi.openingHours,
         addedAt: Date.now(),
       }))
       this.updatePoiSource()
@@ -1546,6 +1570,7 @@ export class MapUI {
     this.placeNoteEl.placeholder = saved ? '写下你想让 AI 记住的地点笔记…' : '点亮星星后可写笔记…'
     if (document.activeElement !== this.placeNoteEl) this.placeNoteEl.value = saved?.note ?? ''
     this.placeNoteStatusEl.textContent = saved ? '自动保存' : ''
+    if (this.placeRouteModeEl) this.placeRouteModeEl.value = this.routeMode
     this.renderPlaceInfo(place)
     this.renderPlaceRoute()
   }
@@ -1612,7 +1637,7 @@ export class MapUI {
     const lines = [
       'Tavern Map 行程',
       `${itinerary.from.name} → ${itinerary.to.name}`,
-      `步行 ${formatDistance(itinerary.distance)} · 约 ${formatDurationShort(itinerary.duration)}`,
+      `${ROUTE_MODE_LABELS[itinerary.profile ?? 'foot']} ${formatDistance(itinerary.distance)} · 约 ${formatDurationShort(itinerary.duration)}`,
     ]
     if (itinerary.fallback) lines.push('（路线服务不可用，按直线估计）')
     itinerary.steps.forEach((step, index) => {
@@ -1649,7 +1674,7 @@ export class MapUI {
       return
     }
     const fallback = itinerary.fallback ? ' · 直线估计' : ''
-    this.placeRouteTextEl.textContent = `步行 ${formatDistance(itinerary.distance)} · 约 ${formatDurationShort(itinerary.duration)}${fallback}`
+    this.placeRouteTextEl.textContent = `${ROUTE_MODE_LABELS[itinerary.profile ?? 'foot']} ${formatDistance(itinerary.distance)} · 约 ${formatDurationShort(itinerary.duration)}${fallback}`
     this.placeStartEl.hidden = !this.currentRoute || this.moving
     this.placeStopEl.hidden = !this.moving
     this.placeProgressEl.hidden = !this.moving
@@ -1681,17 +1706,39 @@ export class MapUI {
     }
   }
 
-  private async planRouteTo(place: Place): Promise<void> {
+  private onPlaceRouteModeChange(): void {
+    const value = this.placeRouteModeEl.value as RouteProfile
+    if (!ROUTE_MODES.includes(value)) return
+    this.routeMode = value
+    if (this.currentPlace) void this.planRouteTo(this.currentPlace, value)
+  }
+
+  private setRouteMode(mode: RouteProfile): void {
+    this.routeMode = mode
+    if (this.placeRouteModeEl) this.placeRouteModeEl.value = mode
+  }
+
+  private async planRouteTo(place: Place, mode: RouteProfile = this.routeMode): Promise<void> {
     if (this.moving) this.stopMovement()
+    const seq = ++this.routeSeq
+    this.routeMode = mode
     const from = { lat: this.state.center.lat, lng: this.state.center.lng }
     if (haversine(from.lat, from.lng, place.lat, place.lng) < 5) {
       this.toast('已经在这个地点')
       return
     }
-    this.setStatus('正在规划步行路线…')
+    this.setStatus(`正在规划${ROUTE_MODE_LABELS[mode]}路线…`)
     try {
-      const route = await routeBetween(from, { lat: place.lat, lng: place.lng })
+      const route = await routeBetween(from, { lat: place.lat, lng: place.lng }, mode)
+      if (seq !== this.routeSeq) return
       this.currentRoute = route
+      const fromName = this.state.place?.name ?? '当前位置'
+      const steps = route.steps.map((step) => ({
+        ...step,
+        instruction: step.instruction
+          .replace(/\bSTART\b/g, fromName)
+          .replace(/\bEND\b/g, place.name),
+      }))
       const showToAI = this.state.itinerary?.showToAI ?? false
       this.state.itinerary = {
         from: {
@@ -1703,7 +1750,8 @@ export class MapUI {
         to: { id: place.id, name: place.name, lat: place.lat, lng: place.lng },
         distance: route.distance,
         duration: route.duration,
-        steps: route.steps,
+        profile: route.profile,
+        steps,
         fallback: route.fallback,
         showToAI,
         updatedAt: Date.now(),
@@ -1711,7 +1759,7 @@ export class MapUI {
       this.drawRouteLine(route, true)
       this.commit()
       this.renderPlace()
-      this.setStatus(route.fallback ? '路线服务不可用，已显示直线估计' : '')
+      this.setStatus(route.fallback ? `${ROUTE_MODE_LABELS[mode]}路线服务不可用，已显示直线估计` : '')
       this.toast('行程已生成，可在“行程”页查看和复制')
     } catch (error) {
       this.setStatus(`路线规划失败：${errorMessage(error)}`)
@@ -1788,6 +1836,7 @@ export class MapUI {
 
   private clearItinerary(): void {
     if (this.moving) this.stopMovement()
+    this.routeSeq += 1
     this.clearRouteLine()
     delete this.state.itinerary
     this.moveProgress = 0
@@ -1813,7 +1862,7 @@ export class MapUI {
     this.listEl.replaceChildren()
     const itinerary = this.state.itinerary
     if (!itinerary) {
-      this.listEl.append(this.empty('还没有行程。打开一个地点的详情，点“路线”生成步行路线。'))
+      this.listEl.append(this.empty('还没有行程。打开一个地点的详情，选择步行/驾车/公共交通后点“路线”。'))
       return
     }
 
@@ -1840,9 +1889,28 @@ export class MapUI {
     const routeLine = document.createElement('div')
     routeLine.className = 'tm-itinerary-route'
     routeLine.textContent = `${itinerary.from.name} → ${itinerary.to.name}`
+
+    const modeRow = document.createElement('label')
+    modeRow.className = 'tm-route-mode-row'
+    const modeLabel = document.createElement('span')
+    modeLabel.textContent = '方式'
+    const modeSelect = document.createElement('select')
+    modeSelect.className = 'tm-route-mode'
+    for (const mode of ROUTE_MODES) {
+      modeSelect.append(new Option(ROUTE_MODE_LABELS[mode], mode))
+    }
+    modeSelect.value = itinerary.profile ?? this.routeMode
+    modeSelect.addEventListener('change', () => {
+      const value = modeSelect.value as RouteProfile
+      if (!ROUTE_MODES.includes(value)) return
+      this.setRouteMode(value)
+      this.replanItinerary()
+    })
+    modeRow.append(modeLabel, modeSelect)
+
     const meta = document.createElement('div')
     meta.className = 'tm-itinerary-meta'
-    meta.textContent = `步行 ${formatDistance(itinerary.distance)} · 约 ${formatDurationShort(itinerary.duration)}${
+    meta.textContent = `${ROUTE_MODE_LABELS[itinerary.profile ?? 'foot']} ${formatDistance(itinerary.distance)} · 约 ${formatDurationShort(itinerary.duration)}${
       itinerary.fallback ? ' · 直线估计' : ''
     }`
     const ai = document.createElement('label')
@@ -1866,7 +1934,7 @@ export class MapUI {
     steps.className = 'tm-route-steps'
     this.fillRouteSteps(steps, itinerary)
 
-    card.append(head, routeLine, meta, ai, progress, steps)
+    card.append(head, routeLine, modeRow, meta, ai, progress, steps)
     this.listEl.append(card)
     this.syncRouteAiCheckboxes()
   }
@@ -2024,7 +2092,8 @@ export class MapUI {
     const seq = ++this.searchSeq
     this.renderSearchMessage('搜索中…')
     try {
-      const results = await searchPlaces(query)
+      const near = this.state.place ?? this.state.center
+      const results = await searchPlaces(query, near)
       if (seq !== this.searchSeq) return
       this.searchResults = results
       this.renderSearchResults(results)
@@ -2060,7 +2129,13 @@ export class MapUI {
       name.textContent = result.nameZh ? `${result.name} / ${result.nameZh}` : result.name
       const meta = document.createElement('span')
       meta.className = 'tm-search-result-meta'
-      meta.textContent = [result.resultType, result.address].filter(Boolean).join(' · ')
+      meta.textContent = [
+        result.resultType,
+        result.distanceM == null ? '' : formatDistance(result.distanceM),
+        result.address,
+      ]
+        .filter(Boolean)
+        .join(' · ')
       button.append(name, meta)
       this.searchResultsEl.append(button)
     })

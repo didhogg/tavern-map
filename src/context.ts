@@ -129,9 +129,13 @@ function render(
     for (const brief of poiBriefs) {
       const category = brief.category ? ` (${clean(brief.category)})` : ''
       const distance = brief.distanceM == null ? '' : `, ${formatDistance(brief.distanceM)}`
+      const cuisine = brief.cuisine ? `, cuisine: ${clean(brief.cuisine)}` : ''
+      const hours = brief.openingHours ? `, hours: ${clean(brief.openingHours)}` : ''
       const address = brief.address ? ` — ${clean(brief.address)}` : ''
       const chinese = brief.nameZh ? ` / ${clean(brief.nameZh)}` : ''
-      lines.push(`- ${clean(brief.name)}${chinese}${category}${distance}${address}`)
+      lines.push(
+        `- ${clean(brief.name)}${chinese}${category}${distance}${cuisine}${hours}${address}`,
+      )
     }
   }
   const otherSaved = savedPlaces.filter((place) => placeKey(place) !== currentKey)
@@ -140,8 +144,10 @@ function render(
     for (const place of otherSaved) {
       const category = place.category ? ` (${clean(place.category)})` : ''
       const chinese = place.nameZh ? ` / ${clean(place.nameZh)}` : ''
+      const cuisine = place.cuisine ? `, cuisine: ${clean(place.cuisine)}` : ''
+      const hours = place.openingHours ? `, hours: ${clean(place.openingHours)}` : ''
       const note = place.note ? ` — note: ${clean(place.note)}` : ''
-      lines.push(`- ${clean(place.name)}${chinese}${category}${note}`)
+      lines.push(`- ${clean(place.name)}${chinese}${category}${cuisine}${hours}${note}`)
     }
   }
   if (stars.length > 0) {
@@ -170,7 +176,14 @@ function render(
   }
   if (state.itinerary?.showToAI) {
     const itinerary = state.itinerary
-    lines.push(`Route (current itinerary, ${itinerary.fallback ? 'straight-line estimate' : 'walking'}):`)
+    const mode =
+      itinerary.profile === 'driving'
+        ? 'driving'
+        : itinerary.profile === 'transit'
+          ? 'public transit'
+          : 'walking'
+    const kind = itinerary.fallback ? `${mode} · straight-line estimate` : mode
+    lines.push(`Route (current itinerary, ${kind}):`)
     lines.push(`From: ${clean(itinerary.from.name)} → ${clean(itinerary.to.name)}`)
     lines.push(`Distance: ${formatDistance(itinerary.distance)} · ${formatDuration(itinerary.duration)}`)
     for (const [index, step] of routeSteps.entries()) {
