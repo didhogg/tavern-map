@@ -157,7 +157,7 @@ const PANEL_HTML = `
       <div id="tm-status" class="tm-status" role="status"></div>
       <label class="tm-radius-control">
         <span>范围</span>
-        <input id="tm-radius" type="range" min="50" max="1000" step="50" aria-label="周边搜索范围">
+        <input id="tm-radius" type="range" min="25" max="1000" step="5" aria-label="周边搜索范围">
         <output id="tm-radius-value">250m</output>
       </label>
     </div>
@@ -283,7 +283,7 @@ const SETTINGS_HTML = `
           <label><input type="checkbox" data-tm-lang value="zh"> 中文</label>
         </div>
       </div>
-      <label class="tm-row">周边半径（米）<input type="number" id="tm-set-radius" min="50" max="1000" step="50"></label>
+      <label class="tm-row">周边半径（米）<input type="number" id="tm-set-radius" min="25" max="1000" step="5"></label>
       <label class="tm-row">周边地点数<input type="number" id="tm-set-nearby" min="0" max="12" step="1"></label>
       <label class="tm-row">注入深度<input type="number" id="tm-set-depth" min="0" max="10" step="1"></label>
       <div class="tm-settings-actions">
@@ -2512,7 +2512,7 @@ export class MapUI {
 
   private onRadiusInput(): void {
     const raw = Number(this.radiusInputEl.value)
-    const value = Number.isFinite(raw) ? Math.min(1000, Math.max(50, Math.round(raw))) : this.settings.radiusM
+    const value = Number.isFinite(raw) ? Math.min(1000, Math.max(25, Math.round(raw))) : this.settings.radiusM
     this.settings = { ...this.settings, radiusM: value }
     saveSettings(this.ctx, this.settings)
     this.radiusValueEl.textContent = formatRadius(value)
@@ -3279,7 +3279,7 @@ export class MapUI {
       ...this.settings,
       enabled: this.enabledEl.checked,
       wikiLangs: selectedLangs.length > 0 ? selectedLangs : ['en'],
-      radiusM: numberValue(this.radiusEl, this.settings.radiusM, 50, 1000),
+      radiusM: numberValue(this.radiusEl, this.settings.radiusM, 25, 1000),
       maxNearby: Math.round(numberValue(this.nearbyEl, this.settings.maxNearby, 0, 12)),
       depth: Math.round(numberValue(this.depthEl, this.settings.depth, 0, 10)),
     }

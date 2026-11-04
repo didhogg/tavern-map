@@ -44,7 +44,7 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     enabled: typeof value.enabled === 'boolean' ? value.enabled : DEFAULT_SETTINGS.enabled,
     provider: 'osm',
     wikiLangs: wikiLangs.length > 0 ? wikiLangs : [...DEFAULT_SETTINGS.wikiLangs],
-    radiusM: number(value.radiusM, DEFAULT_SETTINGS.radiusM, 50, 1000),
+    radiusM: number(value.radiusM, DEFAULT_SETTINGS.radiusM, 25, 1000),
     maxNearby: Math.round(number(value.maxNearby, DEFAULT_SETTINGS.maxNearby, 0, 12)),
     depth: Math.round(number(value.depth, DEFAULT_SETTINGS.depth, 0, 10)),
     showPois: typeof value.showPois === 'boolean' ? value.showPois : true,

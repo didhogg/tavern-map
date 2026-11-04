@@ -36402,7 +36402,7 @@ async function vI(e, t) {
 }
 var yI = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], bI = 250, xI = 3e5, SI = /* @__PURE__ */ new Map();
 async function CI(e, t, n) {
-	let r = Math.round(Math.min(1e3, Math.max(50, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = SI.get(i);
+	let r = Math.round(Math.min(1e3, Math.max(25, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = SI.get(i);
 	if (a && Date.now() - a.at < xI) return a.places;
 	let o = `[out:json][timeout:20];(node(around:${r},${e},${t})[name];way(around:${r},${e},${t})[name];);out center 40;`, s = yI.map(async (n) => {
 		try {
@@ -36438,7 +36438,7 @@ function wI(e, t) {
 	}), t;
 }
 async function TI(e, t, n) {
-	let r = Math.min(bI, Math.max(50, n)), i = r / 111320, a = r / (111320 * Math.max(.2, Math.cos(e * Math.PI / 180)));
+	let r = Math.min(bI, Math.max(25, n)), i = r / 111320, a = r / (111320 * Math.max(.2, Math.cos(e * Math.PI / 180)));
 	return EI(await dI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
 		t - a,
 		e - i,
@@ -36660,7 +36660,7 @@ function VI(e) {
 	return t;
 }
 async function HI(e, t, n) {
-	let r = Math.min(250, Math.max(50, n)), i = r / 111320, a = r / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), o = await dI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
+	let r = Math.min(250, Math.max(25, n)), i = r / 111320, a = r / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), o = await dI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
 		t - a,
 		e - i,
 		t + a,
@@ -36696,7 +36696,7 @@ async function HI(e, t, n) {
 	return BI(l).slice(0, NI);
 }
 async function UI(e, t, n) {
-	let r = Math.round(Math.min(1e3, Math.max(50, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = FI.get(i);
+	let r = Math.round(Math.min(1e3, Math.max(25, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = FI.get(i);
 	if (a && Date.now() - a.at < PI) return a.pois;
 	let o = `around:${r},${e},${t}`, s = `[out:json][timeout:20];(
     nwr(${o})[name][tourism];
@@ -37372,7 +37372,7 @@ function DL(e) {
 		enabled: typeof n.enabled == "boolean" ? n.enabled : EL.enabled,
 		provider: "osm",
 		wikiLangs: o.length > 0 ? o : [...EL.wikiLangs],
-		radiusM: r(n.radiusM, EL.radiusM, 50, 1e3),
+		radiusM: r(n.radiusM, EL.radiusM, 25, 1e3),
 		maxNearby: Math.round(r(n.maxNearby, EL.maxNearby, 0, 12)),
 		depth: Math.round(r(n.depth, EL.depth, 0, 10)),
 		showPois: typeof n.showPois != "boolean" || n.showPois,
@@ -37592,7 +37592,7 @@ var XL = `
       <div id="tm-status" class="tm-status" role="status"></div>
       <label class="tm-radius-control">
         <span>范围</span>
-        <input id="tm-radius" type="range" min="50" max="1000" step="50" aria-label="周边搜索范围">
+        <input id="tm-radius" type="range" min="25" max="1000" step="5" aria-label="周边搜索范围">
         <output id="tm-radius-value">250m</output>
       </label>
     </div>
@@ -37700,7 +37700,7 @@ var XL = `
     <pre id="tm-preview-text"></pre>
   </div>
 </div>
-`, ZL = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n      <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"50\" max=\"1000\" step=\"50\"></label>\n      <label class=\"tm-row\">周边地点数<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", QL = class {
+`, ZL = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n      <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"25\" max=\"1000\" step=\"5\"></label>\n      <label class=\"tm-row\">周边地点数<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", QL = class {
 	ctx;
 	settings;
 	state;
@@ -39022,7 +39022,7 @@ var XL = `
 		}, 180));
 	}
 	onRadiusInput() {
-		let e = Number(this.radiusInputEl.value), t = Number.isFinite(e) ? Math.min(1e3, Math.max(50, Math.round(e))) : this.settings.radiusM;
+		let e = Number(this.radiusInputEl.value), t = Number.isFinite(e) ? Math.min(1e3, Math.max(25, Math.round(e))) : this.settings.radiusM;
 		this.settings = {
 			...this.settings,
 			radiusM: t
@@ -39398,7 +39398,7 @@ var XL = `
 			...this.settings,
 			enabled: this.enabledEl.checked,
 			wikiLangs: t.length > 0 ? t : ["en"],
-			radiusM: e(this.radiusEl, this.settings.radiusM, 50, 1e3),
+			radiusM: e(this.radiusEl, this.settings.radiusM, 25, 1e3),
 			maxNearby: Math.round(e(this.nearbyEl, this.settings.maxNearby, 0, 12)),
 			depth: Math.round(e(this.depthEl, this.settings.depth, 0, 10))
 		}, OL(this.ctx, this.settings), this.writeSettingsToForm(), this.state.enabled = this.settings.enabled, this.commit();

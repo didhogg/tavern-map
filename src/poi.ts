@@ -166,7 +166,7 @@ function readTags(element: Element): Record<string, string> {
 }
 
 async function osmFallback(lat: number, lng: number, radiusM: number): Promise<Poi[]> {
-  const radius = Math.min(250, Math.max(50, radiusM))
+  const radius = Math.min(250, Math.max(25, radiusM))
   const dLat = radius / 111320
   const dLng = radius / (111320 * Math.max(0.05, Math.cos((lat * Math.PI) / 180)))
   const bbox = [lng - dLng, lat - dLat, lng + dLng, lat + dLat].map((value) => value.toFixed(7)).join(',')
@@ -221,7 +221,7 @@ async function osmFallback(lat: number, lng: number, radiusM: number): Promise<P
 
 /** Interactive POI layer around the current centre, with a small nearby fallback. */
 export async function fetchPois(lat: number, lng: number, radiusM: number): Promise<Poi[]> {
-  const radius = Math.round(Math.min(1000, Math.max(50, radiusM)))
+  const radius = Math.round(Math.min(1000, Math.max(25, radiusM)))
   const key = `${lat.toFixed(4)},${lng.toFixed(4)},${radius}`
   const cached = cache.get(key)
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.pois

@@ -168,7 +168,7 @@ const nearbyCache = new Map<string, { at: number; places: Place[] }>()
  * Overpass does not leave the nearby list empty.
  */
 export async function nearbyPlaces(lat: number, lng: number, radiusM: number): Promise<Place[]> {
-  const radius = Math.round(Math.min(1000, Math.max(50, radiusM)))
+  const radius = Math.round(Math.min(1000, Math.max(25, radiusM)))
   const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)},${radius}`
   const cached = nearbyCache.get(cacheKey)
   if (cached && Date.now() - cached.at < NEARBY_CACHE_TTL_MS) return cached.places
@@ -228,7 +228,7 @@ function remember(key: string, places: Place[]): Place[] {
 type OsmNode = { lat: number; lng: number; tags: Record<string, string> }
 
 async function osmNearby(lat: number, lng: number, radiusM: number): Promise<Place[]> {
-  const radius = Math.min(OSM_FALLBACK_MAX_RADIUS_M, Math.max(50, radiusM))
+  const radius = Math.min(OSM_FALLBACK_MAX_RADIUS_M, Math.max(25, radiusM))
   const dLat = radius / 111320
   const dLng = radius / (111320 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)))
   const bbox = [lng - dLng, lat - dLat, lng + dLng, lat + dLat].map((value) => value.toFixed(7)).join(',')
