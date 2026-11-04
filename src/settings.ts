@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxWikiChars: 700,
   tokenBudget: 900,
   depth: 2,
+  showPois: true,
 }
 
 export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> }): Settings {
@@ -48,6 +49,7 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     maxWikiChars: Math.round(number(value.maxWikiChars, DEFAULT_SETTINGS.maxWikiChars, 200, 1200)),
     tokenBudget: Math.round(number(value.tokenBudget, DEFAULT_SETTINGS.tokenBudget, 300, 2000)),
     depth: Math.round(number(value.depth, DEFAULT_SETTINGS.depth, 0, 10)),
+    showPois: typeof value.showPois === 'boolean' ? value.showPois : true,
   }
 }
 

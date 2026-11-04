@@ -21,6 +21,28 @@ type PhotonFeature = {
 
 type PhotonResponse = { features?: PhotonFeature[] }
 
+type OsmElementResponse = {
+  elements?: Array<{ tags?: Record<string, string> }>
+}
+
+async function osmNameZh(type: string | undefined, id: number | undefined): Promise<string | undefined> {
+  if (!type || id == null) return undefined
+  const kind = type === 'N' ? 'node' : type === 'W' ? 'way' : type === 'R' ? 'relation' : undefined
+  if (!kind) return undefined
+  try {
+    const data = await fetchJson<OsmElementResponse>(
+      `https://api.openstreetmap.org/api/0.6/${kind}/${id}.json`,
+      undefined,
+      3000,
+    )
+    const tags = data.elements?.[0]?.tags
+    return tags?.['name:zh'] || tags?.['name:zh-Hans'] || tags?.['name:zh-Hant']
+  } catch (error) {
+    console.warn('[tavern-map] OSM name:zh lookup failed', error)
+    return undefined
+  }
+}
+
 /** Photon public instance: CORS-enabled, OSM-based, no key. */
 export async function reverseGeocode(lat: number, lng: number): Promise<Place> {
   try {
@@ -35,9 +57,12 @@ export async function reverseGeocode(lat: number, lng: number): Promise<Place> {
       const address = [p.street, p.locality, p.district, p.city, p.state, p.country]
         .filter(Boolean)
         .join(', ')
+      const name = p.name || p.street || p.city || 'Unknown place'
+      const nameZh = await osmNameZh(p.osm_type, p.osm_id)
       return {
         id: `osm:${p.osm_type ?? '?'}/${p.osm_id ?? '?'}`,
-        name: p.name || p.street || p.city || 'Unknown place',
+        name,
+        nameZh: nameZh && nameZh !== name ? nameZh : undefined,
         category: p.type,
         address: address || undefined,
         lat,
@@ -261,9 +286,11 @@ function placeFromTags(
   if (!category) return undefined
   const distanceM = haversine(originLat, originLng, placeLat, placeLng)
   if (distanceM > radius) return undefined
+  const nameZh = tags['name:zh'] || tags['name:zh-Hans'] || tags['name:zh-Hant']
   return {
     id,
     name,
+    nameZh: nameZh && nameZh !== name ? nameZh : undefined,
     category,
     address: [tags['addr:street'], tags['addr:city']].filter(Boolean).join(', ') || undefined,
     lat: placeLat,

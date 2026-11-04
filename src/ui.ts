@@ -1,9 +1,16 @@
-import type { Feature, LineString, Polygon } from 'geojson'
-import { type GeoJSONSource, Map as MapLibreMap, Marker, NavigationControl } from 'maplibre-gl'
+import type { Feature, FeatureCollection, LineString, Point, Polygon } from 'geojson'
+import {
+  type GeoJSONSource,
+  Map as MapLibreMap,
+  type MapMouseEvent,
+  Marker,
+  NavigationControl,
+} from 'maplibre-gl'
 import { cacheGet, cachePut, wikiCacheKey, wikiFullCacheKey } from './cache'
 import { buildContext, estimateTokens } from './context'
 import { formatDistance, haversine, placeKey } from './geo'
 import { errorMessage } from './http'
+import { fetchPois, type Poi } from './poi'
 import { syncPrompt, clearPrompt } from './prompt'
 import { nearbyPlaces, reverseGeocode } from './providers'
 import { routeBetween, type Route } from './route'
@@ -26,7 +33,7 @@ import { wikiLangLinks, wikiNearby, wikiPage, wikiPageFull } from './wiki'
 
 const PANEL_ID = 'tm-panel'
 const WIKI_TTL_MS = 7 * 24 * 60 * 60 * 1000
-const FULL_TEXT_MAX_CHARS = 30000
+const FULL_TEXT_MAX_CHARS = 100000
 const NOTE_MAX_CHARS = 500
 const FAB_POS_KEY = 'tavern-map:fab-position'
 const PANEL_GEOMETRY_KEY = 'tavern-map:panel-geometry'
@@ -143,6 +150,10 @@ const PANEL_HTML = `
       </label>
     </div>
   </div>
+  <div class="tm-poi-bar">
+    <button id="tm-poi-toggle" class="tm-poi-toggle active" type="button" aria-pressed="true">图层 POI</button>
+    <label class="tm-poi-all" title="把当前范围已拉取的全部 POI 作为 POI briefs 注入，会显著增加 token"><input id="tm-poi-all-ai" type="checkbox"> 全部 POI 给 AI <span id="tm-poi-count">0</span></label>
+  </div>
   <div class="tm-tabs" role="tablist">
     <button type="button" data-tab="nearby" class="active" role="tab">周边</button>
     <button type="button" data-tab="wiki" role="tab">维基</button>
@@ -171,6 +182,7 @@ const PANEL_HTML = `
       <select id="tm-wiki-ai-lang" aria-label="选择展示给 AI 的语言"></select>
       <span id="tm-ai-lang-hint" class="tm-ai-lang-hint">星标后可选择</span>
     </div>
+    <div id="tm-wiki-full-hint" class="tm-wiki-full-hint" hidden>全文会完整注入 AI，token 会显著增加。</div>
     <div id="tm-wiki-body" class="tm-wiki-body"></div>
     <div class="tm-wiki-note">
       <label for="tm-wiki-note">我的笔记</label>
@@ -189,6 +201,7 @@ const PANEL_HTML = `
     </header>
     <div class="tm-place-body">
       <div id="tm-place-meta" class="tm-place-detail-meta"></div>
+      <div id="tm-place-info" class="tm-place-info"></div>
       <div class="tm-place-actions">
         <button type="button" data-action="place-route">路线</button>
         <button type="button" data-action="place-go">前往</button>
@@ -205,6 +218,7 @@ const PANEL_HTML = `
           <button type="button" data-action="place-stop" class="tm-route-stop" hidden>停止</button>
         </div>
         <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
+        <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
       </div>
       <div class="tm-place-note">
         <label for="tm-place-note">我的笔记</label>
@@ -293,6 +307,10 @@ export class MapUI {
   private loadingWiki = false
   private settingsBound = false
   private searchResults: SearchResult[] = []
+  private pois: Poi[] = []
+  private poisById = new Map<string, Poi>()
+  private loadingPois = false
+  private poiSeq = 0
   private suppressFabClick = false
   private readonly offs: Array<() => void> = []
 
@@ -316,18 +334,23 @@ export class MapUI {
   private searchResultsEl!: HTMLElement
   private radiusInputEl!: HTMLInputElement
   private radiusValueEl!: HTMLOutputElement
+  private poiToggleEl!: HTMLButtonElement
+  private poiAllEl!: HTMLInputElement
+  private poiCountEl!: HTMLElement
   private wikiLangsEl!: HTMLElement
   private wikiModesEl!: HTMLElement
   private wikiNoteEl!: HTMLTextAreaElement
   private wikiNoteStatusEl!: HTMLElement
   private aiLangEl!: HTMLSelectElement
   private aiLangHintEl!: HTMLElement
+  private wikiFullHintEl!: HTMLElement
   private routeCountEl!: HTMLElement
   private recenterEl!: HTMLButtonElement
   private placeEl!: HTMLElement
   private placeTitleEl!: HTMLElement
   private placeSaveEl!: HTMLButtonElement
   private placeMetaEl!: HTMLElement
+  private placeInfoEl!: HTMLElement
   private placeNoteEl!: HTMLTextAreaElement
   private placeNoteStatusEl!: HTMLElement
   private placeRouteSummaryEl!: HTMLElement
@@ -337,6 +360,7 @@ export class MapUI {
   private placeClearEl!: HTMLButtonElement
   private placeProgressEl!: HTMLElement
   private placeBarEl!: HTMLElement
+  private placeRouteStepsEl!: HTMLElement
 
   private enabledEl!: HTMLInputElement
   private langEls: HTMLInputElement[] = []
@@ -384,6 +408,7 @@ export class MapUI {
     this.sync()
     this.render()
     this.syncRadiusUi()
+    this.syncPoiUi()
   }
 
   private mount(): void {
@@ -413,18 +438,23 @@ export class MapUI {
     this.searchResultsEl = document.getElementById('tm-search-results') as HTMLElement
     this.radiusInputEl = document.getElementById('tm-radius') as HTMLInputElement
     this.radiusValueEl = document.getElementById('tm-radius-value') as HTMLOutputElement
+    this.poiToggleEl = document.getElementById('tm-poi-toggle') as HTMLButtonElement
+    this.poiAllEl = document.getElementById('tm-poi-all-ai') as HTMLInputElement
+    this.poiCountEl = document.getElementById('tm-poi-count') as HTMLElement
     this.wikiLangsEl = document.getElementById('tm-wiki-langs') as HTMLElement
     this.wikiModesEl = document.getElementById('tm-wiki-modes') as HTMLElement
     this.wikiNoteEl = document.getElementById('tm-wiki-note') as HTMLTextAreaElement
     this.wikiNoteStatusEl = document.getElementById('tm-wiki-note-status') as HTMLElement
     this.aiLangEl = document.getElementById('tm-wiki-ai-lang') as HTMLSelectElement
     this.aiLangHintEl = document.getElementById('tm-ai-lang-hint') as HTMLElement
+    this.wikiFullHintEl = document.getElementById('tm-wiki-full-hint') as HTMLElement
     this.routeCountEl = document.getElementById('tm-route-count') as HTMLElement
     this.recenterEl = document.getElementById('tm-recenter') as HTMLButtonElement
     this.placeEl = document.getElementById('tm-place') as HTMLElement
     this.placeTitleEl = document.getElementById('tm-place-title') as HTMLElement
     this.placeSaveEl = document.getElementById('tm-place-save') as HTMLButtonElement
     this.placeMetaEl = document.getElementById('tm-place-meta') as HTMLElement
+    this.placeInfoEl = document.getElementById('tm-place-info') as HTMLElement
     this.placeNoteEl = document.getElementById('tm-place-note') as HTMLTextAreaElement
     this.placeNoteStatusEl = document.getElementById('tm-place-note-status') as HTMLElement
     this.placeRouteSummaryEl = document.getElementById('tm-route-summary') as HTMLElement
@@ -434,6 +464,7 @@ export class MapUI {
     this.placeClearEl = document.querySelector('[data-action="place-clear-route"]') as HTMLButtonElement
     this.placeProgressEl = document.getElementById('tm-route-progress') as HTMLElement
     this.placeBarEl = document.getElementById('tm-route-bar') as HTMLElement
+    this.placeRouteStepsEl = document.getElementById('tm-place-route-steps') as HTMLElement
   }
 
   private mountSettings(retries = 0): void {
@@ -480,6 +511,8 @@ export class MapUI {
     this.searchResultsEl.addEventListener('mousedown', (event) => event.preventDefault())
     this.searchResultsEl.addEventListener('click', (event) => this.onSearchResultClick(event))
     this.radiusInputEl.addEventListener('input', () => this.onRadiusInput())
+    this.poiToggleEl.addEventListener('click', () => this.togglePoiLayer())
+    this.poiAllEl.addEventListener('change', () => this.onPoiAllChange())
     this.wikiNoteEl.addEventListener('input', () => this.onWikiNoteInput())
     this.wikiNoteEl.addEventListener('change', () => this.flushNoteSave())
     this.placeNoteEl.addEventListener('input', () => this.onPlaceNoteInput())
@@ -583,7 +616,7 @@ export class MapUI {
       return
     }
     if (action === 'star') {
-      this.toggleStar()
+      void this.toggleStar()
       return
     }
     if (action === 'place-current') {
@@ -769,6 +802,7 @@ export class MapUI {
       void this.moveTo(position.lat, position.lng)
     })
     map.on('click', (event) => {
+      if (this.handlePoiMapClick(event)) return
       void this.moveTo(event.lngLat.lat, event.lngLat.lng)
     })
     map.on('moveend', () => {
@@ -782,6 +816,7 @@ export class MapUI {
     map.on('style.load', () => {
       this.drawRadius()
       if (this.currentRoute) this.drawRouteLine(this.currentRoute, false)
+      this.updatePoiSource()
     })
     map.once('load', () => this.drawRadius())
     map.once('idle', () => this.drawRadius())
@@ -816,6 +851,230 @@ export class MapUI {
         'line-dasharray': [2, 1.5],
       },
     })
+  }
+
+  private poiFeatureCollection(): FeatureCollection<Point> {
+    return {
+      type: 'FeatureCollection',
+      features: this.pois.map((poi) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [poi.lng, poi.lat] },
+        properties: {
+          id: poi.id,
+          name: poi.name,
+          nameZh: poi.nameZh ?? '',
+          category: poi.category ?? '',
+          group: poi.group,
+          distanceM: poi.distanceM ?? 0,
+          address: poi.address ?? '',
+        },
+      })),
+    }
+  }
+
+  private updatePoiSource(): void {
+    const map = this.map
+    if (!map || !map.isStyleLoaded()) return
+    const data = this.poiFeatureCollection()
+    const source = map.getSource('tm-poi') as GeoJSONSource | undefined
+    if (source) {
+      source.setData(data)
+      this.setPoiVisibility()
+      return
+    }
+
+    const before = map.getLayer('tm-route-line') ? 'tm-route-line' : undefined
+    map.addSource('tm-poi', {
+      type: 'geojson',
+      data,
+      cluster: true,
+      clusterRadius: 48,
+      clusterMaxZoom: 15,
+    })
+    map.addLayer(
+      {
+        id: 'tm-poi-cluster',
+        type: 'circle',
+        source: 'tm-poi',
+        filter: ['has', 'point_count'],
+        paint: {
+          'circle-color': '#e6b56a',
+          'circle-radius': ['step', ['get', 'point_count'], 14, 10, 18, 40, 24],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2,
+          'circle-opacity': 0.96,
+        },
+      },
+      before,
+    )
+    map.addLayer(
+      {
+        id: 'tm-poi-cluster-count',
+        type: 'symbol',
+        source: 'tm-poi',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': ['get', 'point_count_abbreviated'],
+          'text-size': 10,
+          'text-font': ['Noto Sans Bold'],
+        },
+        paint: { 'text-color': '#21180a' },
+      },
+      before,
+    )
+    map.addLayer(
+      {
+        id: 'tm-poi-point',
+        type: 'circle',
+        source: 'tm-poi',
+        filter: ['!', ['has', 'point_count']],
+        paint: {
+          'circle-color': [
+            'match',
+            ['get', 'group'],
+            'food',
+            '#e67e22',
+            'shopping',
+            '#8e44ad',
+            'culture',
+            '#c0392b',
+            'nature',
+            '#27ae60',
+            'transit',
+            '#2f80ed',
+            'service',
+            '#7f8c8d',
+            '#34495e',
+          ],
+          'circle-radius': 6,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 1.5,
+          'circle-opacity': 0.96,
+        },
+      },
+      before,
+    )
+    map.addLayer(
+      {
+        id: 'tm-poi-label',
+        type: 'symbol',
+        source: 'tm-poi',
+        filter: ['!', ['has', 'point_count']],
+        minzoom: 15,
+        layout: {
+          'text-field': ['coalesce', ['get', 'nameZh'], ['get', 'name']],
+          'text-size': 10,
+          'text-font': ['Noto Sans Regular'],
+          'text-offset': [0, 1.2],
+          'text-anchor': 'top',
+          'text-max-width': 10,
+        },
+        paint: {
+          'text-color': '#1f2933',
+          'text-halo-color': 'rgba(255,255,255,0.88)',
+          'text-halo-width': 1.2,
+        },
+      },
+      before,
+    )
+    this.setPoiVisibility()
+  }
+
+  private setPoiVisibility(): void {
+    const map = this.map
+    if (!map || !map.isStyleLoaded()) return
+    const visibility = this.settings.showPois ? 'visible' : 'none'
+    for (const id of ['tm-poi-cluster', 'tm-poi-cluster-count', 'tm-poi-point', 'tm-poi-label']) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility)
+    }
+  }
+
+  private async refreshPois(lat: number, lng: number): Promise<void> {
+    if (!this.settings.showPois && !this.state.poiAllToAI) return
+    const seq = ++this.poiSeq
+    this.loadingPois = true
+    this.syncPoiUi()
+    try {
+      const pois = await fetchPois(lat, lng, this.settings.radiusM)
+      if (seq !== this.poiSeq) return
+      this.pois = pois
+      this.poisById = new Map(pois.map((poi) => [poi.id, poi]))
+      this.state.poiBriefs = pois.map((poi) => ({
+        id: poi.id,
+        name: poi.name,
+        nameZh: poi.nameZh,
+        category: poi.category,
+        address: poi.address,
+        distanceM: poi.distanceM,
+        addedAt: Date.now(),
+      }))
+      this.updatePoiSource()
+      this.syncPoiUi()
+      saveState(this.ctx, this.state)
+      if (this.state.poiAllToAI) this.sync()
+      this.render()
+    } catch (error) {
+      console.warn('[tavern-map] POI layer failed', errorMessage(error))
+    } finally {
+      if (seq === this.poiSeq) {
+        this.loadingPois = false
+        this.syncPoiUi()
+      }
+    }
+  }
+
+  private togglePoiLayer(): void {
+    this.settings = { ...this.settings, showPois: !this.settings.showPois }
+    saveSettings(this.ctx, this.settings)
+    this.setPoiVisibility()
+    this.syncPoiUi()
+    if (this.settings.showPois) void this.refreshPois(this.state.center.lat, this.state.center.lng)
+  }
+
+  private onPoiAllChange(): void {
+    this.state.poiAllToAI = this.poiAllEl.checked
+    if (this.state.poiAllToAI && this.state.poiBriefs.length === 0) {
+      void this.refreshPois(this.state.center.lat, this.state.center.lng)
+    }
+    this.sync()
+    saveState(this.ctx, this.state)
+    this.syncPoiUi()
+  }
+
+  private syncPoiUi(): void {
+    if (!this.poiToggleEl) return
+    this.poiToggleEl.classList.toggle('active', this.settings.showPois)
+    this.poiToggleEl.classList.toggle('loading', this.loadingPois)
+    this.poiToggleEl.setAttribute('aria-pressed', String(this.settings.showPois))
+    this.poiAllEl.checked = this.state.poiAllToAI
+    this.poiCountEl.textContent = String(this.state.poiBriefs.length)
+  }
+
+  private handlePoiMapClick(event: MapMouseEvent): boolean {
+    const map = this.map
+    if (!map || !map.isStyleLoaded()) return false
+    const layers = ['tm-poi-cluster', 'tm-poi-point', 'tm-poi-label'].filter((id) => map.getLayer(id))
+    if (layers.length === 0) return false
+    const feature = map.queryRenderedFeatures(event.point, { layers })[0]
+    if (!feature) return false
+    if (feature.properties?.cluster) {
+      const clusterId = Number(feature.properties.cluster_id)
+      const source = map.getSource('tm-poi') as GeoJSONSource | undefined
+      const geometry = feature.geometry
+      if (!source || !Number.isFinite(clusterId) || geometry.type !== 'Point') return true
+      const coordinates = geometry.coordinates as [number, number]
+      void source
+        .getClusterExpansionZoom(clusterId)
+        .then((zoom) => map.easeTo({ center: coordinates, zoom }))
+        .catch((error) => console.warn('[tavern-map] cluster zoom failed', error))
+      return true
+    }
+    const poi = feature.properties?.id ? this.poisById.get(String(feature.properties.id)) : undefined
+    if (poi) {
+      this.openPlace(poi)
+      return true
+    }
+    return false
   }
 
   private async moveTo(lat: number, lng: number, fly = false): Promise<void> {
@@ -867,6 +1126,7 @@ export class MapUI {
     this.loadingWiki = true
     this.setStatus('正在获取：地点、周边、维基…')
     this.render()
+    void this.refreshPois(lat, lng)
 
     const slowTimer = window.setTimeout(() => {
       if (seq === this.seq && pending.has('nearby')) {
@@ -948,7 +1208,13 @@ export class MapUI {
 
   private render(): void {
     if (!this.panelEl) return
-    this.placeNameEl.textContent = this.state.place?.name ?? '点击地图选择位置'
+    const placeName = this.state.place?.name
+    this.placeNameEl.textContent = placeName
+      ? this.state.place?.nameZh
+        ? `${placeName} / ${this.state.place.nameZh}`
+        : placeName
+      : '点击地图选择位置'
+    this.placeNameEl.title = this.placeNameEl.textContent
     this.placeAddressEl.textContent = this.state.place?.address ?? ''
     for (const button of this.panelEl.querySelectorAll<HTMLElement>('[data-tab]')) {
       const active = button.dataset.tab === this.tab
@@ -972,6 +1238,16 @@ export class MapUI {
   }
 
   private renderList(): void {
+    if (this.currentPlace) {
+      this.placeEl.classList.add('tm-place-inline')
+      this.placeEl.hidden = false
+      if (this.placeEl.parentElement !== this.listEl) {
+        this.listEl.replaceChildren(this.placeEl)
+      }
+      this.renderPlace()
+      return
+    }
+
     const active = document.activeElement
     const activeNote =
       active instanceof HTMLTextAreaElement && active.classList.contains('tm-note-input') && this.listEl.contains(active)
@@ -985,15 +1261,16 @@ export class MapUI {
 
     this.listEl.replaceChildren()
     if (this.tab === 'nearby') {
-      if (this.state.nearby.length === 0) {
-        if (this.loadingNearby) {
+      const places = this.pois.length > 0 ? this.pois : this.state.nearby
+      if (places.length === 0) {
+        if (this.loadingNearby || this.loadingPois) {
           this.listEl.append(this.skeleton(), this.skeleton(), this.skeleton())
         } else {
           this.listEl.append(this.empty('还没有周边地点。点地图选一个位置，或点右上角刷新。'))
         }
         return
       }
-      for (const place of this.state.nearby.slice(0, 12)) {
+      for (const place of places) {
         this.listEl.append(this.nearbyItem(place))
       }
       return
@@ -1039,7 +1316,8 @@ export class MapUI {
     main.title = '查看地点详情'
     const name = document.createElement('span')
     name.className = 'tm-item-name'
-    name.textContent = place.name
+    name.textContent = place.nameZh ? `${place.name} / ${place.nameZh}` : place.name
+    name.title = name.textContent
     const meta = document.createElement('span')
     meta.className = 'tm-item-meta'
     meta.textContent = [place.category, formatDistance(place.distanceM)].filter(Boolean).join(' · ')
@@ -1051,7 +1329,7 @@ export class MapUI {
     save.className = 'tm-item-save'
     const saved = Boolean(this.findSavedPlace(place))
     save.textContent = saved ? '★' : '☆'
-    save.title = saved ? '取消收藏' : '收藏地点'
+    save.title = saved ? '从 AI 上下文移除' : '加入 AI 上下文'
     save.setAttribute('aria-pressed', String(saved))
     save.addEventListener('click', (event) => {
       event.stopPropagation()
@@ -1136,7 +1414,8 @@ export class MapUI {
     title.className = 'tm-saved-title'
     const name = document.createElement('div')
     name.className = 'tm-saved-name'
-    name.textContent = place.name
+    name.textContent = place.nameZh ? `${place.name} / ${place.nameZh}` : place.name
+    name.title = name.textContent
     const meta = document.createElement('div')
     meta.className = 'tm-saved-meta'
     meta.textContent = [place.category, place.address].filter(Boolean).join(' · ') || '收藏地点'
@@ -1176,7 +1455,9 @@ export class MapUI {
     name.textContent = `[${langLabel(page.lang)}] ${page.title}`
     const meta = document.createElement('div')
     meta.className = 'tm-saved-meta'
-    meta.textContent = `Wikipedia · 给 AI ${langLabel(page.aiLang || page.lang)}`
+    meta.textContent = `Wikipedia · 给 AI ${langLabel(page.aiLang || page.lang)} · ${
+      page.contextMode === 'full' ? '全文' : '概览'
+    }`
     title.append(name, meta)
 
     const actions = document.createElement('div')
@@ -1240,32 +1521,74 @@ export class MapUI {
   private openPlace(place: Place): void {
     this.currentPlace = place
     this.wikiEl.hidden = true
-    this.placeEl.hidden = false
     this.state.wikiOpen = false
     saveState(this.ctx, this.state)
-    this.renderPlace()
+    this.placeEl.classList.add('tm-place-inline')
+    this.placeEl.hidden = false
+    this.render()
   }
 
   private closePlace(): void {
     this.placeEl.hidden = true
+    this.placeEl.classList.remove('tm-place-inline')
     this.currentPlace = null
+    this.render()
   }
 
   private renderPlace(): void {
     const place = this.currentPlace
     if (!place) return
-    this.placeTitleEl.textContent = place.name
+    const title = place.nameZh ? `${place.name} / ${place.nameZh}` : place.name
+    this.placeTitleEl.textContent = title
+    this.placeTitleEl.title = title
     this.placeMetaEl.textContent =
       [place.category, formatDistance(place.distanceM), place.address].filter(Boolean).join(' · ') || '地点'
     const saved = this.findSavedPlace(place)
     this.placeSaveEl.textContent = saved ? '★' : '☆'
-    this.placeSaveEl.title = saved ? '取消收藏' : '收藏地点'
+    this.placeSaveEl.title = saved ? '从 AI 上下文移除' : '加入 AI 上下文'
     this.placeSaveEl.setAttribute('aria-pressed', String(Boolean(saved)))
     this.placeNoteEl.disabled = !saved
-    this.placeNoteEl.placeholder = saved ? '写下你想让 AI 记住的地点笔记…' : '收藏后可写笔记…'
+    this.placeNoteEl.placeholder = saved ? '写下你想让 AI 记住的地点笔记…' : '点亮星星后可写笔记…'
     if (document.activeElement !== this.placeNoteEl) this.placeNoteEl.value = saved?.note ?? ''
     this.placeNoteStatusEl.textContent = saved ? '自动保存' : ''
+    this.renderPlaceInfo(place)
     this.renderPlaceRoute()
+  }
+
+  private renderPlaceInfo(place: Place): void {
+    this.placeInfoEl.replaceChildren()
+    const poi = place as Partial<Poi>
+    const rows: Array<[string, string]> = []
+    if (poi.cuisine) rows.push(['菜系', poi.cuisine])
+    if (poi.openingHours) rows.push(['营业时间', poi.openingHours])
+    for (const [label, value] of rows) {
+      const row = document.createElement('div')
+      row.className = 'tm-place-info-row'
+      const name = document.createElement('span')
+      name.className = 'tm-place-info-label'
+      name.textContent = label
+      const text = document.createElement('span')
+      text.textContent = value
+      row.append(name, text)
+      this.placeInfoEl.append(row)
+    }
+    if (poi.website) {
+      const row = document.createElement('div')
+      row.className = 'tm-place-info-row'
+      const name = document.createElement('span')
+      name.className = 'tm-place-info-label'
+      name.textContent = '网站'
+      const link = document.createElement('a')
+      if (/^https?:\/\//i.test(poi.website)) {
+        link.href = poi.website
+        link.target = '_blank'
+        link.rel = 'noreferrer'
+      }
+      link.textContent = poi.website
+      row.append(name, link)
+      this.placeInfoEl.append(row)
+    }
+    this.placeInfoEl.hidden = this.placeInfoEl.childElementCount === 0
   }
 
   private onPlaceNoteInput(): void {
@@ -1327,6 +1650,7 @@ export class MapUI {
       this.placeStopEl.hidden = true
       this.placeProgressEl.hidden = true
       this.placeBarEl.style.width = '0%'
+      this.placeRouteStepsEl.replaceChildren()
       return
     }
     const fallback = itinerary.fallback ? ' · 直线估计' : ''
@@ -1335,7 +1659,24 @@ export class MapUI {
     this.placeStopEl.hidden = !this.moving
     this.placeProgressEl.hidden = !this.moving
     this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`
+    this.fillRouteSteps(this.placeRouteStepsEl, itinerary)
     this.syncRouteAiCheckboxes()
+  }
+
+  private fillRouteSteps(container: HTMLElement, itinerary: RouteItinerary): void {
+    container.replaceChildren()
+    itinerary.steps.forEach((step) => {
+      const item = document.createElement('li')
+      const text = document.createElement('span')
+      text.textContent = step.instruction
+      item.append(text)
+      if (step.distance > 0) {
+        const distance = document.createElement('em')
+        distance.textContent = formatDistance(step.distance)
+        item.append(distance)
+      }
+      container.append(item)
+    })
   }
 
   private syncRouteAiCheckboxes(): void {
@@ -1528,18 +1869,7 @@ export class MapUI {
 
     const steps = document.createElement('ol')
     steps.className = 'tm-route-steps'
-    itinerary.steps.forEach((step) => {
-      const item = document.createElement('li')
-      const text = document.createElement('span')
-      text.textContent = step.instruction
-      item.append(text)
-      if (step.distance > 0) {
-        const distance = document.createElement('em')
-        distance.textContent = formatDistance(step.distance)
-        item.append(distance)
-      }
-      steps.append(item)
-    })
+    this.fillRouteSteps(steps, itinerary)
 
     card.append(head, routeLine, meta, ai, progress, steps)
     this.listEl.append(card)
@@ -1732,7 +2062,7 @@ export class MapUI {
       button.setAttribute('role', 'option')
       const name = document.createElement('span')
       name.className = 'tm-search-result-name'
-      name.textContent = result.name
+      name.textContent = result.nameZh ? `${result.name} / ${result.nameZh}` : result.name
       const meta = document.createElement('span')
       meta.className = 'tm-search-result-meta'
       meta.textContent = [result.resultType, result.address].filter(Boolean).join(' · ')
@@ -1834,10 +2164,10 @@ export class MapUI {
     const index = this.state.savedPlaces.findIndex((item) => placeKey(item) === key)
     if (index >= 0) {
       this.state.savedPlaces.splice(index, 1)
-      this.toast('已取消收藏地点')
+      this.toast('已从 AI 上下文移除')
     } else {
       this.state.savedPlaces.push({ ...place, note: '', savedAt: Date.now() })
-      this.toast('已收藏地点；可在“收藏”里写笔记')
+      this.toast('已加入 AI 上下文；可在“收藏”里写笔记')
     }
     this.commit()
     if (this.currentPlace) this.renderPlace()
@@ -1855,6 +2185,7 @@ export class MapUI {
     const seq = ++this.wikiSeq
     this.wikiEl.hidden = false
     this.placeEl.hidden = true
+    this.currentPlace = null
     this.wikiMode = mode
     this.wikiFullText = null
     this.wikiLangLinks = {}
@@ -1868,6 +2199,7 @@ export class MapUI {
     this.wikiNoteStatusEl.textContent = ''
     this.renderWikiToolbar()
     this.renderAiLang()
+    this.render()
     await this.loadWikiCandidate(candidate, seq, true)
   }
 
@@ -1914,6 +2246,11 @@ export class MapUI {
     if (!preserveMode) this.wikiMode = 'intro'
     this.wikiFullText = null
     this.currentWiki = page
+    const star = this.findStar(page)
+    if (star) {
+      this.wikiMode = star.contextMode ?? 'intro'
+      if (this.wikiMode === 'full' && star.fullText) this.wikiFullText = star.fullText
+    }
     this.state.lastWiki = {
       lang: page.lang,
       pageId: page.pageId,
@@ -1982,6 +2319,18 @@ export class MapUI {
     if (this.wikiMode === mode) return
     this.wikiMode = mode
     this.state.lastWikiMode = mode
+    const current = this.currentWiki
+    if (current) {
+      const star = this.findStar(current)
+      if (star) {
+        star.contextMode = mode
+        if (mode === 'full' && this.wikiFullText) star.fullText = this.wikiFullText
+        if (mode === 'full' && star.aiLang && star.aiLang !== current.lang) {
+          void this.ensureAiFullText(star)
+        }
+        this.sync()
+      }
+    }
     saveState(this.ctx, this.state)
     this.renderWikiToolbar()
     this.renderWikiBody()
@@ -2000,6 +2349,7 @@ export class MapUI {
       if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') return
       if (typeof cached === 'string' && cached.length > 0) {
         this.wikiFullText = cached
+        this.rememberFullText(page)
         this.renderWikiBody()
         return
       }
@@ -2008,6 +2358,7 @@ export class MapUI {
         await cachePut(key, text)
         if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') return
         this.wikiFullText = text
+        this.rememberFullText(page)
         this.renderWikiBody()
       } catch (error) {
         if (seq === this.fullSeq) this.wikiBodyEl.textContent = `全文加载失败：${errorMessage(error)}`
@@ -2015,6 +2366,16 @@ export class MapUI {
     } finally {
       if (this.fullLoadingKey === key) this.fullLoadingKey = null
     }
+  }
+
+  private rememberFullText(page: WikiPage): void {
+    if (this.wikiMode !== 'full' || this.wikiFullText === null) return
+    const star = this.findStar(page)
+    if (!star) return
+    star.contextMode = 'full'
+    star.fullText = this.wikiFullText
+    this.sync()
+    saveState(this.ctx, this.state)
   }
 
   private renderWikiToolbar(): void {
@@ -2036,6 +2397,7 @@ export class MapUI {
     for (const button of this.wikiModesEl.querySelectorAll<HTMLElement>('[data-wiki-mode]')) {
       button.classList.toggle('active', button.dataset.wikiMode === this.wikiMode)
     }
+    this.wikiFullHintEl.hidden = this.wikiMode !== 'full'
   }
 
   private async switchWikiLang(lang: string): Promise<void> {
@@ -2108,6 +2470,7 @@ export class MapUI {
       star.aiLang = undefined
       star.aiTitle = undefined
       star.aiExtract = undefined
+      star.aiFullText = undefined
       this.sync()
       this.flushNoteSave()
       this.renderAiLang()
@@ -2127,13 +2490,37 @@ export class MapUI {
       star.aiLang = lang
       star.aiTitle = target.title
       star.aiExtract = target.extract
+      star.aiFullText = undefined
       this.sync()
+      if (star.contextMode === 'full') await this.ensureAiFullText(star)
       this.flushNoteSave()
-      this.toast(`AI 将使用 ${langLabel(lang)} 版本`)
+      this.toast(`AI 将使用 ${langLabel(lang)} 版本${star.contextMode === 'full' ? '（全文）' : ''}`)
     } catch (error) {
       this.toast(`加载失败：${errorMessage(error)}`)
     } finally {
       this.renderAiLang()
+    }
+  }
+
+  private async ensureAiFullText(star: StarredWiki): Promise<void> {
+    if (star.contextMode !== 'full' || !star.aiLang || !star.aiTitle) return
+    const key = wikiFullCacheKey(star.aiLang, star.aiTitle)
+    const cached = await cacheGet<string>(key)
+    if (typeof cached === 'string' && cached.length > 0) {
+      star.aiFullText = cached
+      this.sync()
+      saveState(this.ctx, this.state)
+      return
+    }
+    try {
+      const text = await wikiPageFull(star.aiLang, star.aiTitle)
+      await cachePut(key, text)
+      star.aiFullText = text
+      this.sync()
+      saveState(this.ctx, this.state)
+    } catch (error) {
+      console.warn('[tavern-map] AI full text failed', errorMessage(error))
+      this.toast('AI 语言全文加载失败，仍会使用该语言的简介')
     }
   }
 
@@ -2189,7 +2576,7 @@ export class MapUI {
     this.wikiNoteStatusEl.textContent = '已保存'
   }
 
-  private toggleStar(): void {
+  private async toggleStar(): Promise<void> {
     const current = this.currentWiki
     if (!current) return
     const existing = this.findStar(current)
@@ -2197,12 +2584,36 @@ export class MapUI {
       this.state.stars = this.state.stars.filter(
         (page) => wikiKey(page.lang ?? 'en', page.pageId) !== wikiKey(existing.lang ?? 'en', existing.pageId),
       )
-      this.toast('已从收藏移除')
-    } else {
-      if (!current.extract) return
-      this.state.stars.push({ ...current, note: '', savedAt: Date.now() })
-      this.toast('已加入收藏，可在收藏里写笔记')
+      this.toast('已从 AI 上下文移除')
+      this.commit()
+      this.updateStarButton()
+      this.renderWikiNote()
+      this.renderAiLang()
+      return
     }
+
+    if (!current.extract && !this.wikiFullText) return
+    let contextMode: 'intro' | 'full' = this.wikiMode
+    let fullText: string | undefined
+    if (contextMode === 'full') {
+      this.starEl.disabled = true
+      if (this.wikiFullText === null) await this.loadFullText()
+      if (this.wikiFullText) {
+        fullText = this.wikiFullText
+      } else {
+        contextMode = 'intro'
+        this.toast('全文还没加载成功，先按概览加入')
+      }
+      this.starEl.disabled = false
+    }
+    this.state.stars.push({
+      ...current,
+      note: '',
+      savedAt: Date.now(),
+      contextMode,
+      fullText,
+    })
+    this.toast(contextMode === 'full' ? '已加入 AI 上下文（全文）' : '已加入 AI 上下文（概览）')
     this.commit()
     this.updateStarButton()
     this.renderWikiNote()
@@ -2214,7 +2625,9 @@ export class MapUI {
     const current = this.currentWiki
     const starred = current ? Boolean(this.findStar(current)) : false
     this.starEl.textContent = starred ? '★' : '☆'
-    this.starEl.title = starred ? '从收藏移除' : '加入收藏'
+    this.starEl.title = starred
+      ? '从 AI 上下文移除'
+      : `加入 AI 上下文（${this.wikiMode === 'full' ? '全文' : '概览'}）`
     this.starEl.setAttribute('aria-pressed', String(starred))
   }
 
@@ -2285,7 +2698,12 @@ export class MapUI {
     this.state.wiki = []
     this.state.stars = []
     this.state.savedPlaces = []
+    this.state.poiBriefs = []
+    this.state.poiAllToAI = false
     this.state.place = undefined
+    this.pois = []
+    this.poisById.clear()
+    this.poiSeq += 1
     delete this.state.itinerary
     delete this.state.lastWiki
     delete this.state.lastWikiMode
@@ -2302,6 +2720,8 @@ export class MapUI {
     this.previewEl.hidden = true
     this.searchInputEl.value = ''
     this.hideSearchResults()
+    this.updatePoiSource()
+    this.syncPoiUi()
     this.commit()
     this.toast('已清空本聊天地的地点与收藏')
   }
@@ -2319,6 +2739,9 @@ export class MapUI {
     this.settings = loadSettings(this.ctx)
     this.state = loadState(this.ctx)
     this.state.enabled = this.settings.enabled
+    this.pois = []
+    this.poisById.clear()
+    this.poiSeq += 1
     this.tab = this.state.lastTab ?? 'nearby'
     this.currentWiki = null
     this.currentPlace = null
@@ -2339,8 +2762,13 @@ export class MapUI {
       this.marker?.setLngLat([this.state.center.lng, this.state.center.lat])
     }
     this.drawRadius()
+    this.updatePoiSource()
+    this.syncPoiUi()
     this.commit()
     this.setStatus('')
+    if (this.settings.showPois || this.state.poiAllToAI) {
+      void this.refreshPois(this.state.center.lat, this.state.center.lng)
+    }
     if (this.state.wikiOpen && this.state.lastWiki) {
       window.setTimeout(() => {
         if (!this.panelEl.hidden) void this.restoreWiki(this.state.lastWiki!)
@@ -2494,6 +2922,12 @@ export class MapUI {
     for (const header of headers) {
       header.addEventListener('pointerdown', (event) => {
         if (window.innerWidth <= 640) return
+        if (
+          header === this.placeEl.querySelector(':scope > .tm-head') &&
+          this.placeEl.classList.contains('tm-place-inline')
+        ) {
+          return
+        }
         const target = event.target as HTMLElement
         if (target.closest('button, input, select, a, textarea')) return
         const rect = this.panelEl.getBoundingClientRect()

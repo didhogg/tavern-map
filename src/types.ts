@@ -3,6 +3,8 @@ export type LatLng = { lat: number; lng: number }
 export type Place = {
   id: string
   name: string
+  /** Chinese name from OSM name:zh when available. */
+  nameZh?: string
   category?: string
   address?: string
   lat: number
@@ -34,10 +36,14 @@ export type WikiPage = {
 export type StarredWiki = WikiPage & {
   note: string
   savedAt: number
+  /** Whether the prompt receives the intro or the full plaintext. */
+  contextMode: 'intro' | 'full'
+  fullText?: string
   /** Language chosen for the prompt when it differs from the starred page. */
   aiLang?: string
   aiTitle?: string
   aiExtract?: string
+  aiFullText?: string
 }
 
 export type SavedPlace = Place & {
@@ -65,6 +71,16 @@ export type ItineraryStep = {
   duration: number
 }
 
+export type PoiBrief = {
+  id: string
+  name: string
+  nameZh?: string
+  category?: string
+  address?: string
+  distanceM?: number
+  addedAt: number
+}
+
 export type RouteItinerary = {
   from: { id?: string; name: string; lat: number; lng: number }
   to: { id?: string; name: string; lat: number; lng: number }
@@ -88,6 +104,8 @@ export type MapState = {
   wiki: WikiCandidate[]
   stars: StarredWiki[]
   savedPlaces: SavedPlace[]
+  poiBriefs: PoiBrief[]
+  poiAllToAI: boolean
   lastTab?: 'nearby' | 'wiki' | 'saved' | 'route'
   lastWiki?: WikiRef
   lastWikiMode?: 'intro' | 'full'
@@ -105,6 +123,7 @@ export type Settings = {
   maxWikiChars: number
   tokenBudget: number
   depth: number
+  showPois: boolean
 }
 
 /** A minimal subset of the SillyTavern context used by this extension. */

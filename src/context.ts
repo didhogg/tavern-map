@@ -1,5 +1,5 @@
 import { formatDistance, placeKey } from './geo'
-import type { ItineraryStep, MapState, Place, SavedPlace, Settings, StarredWiki } from './types'
+import type { ItineraryStep, MapState, Place, PoiBrief, SavedPlace, Settings, StarredWiki } from './types'
 
 /** Conservative estimate: CJK ≈ 1 token/char, other text ≈ 4 chars/token. */
 export function estimateTokens(text: string): number {
@@ -11,8 +11,6 @@ export function estimateTokens(text: string): number {
   }
   return Math.ceil(cjk + other / 4)
 }
-
-const NOTE_MAX_CHARS = 240
 
 function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
@@ -30,7 +28,8 @@ function truncate(text: string, maxChars: number): string {
 function formatPlace(place: Place): string {
   const category = place.category ? `, ${clean(place.category)}` : ''
   const distance = place.distanceM == null ? '' : `, ${Math.round(place.distanceM)}m`
-  return `${clean(place.name)} (${category.replace(/^, /, '') || 'place'}${distance})`
+  const chinese = place.nameZh ? ` / ${clean(place.nameZh)}` : ''
+  return `${clean(place.name)}${chinese} (${category.replace(/^, /, '') || 'place'}${distance})`
 }
 
 function formatDuration(seconds: number): string {
@@ -46,6 +45,7 @@ function render(
   nearby: Place[],
   savedPlaces: SavedPlace[],
   stars: StarredWiki[],
+  poiBriefs: PoiBrief[],
   wikiChars: number,
   routeSteps: ItineraryStep[],
 ): string {
@@ -56,17 +56,29 @@ function render(
   const currentSaved = currentKey ? savedPlaces.find((place) => placeKey(place) === currentKey) : undefined
   if (state.place) {
     const address = state.place.address ? ` — ${clean(state.place.address)}` : ''
-    lines.push(`Where: ${clean(state.place.name)}${address}`)
-    if (currentSaved?.note) lines.push(`Place note: ${truncate(currentSaved.note, NOTE_MAX_CHARS)}`)
+    const chinese = state.place.nameZh ? ` / ${clean(state.place.nameZh)}` : ''
+    lines.push(`Where: ${clean(state.place.name)}${chinese}${address}`)
+    if (currentSaved?.note) lines.push(`Place note: ${clean(currentSaved.note)}`)
   }
   lines.push(`Coords: ${state.center.lat.toFixed(5)}, ${state.center.lng.toFixed(5)}`)
+  if (poiBriefs.length > 0) {
+    lines.push('POI briefs:')
+    for (const brief of poiBriefs) {
+      const category = brief.category ? ` (${clean(brief.category)})` : ''
+      const distance = brief.distanceM == null ? '' : `, ${formatDistance(brief.distanceM)}`
+      const address = brief.address ? ` — ${clean(brief.address)}` : ''
+      const chinese = brief.nameZh ? ` / ${clean(brief.nameZh)}` : ''
+      lines.push(`- ${clean(brief.name)}${chinese}${category}${distance}${address}`)
+    }
+  }
   const otherSaved = savedPlaces.filter((place) => placeKey(place) !== currentKey)
   if (otherSaved.length > 0) {
     lines.push('Saved places:')
     for (const place of otherSaved) {
       const category = place.category ? ` (${clean(place.category)})` : ''
-      const note = place.note ? ` — note: ${truncate(place.note, NOTE_MAX_CHARS)}` : ''
-      lines.push(`- ${clean(place.name)}${category}${note}`)
+      const chinese = place.nameZh ? ` / ${clean(place.nameZh)}` : ''
+      const note = place.note ? ` — note: ${clean(place.note)}` : ''
+      lines.push(`- ${clean(place.name)}${chinese}${category}${note}`)
     }
   }
   if (nearby.length > 0) {
@@ -77,10 +89,16 @@ function render(
     for (const page of stars) {
       const aiLang = page.aiLang || page.lang
       const aiTitle = page.aiTitle || page.title
-      const aiExtract = page.aiExtract || page.extract
+      const fullText = page.contextMode === 'full' ? page.aiFullText || page.fullText : undefined
+      const aiExtract = fullText || page.aiExtract || page.extract
       const language = aiLang ? `[${aiLang.toUpperCase()}] ` : ''
-      const note = page.note ? ` — note: ${truncate(page.note, NOTE_MAX_CHARS)}` : ''
-      lines.push(`- ${language}${clean(aiTitle)} (CC BY-SA 4.0)${note}: ${truncate(aiExtract, wikiChars)}`)
+      const note = page.note ? ` — note: ${clean(page.note)}` : ''
+      const mode = fullText ? ' · full text' : ''
+      lines.push(
+        `- ${language}${clean(aiTitle)} (CC BY-SA 4.0)${mode}${note}: ${
+          fullText ? aiExtract.trim() : truncate(aiExtract, wikiChars)
+        }`,
+      )
     }
   }
   if (state.itinerary?.showToAI) {
@@ -109,6 +127,7 @@ export function buildContext(state: MapState, settings: Settings): string {
     state.nearby.length === 0 &&
     state.stars.length === 0 &&
     state.savedPlaces.length === 0 &&
+    !(state.poiAllToAI && state.poiBriefs.length > 0) &&
     !state.itinerary?.showToAI
   ) {
     return ''
@@ -116,10 +135,13 @@ export function buildContext(state: MapState, settings: Settings): string {
 
   let nearby = state.nearby.slice(0, Math.max(0, settings.maxNearby))
   let savedPlaces = state.savedPlaces.slice(0, 5)
-  let stars = state.stars.filter((page) => page.aiExtract || page.extract).slice(0, 3)
+  let poiBriefs = state.poiAllToAI ? state.poiBriefs : []
+  let stars = state.stars
+    .filter((page) => page.aiFullText || page.fullText || page.aiExtract || page.extract)
+    .slice(0, 3)
   let routeSteps = state.itinerary?.showToAI ? state.itinerary.steps.slice(0, 10) : []
   let wikiChars = Math.max(120, settings.maxWikiChars)
-  let text = render(state, nearby, savedPlaces, stars, wikiChars, routeSteps)
+  let text = render(state, nearby, savedPlaces, stars, poiBriefs, wikiChars, routeSteps)
 
   while (estimateTokens(text) > settings.tokenBudget) {
     if (nearby.length > 0) {
@@ -135,7 +157,7 @@ export function buildContext(state: MapState, settings: Settings): string {
     } else {
       break
     }
-    text = render(state, nearby, savedPlaces, stars, wikiChars, routeSteps)
+    text = render(state, nearby, savedPlaces, stars, poiBriefs, wikiChars, routeSteps)
   }
 
   return text

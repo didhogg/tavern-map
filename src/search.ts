@@ -13,6 +13,7 @@ type PhotonFeature = {
     osm_id?: number
     type?: string
     name?: string
+    'name:zh'?: string
     street?: string
     locality?: string
     district?: string
@@ -62,9 +63,11 @@ function toResult(feature: PhotonFeature): SearchResult | null {
       ? ([extent[0], extent[1], extent[2], extent[3]] as [number, number, number, number])
       : undefined
 
+  const nameZh = clean(p['name:zh'])
   return {
     id: p.osm_type && p.osm_id != null ? `osm:${p.osm_type}/${p.osm_id}` : `search:${coordinates[1]},${coordinates[0]}`,
     name,
+    nameZh: nameZh && nameZh !== name ? nameZh : undefined,
     category: p.type,
     address: address || undefined,
     lat: coordinates[1],

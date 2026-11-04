@@ -65,6 +65,8 @@ export const DEFAULT_STATE: MapState = {
   wiki: [],
   stars: [],
   savedPlaces: [],
+  poiBriefs: [],
+  poiAllToAI: false,
   updatedAt: Date.now(),
 }
 
@@ -122,9 +124,12 @@ export function loadState(ctx: StContext): MapState {
             lang: typeof page.lang === 'string' ? page.lang : 'en',
             note: typeof page.note === 'string' ? page.note : '',
             savedAt: typeof page.savedAt === 'number' ? page.savedAt : Date.now(),
+            contextMode: page.contextMode === 'full' ? 'full' : 'intro',
+            fullText: typeof page.fullText === 'string' ? page.fullText : undefined,
             aiLang: typeof page.aiLang === 'string' ? page.aiLang : undefined,
             aiTitle: typeof page.aiTitle === 'string' ? page.aiTitle : undefined,
             aiExtract: typeof page.aiExtract === 'string' ? page.aiExtract : undefined,
+            aiFullText: typeof page.aiFullText === 'string' ? page.aiFullText : undefined,
           }))
       : [],
     savedPlaces: Array.isArray(value.savedPlaces)
@@ -139,6 +144,23 @@ export function loadState(ctx: StContext): MapState {
             savedAt: typeof place.savedAt === 'number' ? place.savedAt : Date.now(),
           }))
       : [],
+    poiBriefs: Array.isArray(value.poiBriefs)
+      ? value.poiBriefs
+          .filter(
+            (brief) =>
+              brief && typeof brief.id === 'string' && typeof brief.name === 'string',
+          )
+          .map((brief) => ({
+            id: brief.id,
+            name: brief.name,
+            nameZh: typeof brief.nameZh === 'string' ? brief.nameZh : undefined,
+            category: typeof brief.category === 'string' ? brief.category : undefined,
+            address: typeof brief.address === 'string' ? brief.address : undefined,
+            distanceM: typeof brief.distanceM === 'number' ? brief.distanceM : undefined,
+            addedAt: typeof brief.addedAt === 'number' ? brief.addedAt : Date.now(),
+          }))
+      : [],
+    poiAllToAI: typeof value.poiAllToAI === 'boolean' ? value.poiAllToAI : false,
     view:
       value.view &&
       value.view.center &&
