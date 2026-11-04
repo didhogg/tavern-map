@@ -111,26 +111,29 @@ export function loadState(ctx: StContext): MapState {
       : [],
     stars: Array.isArray(value.stars)
       ? value.stars
-          .filter(
-            (page) =>
-              page &&
-              typeof page.pageId === 'number' &&
-              typeof page.title === 'string' &&
-              typeof page.extract === 'string' &&
-              typeof page.url === 'string',
-          )
-          .map((page) => ({
-            ...page,
-            lang: typeof page.lang === 'string' ? page.lang : 'en',
-            note: typeof page.note === 'string' ? page.note : '',
-            savedAt: typeof page.savedAt === 'number' ? page.savedAt : Date.now(),
-            contextMode: page.contextMode === 'full' ? 'full' : 'intro',
-            fullText: typeof page.fullText === 'string' ? page.fullText : undefined,
-            aiLang: typeof page.aiLang === 'string' ? page.aiLang : undefined,
-            aiTitle: typeof page.aiTitle === 'string' ? page.aiTitle : undefined,
-            aiExtract: typeof page.aiExtract === 'string' ? page.aiExtract : undefined,
-            aiFullText: typeof page.aiFullText === 'string' ? page.aiFullText : undefined,
-          }))
+          .filter((page) => page && typeof page.title === 'string')
+          .map((page) => {
+            const lang = typeof page.lang === 'string' ? page.lang : 'en'
+            const pageId = Number.isFinite(Number(page.pageId)) ? Number(page.pageId) : 0
+            return {
+              ...page,
+              pageId,
+              lang,
+              note: typeof page.note === 'string' ? page.note : '',
+              savedAt: typeof page.savedAt === 'number' ? page.savedAt : Date.now(),
+              contextMode: page.contextMode === 'full' ? 'full' : 'intro',
+              fullText: typeof page.fullText === 'string' ? page.fullText : undefined,
+              aiLang: typeof page.aiLang === 'string' ? page.aiLang : undefined,
+              aiTitle: typeof page.aiTitle === 'string' ? page.aiTitle : undefined,
+              aiExtract: typeof page.aiExtract === 'string' ? page.aiExtract : undefined,
+              aiFullText: typeof page.aiFullText === 'string' ? page.aiFullText : undefined,
+              extract: typeof page.extract === 'string' ? page.extract : '',
+              url:
+                typeof page.url === 'string'
+                  ? page.url
+                  : `https://${lang}.wikipedia.org/?curid=${pageId}`,
+            }
+          })
       : [],
     savedPlaces: Array.isArray(value.savedPlaces)
       ? value.savedPlaces

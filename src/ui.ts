@@ -34,7 +34,6 @@ import { wikiLangLinks, wikiNearby, wikiPage, wikiPageFull } from './wiki'
 const PANEL_ID = 'tm-panel'
 const WIKI_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const FULL_TEXT_MAX_CHARS = 100000
-const NOTE_MAX_CHARS = 500
 const FAB_POS_KEY = 'tavern-map:fab-position'
 const PANEL_GEOMETRY_KEY = 'tavern-map:panel-geometry'
 const ROUTE_SOURCE = 'tm-route'
@@ -186,7 +185,7 @@ const PANEL_HTML = `
     <div id="tm-wiki-body" class="tm-wiki-body"></div>
     <div class="tm-wiki-note">
       <label for="tm-wiki-note">我的笔记</label>
-      <textarea id="tm-wiki-note" maxlength="${NOTE_MAX_CHARS}" placeholder="点亮星标后可为这篇 Wiki 添加笔记…" disabled></textarea>
+      <textarea id="tm-wiki-note" placeholder="点亮星标后可为这篇 Wiki 添加笔记…" disabled></textarea>
       <div id="tm-wiki-note-status" class="tm-note-status"></div>
     </div>
     <a id="tm-wiki-link" class="tm-wiki-link" target="_blank" rel="noreferrer">打开 Wikipedia</a>
@@ -222,7 +221,7 @@ const PANEL_HTML = `
       </div>
       <div class="tm-place-note">
         <label for="tm-place-note">我的笔记</label>
-        <textarea id="tm-place-note" maxlength="${NOTE_MAX_CHARS}" placeholder="收藏后可写笔记…" disabled></textarea>
+        <textarea id="tm-place-note" placeholder="收藏后可写笔记…" disabled></textarea>
         <div id="tm-place-note-status" class="tm-note-status"></div>
       </div>
     </div>
@@ -297,6 +296,7 @@ export class MapUI {
   private wikiMode: 'intro' | 'full' = 'intro'
   private wikiFullText: string | null = null
   private fullLoadingKey: string | null = null
+  private fullPromise: Promise<void> | null = null
   private wikiLangLinks: Record<string, string> = {}
   private currentRoute: Route | null = null
   private routeEndMarker: Marker | null = null
@@ -1203,7 +1203,12 @@ export class MapUI {
   private sync(): void {
     this.state.enabled = this.settings.enabled
     const text = buildContext(this.state, this.settings)
-    syncPrompt(this.ctx, text, this.settings.enabled, this.settings.depth)
+    if (!this.settings.enabled || !text) {
+      clearPrompt(this.ctx)
+    } else {
+      syncPrompt(this.ctx, text, true, this.settings.depth)
+    }
+    if (this.previewEl && !this.previewEl.hidden) this.preview()
   }
 
   private render(): void {
@@ -1478,11 +1483,9 @@ export class MapUI {
     }
     actions.append(
       this.miniButton('移除', () => {
-        this.state.stars = this.state.stars.filter(
-          (item) => wikiKey(item.lang ?? 'en', item.pageId) !== wikiKey(page.lang, page.pageId),
-        )
+        this.removeStar(page)
         this.commit()
-        this.toast('已移除 Wiki 收藏')
+        this.toast('已从 AI 上下文移除 Wiki')
       }),
     )
     head.append(title, actions)
@@ -1508,11 +1511,10 @@ export class MapUI {
   private noteInput(value: string, onInput: (value: string) => void): HTMLTextAreaElement {
     const textarea = document.createElement('textarea')
     textarea.className = 'tm-note-input'
-    textarea.maxLength = NOTE_MAX_CHARS
     textarea.placeholder = '添加自己的笔记…'
     textarea.value = value
     textarea.addEventListener('input', () => {
-      onInput(textarea.value.slice(0, NOTE_MAX_CHARS))
+      onInput(textarea.value)
     })
     textarea.addEventListener('change', () => this.flushNoteSave())
     return textarea
@@ -1596,7 +1598,7 @@ export class MapUI {
     if (!place) return
     const saved = this.findSavedPlace(place)
     if (!saved) return
-    saved.note = this.placeNoteEl.value.slice(0, NOTE_MAX_CHARS)
+    saved.note = this.placeNoteEl.value
     this.sync()
     this.placeNoteStatusEl.textContent = '保存中…'
     this.scheduleNoteSave()
@@ -2174,11 +2176,29 @@ export class MapUI {
   }
 
   private findStar(page: { lang: string; pageId: number; title?: string }): StarredWiki | undefined {
-    const key = wikiKey(page.lang, page.pageId)
-    const byId = this.state.stars.find((item) => wikiKey(item.lang ?? 'en', item.pageId) === key)
-    if (byId) return byId
-    if (page.title) return this.state.stars.find((item) => item.lang === page.lang && item.title === page.title)
-    return undefined
+    const lang = page.lang || 'en'
+    const title = page.title?.trim().toLowerCase()
+    if (title) {
+      const byTitle = this.state.stars.find(
+        (item) => (item.lang ?? 'en') === lang && item.title.trim().toLowerCase() === title,
+      )
+      if (byTitle) return byTitle
+    }
+    return this.state.stars.find(
+      (item) => wikiKey(item.lang ?? 'en', item.pageId) === wikiKey(lang, page.pageId),
+    )
+  }
+
+  private removeStar(page: { lang?: string; pageId?: number; title: string }): void {
+    const lang = page.lang || 'en'
+    const title = page.title.trim().toLowerCase()
+    this.state.stars = this.state.stars.filter((item) => {
+      if ((item.lang ?? 'en') === lang && item.title.trim().toLowerCase() === title) return false
+      if (page.pageId != null && wikiKey(item.lang ?? 'en', item.pageId) === wikiKey(lang, page.pageId)) {
+        return false
+      }
+      return true
+    })
   }
 
   private async openWiki(candidate: WikiCandidate, mode: 'intro' | 'full' = 'intro'): Promise<void> {
@@ -2250,6 +2270,14 @@ export class MapUI {
     if (star) {
       this.wikiMode = star.contextMode ?? 'intro'
       if (this.wikiMode === 'full' && star.fullText) this.wikiFullText = star.fullText
+      if (
+        this.wikiMode === 'full' &&
+        star.aiLang &&
+        star.aiLang !== page.lang &&
+        !star.aiFullText
+      ) {
+        void this.ensureAiFullText(star)
+      }
     }
     this.state.lastWiki = {
       lang: page.lang,
@@ -2333,39 +2361,78 @@ export class MapUI {
     }
     saveState(this.ctx, this.state)
     this.renderWikiToolbar()
+    this.updateStarButton()
     this.renderWikiBody()
   }
 
   private async loadFullText(): Promise<void> {
     const page = this.currentWiki
-    if (!page || this.wikiMode !== 'full' || this.wikiFullText !== null) return
+    if (
+      !page ||
+      this.wikiMode !== 'full' ||
+      (this.wikiFullText !== null && this.wikiFullText.length > 0)
+    ) {
+      return
+    }
+    if (this.wikiFullText !== null) this.wikiFullText = null
     const key = wikiFullCacheKey(page.lang, page.title)
-    if (this.fullLoadingKey === key) return
+    if (this.fullLoadingKey === key && this.fullPromise) {
+      await this.fullPromise
+      return
+    }
     this.fullLoadingKey = key
     const seq = ++this.fullSeq
-    try {
-      this.wikiBodyEl.textContent = '正在加载全文…'
-      const cached = await cacheGet<string>(key)
-      if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') return
-      if (typeof cached === 'string' && cached.length > 0) {
-        this.wikiFullText = cached
-        this.rememberFullText(page)
-        this.renderWikiBody()
-        return
-      }
+    const task = (async () => {
       try {
-        const text = await wikiPageFull(page.lang, page.title)
-        await cachePut(key, text)
-        if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') return
-        this.wikiFullText = text
-        this.rememberFullText(page)
-        this.renderWikiBody()
-      } catch (error) {
-        if (seq === this.fullSeq) this.wikiBodyEl.textContent = `全文加载失败：${errorMessage(error)}`
+        this.wikiBodyEl.textContent = '正在加载全文…'
+        const cached = await cacheGet<string>(key)
+        if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') {
+          this.fallbackFullStar(page)
+          return
+        }
+        if (typeof cached === 'string' && cached.length > 0) {
+          this.wikiFullText = cached
+          this.rememberFullText(page)
+          this.renderWikiBody()
+          return
+        }
+        try {
+          const text = await wikiPageFull(page.lang, page.title)
+          if (!text.trim()) throw new Error('全文为空')
+          await cachePut(key, text)
+          if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') {
+            this.fallbackFullStar(page)
+            return
+          }
+          this.wikiFullText = text
+          this.rememberFullText(page)
+          this.renderWikiBody()
+        } catch (error) {
+          if (seq === this.fullSeq) {
+            this.wikiBodyEl.textContent = `全文加载失败：${errorMessage(error)}`
+            this.fallbackFullStar(page)
+          }
+        }
+      } finally {
+        if (this.fullLoadingKey === key) {
+          this.fullLoadingKey = null
+          this.fullPromise = null
+        }
       }
-    } finally {
-      if (this.fullLoadingKey === key) this.fullLoadingKey = null
-    }
+    })()
+    this.fullPromise = task
+    await task
+  }
+
+  private fallbackFullStar(page: WikiPage): void {
+    const star = this.findStar(page)
+    if (!star || star.contextMode !== 'full' || star.fullText || star.aiFullText) return
+    star.contextMode = 'intro'
+    this.sync()
+    saveState(this.ctx, this.state)
+    this.renderWikiToolbar()
+    this.updateStarButton()
+    this.toast('全文加载失败，已改为概览注入；可以稍后再切一次全文重试')
   }
 
   private rememberFullText(page: WikiPage): void {
@@ -2376,6 +2443,8 @@ export class MapUI {
     star.fullText = this.wikiFullText
     this.sync()
     saveState(this.ctx, this.state)
+    this.renderWikiToolbar()
+    this.updateStarButton()
   }
 
   private renderWikiToolbar(): void {
@@ -2397,7 +2466,14 @@ export class MapUI {
     for (const button of this.wikiModesEl.querySelectorAll<HTMLElement>('[data-wiki-mode]')) {
       button.classList.toggle('active', button.dataset.wikiMode === this.wikiMode)
     }
-    this.wikiFullHintEl.hidden = this.wikiMode !== 'full'
+    const star = page ? this.findStar(page) : undefined
+    const starFull = star?.contextMode === 'full'
+    this.wikiFullHintEl.hidden = !star && this.wikiMode !== 'full'
+    this.wikiFullHintEl.textContent = this.wikiMode === 'full'
+      ? `全文会完整注入 AI，token 会显著增加。${star ? `当前星标：${starFull ? '全文' : '概览'}。` : ''}`
+      : star
+        ? `当前星标：${starFull ? '全文' : '概览'}。${starFull ? '' : '切到全文会把全文注入 AI。'}`
+        : ''
   }
 
   private async switchWikiLang(lang: string): Promise<void> {
@@ -2552,7 +2628,7 @@ export class MapUI {
     if (!page) return
     const star = this.findStar(page)
     if (!star) return
-    star.note = this.wikiNoteEl.value.slice(0, NOTE_MAX_CHARS)
+    star.note = this.wikiNoteEl.value
     this.sync()
     this.wikiNoteStatusEl.textContent = '保存中…'
     this.scheduleNoteSave()
@@ -2581,9 +2657,7 @@ export class MapUI {
     if (!current) return
     const existing = this.findStar(current)
     if (existing) {
-      this.state.stars = this.state.stars.filter(
-        (page) => wikiKey(page.lang ?? 'en', page.pageId) !== wikiKey(existing.lang ?? 'en', existing.pageId),
-      )
+      this.removeStar(current)
       this.toast('已从 AI 上下文移除')
       this.commit()
       this.updateStarButton()
@@ -2592,20 +2666,10 @@ export class MapUI {
       return
     }
 
-    if (!current.extract && !this.wikiFullText) return
-    let contextMode: 'intro' | 'full' = this.wikiMode
-    let fullText: string | undefined
-    if (contextMode === 'full') {
-      this.starEl.disabled = true
-      if (this.wikiFullText === null) await this.loadFullText()
-      if (this.wikiFullText) {
-        fullText = this.wikiFullText
-      } else {
-        contextMode = 'intro'
-        this.toast('全文还没加载成功，先按概览加入')
-      }
-      this.starEl.disabled = false
-    }
+    if (!current.extract && !this.wikiFullText && this.wikiMode !== 'full') return
+    const contextMode: 'intro' | 'full' = this.wikiMode
+    const fullText = contextMode === 'full' ? this.wikiFullText || undefined : undefined
+    this.removeStar(current)
     this.state.stars.push({
       ...current,
       note: '',
@@ -2613,20 +2677,29 @@ export class MapUI {
       contextMode,
       fullText,
     })
-    this.toast(contextMode === 'full' ? '已加入 AI 上下文（全文）' : '已加入 AI 上下文（概览）')
+    this.toast(
+      contextMode === 'full'
+        ? fullText
+          ? '已加入 AI 上下文（全文）'
+          : '已加入 AI 上下文（全文加载中，完成后自动生效）'
+        : '已加入 AI 上下文（概览）',
+    )
     this.commit()
     this.updateStarButton()
     this.renderWikiNote()
     this.renderAiLang()
+    if (contextMode === 'full' && !fullText) void this.loadFullText()
   }
 
   private updateStarButton(): void {
     if (!this.starEl) return
     const current = this.currentWiki
-    const starred = current ? Boolean(this.findStar(current)) : false
+    const star = current ? this.findStar(current) : undefined
+    const starred = Boolean(star)
+    const mode = star?.contextMode ?? this.wikiMode
     this.starEl.textContent = starred ? '★' : '☆'
     this.starEl.title = starred
-      ? '从 AI 上下文移除'
+      ? `从 AI 上下文移除（当前：${mode === 'full' ? '全文' : '概览'}）`
       : `加入 AI 上下文（${this.wikiMode === 'full' ? '全文' : '概览'}）`
     this.starEl.setAttribute('aria-pressed', String(starred))
   }

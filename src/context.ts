@@ -61,6 +61,9 @@ function render(
     if (currentSaved?.note) lines.push(`Place note: ${clean(currentSaved.note)}`)
   }
   lines.push(`Coords: ${state.center.lat.toFixed(5)}, ${state.center.lng.toFixed(5)}`)
+  if (nearby.length > 0) {
+    lines.push(`Nearby: ${nearby.map(formatPlace).join(' · ')}`)
+  }
   if (poiBriefs.length > 0) {
     lines.push('POI briefs:')
     for (const brief of poiBriefs) {
@@ -80,9 +83,6 @@ function render(
       const note = place.note ? ` — note: ${clean(place.note)}` : ''
       lines.push(`- ${clean(place.name)}${chinese}${category}${note}`)
     }
-  }
-  if (nearby.length > 0) {
-    lines.push(`Nearby: ${nearby.map(formatPlace).join(' · ')}`)
   }
   if (stars.length > 0) {
     lines.push('Wiki (starred):')
@@ -117,7 +117,8 @@ function render(
 
 /**
  * Build a deterministic, token-budgeted scene block.
- * Trim order: nearby places → wiki length → newest starred page → newest saved place.
+ * Trim order: nearby places → intro wiki length → route steps. POI briefs,
+ * full-text stars, saved places and notes are always kept.
  */
 export function buildContext(state: MapState, settings: Settings): string {
   // Do not inject the default Tokyo coordinates into every prompt before the
@@ -134,11 +135,11 @@ export function buildContext(state: MapState, settings: Settings): string {
   }
 
   let nearby = state.nearby.slice(0, Math.max(0, settings.maxNearby))
-  let savedPlaces = state.savedPlaces.slice(0, 5)
+  const savedPlaces = state.savedPlaces
   let poiBriefs = state.poiAllToAI ? state.poiBriefs : []
-  let stars = state.stars
-    .filter((page) => page.aiFullText || page.fullText || page.aiExtract || page.extract)
-    .slice(0, 3)
+  const stars = state.stars.filter(
+    (page) => page.aiFullText || page.fullText || page.aiExtract || page.extract,
+  )
   let routeSteps = state.itinerary?.showToAI ? state.itinerary.steps.slice(0, 10) : []
   let wikiChars = Math.max(120, settings.maxWikiChars)
   let text = render(state, nearby, savedPlaces, stars, poiBriefs, wikiChars, routeSteps)
@@ -148,10 +149,6 @@ export function buildContext(state: MapState, settings: Settings): string {
       nearby = nearby.slice(0, -1)
     } else if (wikiChars > 180) {
       wikiChars = Math.max(180, Math.floor(wikiChars * 0.7))
-    } else if (stars.length > 1) {
-      stars = stars.slice(0, -1)
-    } else if (savedPlaces.length > 0) {
-      savedPlaces = savedPlaces.slice(0, -1)
     } else if (routeSteps.length > 0) {
       routeSteps = routeSteps.slice(0, -1)
     } else {
