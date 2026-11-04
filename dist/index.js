@@ -36331,7 +36331,21 @@ async function mI(e, t) {
 		return;
 	}
 }
-async function hI(e, t) {
+var hI = /* @__PURE__ */ new Map();
+async function gI(e, t) {
+	let n = `${e.toFixed(5)},${t.toFixed(5)}`;
+	if (hI.has(n)) return hI.get(n);
+	try {
+		let r = new URL("https://photon.komoot.io/reverse");
+		r.searchParams.set("lat", e.toFixed(6)), r.searchParams.set("lon", t.toFixed(6)), r.searchParams.set("lang", "en"), r.searchParams.set("layer", "street");
+		let i = (await uI(r, void 0, 6e3)).features?.[0]?.properties, a = (i?.name || i?.street)?.trim() || void 0;
+		return hI.set(n, a), a;
+	} catch (e) {
+		console.warn("[tavern-map] reverse street lookup failed", e), hI.set(n, void 0);
+		return;
+	}
+}
+async function _I(e, t) {
 	try {
 		let n = new URL("https://photon.komoot.io/reverse");
 		n.searchParams.set("lat", e.toFixed(6)), n.searchParams.set("lon", t.toFixed(6)), n.searchParams.set("lang", "en");
@@ -36358,9 +36372,9 @@ async function hI(e, t) {
 	} catch (e) {
 		console.warn("[tavern-map] Photon reverse failed, falling back", e);
 	}
-	return gI(e, t);
+	return vI(e, t);
 }
-async function gI(e, t) {
+async function vI(e, t) {
 	try {
 		let n = new URL("https://api.bigdatacloud.net/data/reverse-geocode-client");
 		n.searchParams.set("latitude", String(e)), n.searchParams.set("longitude", String(t)), n.searchParams.set("localityLanguage", "en");
@@ -36386,24 +36400,24 @@ async function gI(e, t) {
 		};
 	}
 }
-var _I = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], vI = 250, yI = 3e5, bI = /* @__PURE__ */ new Map();
-async function xI(e, t, n) {
-	let r = Math.round(Math.min(1e3, Math.max(50, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = bI.get(i);
-	if (a && Date.now() - a.at < yI) return a.places;
-	let o = `[out:json][timeout:20];(node(around:${r},${e},${t})[name];way(around:${r},${e},${t})[name];);out center 40;`, s = _I.map(async (n) => {
+var yI = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], bI = 250, xI = 3e5, SI = /* @__PURE__ */ new Map();
+async function CI(e, t, n) {
+	let r = Math.round(Math.min(1e3, Math.max(50, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = SI.get(i);
+	if (a && Date.now() - a.at < xI) return a.places;
+	let o = `[out:json][timeout:20];(node(around:${r},${e},${t})[name];way(around:${r},${e},${t})[name];);out center 40;`, s = yI.map(async (n) => {
 		try {
 			let a = await uI(n, {
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({ data: o })
 			}, 1e4);
-			return SI(i, TI(a, e, t, r).slice(0, 12));
+			return wI(i, DI(a, e, t, r).slice(0, 12));
 		} catch (e) {
 			throw console.warn(`[tavern-map] Overpass ${n} failed`, pI(e)), e;
 		}
 	}), c, l = new Promise((n, i) => {
 		c = window.setTimeout(() => {
-			CI(e, t, r).then((e) => {
+			TI(e, t, r).then((e) => {
 				console.warn("[tavern-map] OSM API fallback used"), n(e);
 			}, (e) => {
 				console.warn("[tavern-map] OSM API fallback failed", pI(e)), i(e);
@@ -36412,27 +36426,27 @@ async function xI(e, t, n) {
 	});
 	try {
 		let e = await Promise.any([Promise.any(s), l]);
-		return c !== void 0 && window.clearTimeout(c), SI(i, e);
+		return c !== void 0 && window.clearTimeout(c), wI(i, e);
 	} catch (e) {
 		throw c !== void 0 && window.clearTimeout(c), Error(`周边数据源暂时不可用（${pI(e)}）`);
 	}
 }
-function SI(e, t) {
-	return bI.set(e, {
+function wI(e, t) {
+	return SI.set(e, {
 		at: Date.now(),
 		places: t
 	}), t;
 }
-async function CI(e, t, n) {
-	let r = Math.min(vI, Math.max(50, n)), i = r / 111320, a = r / (111320 * Math.max(.2, Math.cos(e * Math.PI / 180)));
-	return wI(await dI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
+async function TI(e, t, n) {
+	let r = Math.min(bI, Math.max(50, n)), i = r / 111320, a = r / (111320 * Math.max(.2, Math.cos(e * Math.PI / 180)));
+	return EI(await dI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
 		t - a,
 		e - i,
 		t + a,
 		e + i
 	].map((e) => e.toFixed(7)).join(",")}`, { headers: { Accept: "application/xml" } }, 25e3), e, t, r).slice(0, 12);
 }
-function wI(e, t, n, r) {
+function EI(e, t, n, r) {
 	let i = new DOMParser().parseFromString(e, "application/xml");
 	if (i.getElementsByTagName("parsererror").length > 0) throw Error("OSM XML 解析失败");
 	let a = /* @__PURE__ */ new Map();
@@ -36441,12 +36455,12 @@ function wI(e, t, n, r) {
 		t && Number.isFinite(n) && Number.isFinite(r) && a.set(t, {
 			lat: n,
 			lng: r,
-			tags: OI(e)
+			tags: AI(e)
 		});
 	}
 	let o = [];
 	for (let [e, i] of a) {
-		let a = EI(`node/${e}`, i.tags, i.lat, i.lng, t, n, r);
+		let a = OI(`node/${e}`, i.tags, i.lat, i.lng, t, n, r);
 		a && o.push(a);
 	}
 	for (let e of Array.from(i.getElementsByTagName("way"))) {
@@ -36458,25 +36472,25 @@ function wI(e, t, n, r) {
 			e && (s += e.lat, c += e.lng, l += 1);
 		}
 		if (l === 0) continue;
-		let u = EI(`way/${i}`, OI(e), s / l, c / l, t, n, r);
+		let u = OI(`way/${i}`, AI(e), s / l, c / l, t, n, r);
 		u && o.push(u);
 	}
-	return kI(o);
+	return jI(o);
 }
-function TI(e, t, n, r) {
+function DI(e, t, n, r) {
 	let i = [];
 	for (let a of e.elements ?? []) {
 		let e = a.center ?? a;
 		if (typeof e.lat != "number" || typeof e.lon != "number") continue;
-		let o = EI(`${a.type}/${a.id}`, a.tags ?? {}, e.lat, e.lon, t, n, r);
+		let o = OI(`${a.type}/${a.id}`, a.tags ?? {}, e.lat, e.lon, t, n, r);
 		o && i.push(o);
 	}
-	return kI(i);
+	return jI(i);
 }
-function EI(e, t, n, r, i, a, o) {
+function OI(e, t, n, r, i, a, o) {
 	let s = t["name:en"] || t.name;
 	if (!s) return;
-	let c = DI(t);
+	let c = kI(t);
 	if (!c) return;
 	let l = $F(i, a, n, r);
 	if (l > o) return;
@@ -36496,12 +36510,12 @@ function EI(e, t, n, r, i, a, o) {
 		cuisine: t.cuisine
 	};
 }
-function DI(e) {
+function kI(e) {
 	let t = e.tourism || e.historic || e.amenity || e.shop || e.leisure || e.office || e.place;
 	if (t) return t;
 	if (e.railway === "station" || e.railway === "halt") return "station";
 }
-function OI(e) {
+function AI(e) {
 	let t = {};
 	for (let n of Array.from(e.getElementsByTagName("tag"))) {
 		let e = n.getAttribute("k"), r = n.getAttribute("v");
@@ -36509,7 +36523,7 @@ function OI(e) {
 	}
 	return t;
 }
-function kI(e) {
+function jI(e) {
 	let t = /* @__PURE__ */ new Set();
 	return e.sort((e, t) => (e.distanceM ?? 0) - (t.distanceM ?? 0)).filter((e) => {
 		let n = `${e.name}|${e.lat.toFixed(3)}|${e.lng.toFixed(3)}`;
@@ -36517,8 +36531,8 @@ function kI(e) {
 	});
 }
 // src/poi.ts
-var AI = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], jI = 500, MI = 3e5, NI = /* @__PURE__ */ new Map();
-function PI(e) {
+var MI = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], NI = 500, PI = 3e5, FI = /* @__PURE__ */ new Map();
+function II(e) {
 	let t = e.amenity, n = e.shop, r = e.tourism, i = e.historic, a = e.leisure, o = e.railway, s = e.public_transport;
 	return [
 		"restaurant",
@@ -36559,11 +36573,11 @@ function PI(e) {
 		"place_of_worship"
 	].includes(t) || e.office || e.place ? "service" : "other";
 }
-function FI(e, t, n) {
+function LI(e, t, n) {
 	let r = e.center ?? e;
-	return typeof r.lat != "number" || typeof r.lon != "number" ? null : II(`${e.type}/${e.id}`, e.tags ?? {}, r.lat, r.lon, t, n);
+	return typeof r.lat != "number" || typeof r.lon != "number" ? null : RI(`${e.type}/${e.id}`, e.tags ?? {}, r.lat, r.lon, t, n);
 }
-function II(e, t, n, r, i, a) {
+function RI(e, t, n, r, i, a) {
 	let o = t["name:en"] || t.name;
 	if (!o) return null;
 	let s = t.tourism || t.historic || t.amenity || t.shop || t.leisure || t.office || t.place || t.railway;
@@ -36578,14 +36592,14 @@ function II(e, t, n, r, i, a) {
 		lat: n,
 		lng: r,
 		distanceM: $F(i, a, n, r),
-		group: PI(t),
+		group: II(t),
 		tags: t,
 		openingHours: t.opening_hours,
 		website: t.website || t["contact:website"],
 		cuisine: t.cuisine
 	};
 }
-function LI(e) {
+function zI(e) {
 	let t = (e ?? "").toLowerCase();
 	return [
 		"restaurant",
@@ -36630,14 +36644,14 @@ function LI(e) {
 		"marketplace"
 	].includes(t) ? "shopping" : "service";
 }
-function RI(e) {
+function BI(e) {
 	let t = /* @__PURE__ */ new Set();
 	return e.sort((e, t) => (e.distanceM ?? 0) - (t.distanceM ?? 0)).filter((e) => {
 		let n = `${e.name}|${e.lat.toFixed(3)}|${e.lng.toFixed(3)}`;
 		return !t.has(n) && (t.add(n), !0);
 	});
 }
-function zI(e) {
+function VI(e) {
 	let t = {};
 	for (let n of Array.from(e.getElementsByTagName("tag"))) {
 		let e = n.getAttribute("k"), r = n.getAttribute("v");
@@ -36645,7 +36659,7 @@ function zI(e) {
 	}
 	return t;
 }
-async function BI(e, t, n) {
+async function HI(e, t, n) {
 	let r = Math.min(250, Math.max(50, n)), i = r / 111320, a = r / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), o = await dI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
 		t - a,
 		e - i,
@@ -36659,12 +36673,12 @@ async function BI(e, t, n) {
 		t && Number.isFinite(n) && Number.isFinite(r) && c.set(t, {
 			lat: n,
 			lng: r,
-			tags: zI(e)
+			tags: VI(e)
 		});
 	}
 	let l = [];
 	for (let [n, r] of c) {
-		let i = II(`node/${n}`, r.tags, r.lat, r.lng, e, t);
+		let i = RI(`node/${n}`, r.tags, r.lat, r.lng, e, t);
 		i && l.push(i);
 	}
 	for (let n of Array.from(s.getElementsByTagName("way"))) {
@@ -36676,14 +36690,14 @@ async function BI(e, t, n) {
 			t && (i += t.lat, a += t.lng, o += 1);
 		}
 		if (o === 0) continue;
-		let s = II(`way/${r}`, zI(n), i / o, a / o, e, t);
+		let s = RI(`way/${r}`, VI(n), i / o, a / o, e, t);
 		s && l.push(s);
 	}
-	return RI(l).slice(0, jI);
+	return BI(l).slice(0, NI);
 }
-async function VI(e, t, n) {
-	let r = Math.round(Math.min(1e3, Math.max(50, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = NI.get(i);
-	if (a && Date.now() - a.at < MI) return a.pois;
+async function UI(e, t, n) {
+	let r = Math.round(Math.min(1e3, Math.max(50, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = FI.get(i);
+	if (a && Date.now() - a.at < PI) return a.pois;
 	let o = `around:${r},${e},${t}`, s = `[out:json][timeout:20];(
     nwr(${o})[name][tourism];
     nwr(${o})[name][historic];
@@ -36694,13 +36708,13 @@ async function VI(e, t, n) {
     nwr(${o})[name][place];
     nwr(${o})[name][railway];
     nwr(${o})[name][public_transport];
-  );out center ${jI};`, c = Promise.any(AI.map(async (n) => {
+  );out center ${NI};`, c = Promise.any(MI.map(async (n) => {
 		try {
-			let r = RI(((await uI(n, {
+			let r = BI(((await uI(n, {
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({ data: s })
-			}, 1e4)).elements ?? []).map((n) => FI(n, e, t)).filter((e) => !!e)).slice(0, jI);
+			}, 1e4)).elements ?? []).map((n) => LI(n, e, t)).filter((e) => !!e)).slice(0, NI);
 			if (r.length === 0) throw Error("Overpass 返回空结果");
 			return r;
 		} catch (e) {
@@ -36708,7 +36722,7 @@ async function VI(e, t, n) {
 		}
 	})), l, u = new Promise((n, i) => {
 		l = window.setTimeout(() => {
-			BI(e, t, r).then((e) => {
+			HI(e, t, r).then((e) => {
 				e.length === 0 ? i(/* @__PURE__ */ Error("OSM API 返回空结果")) : (console.warn("[tavern-map] POI OSM API fallback used"), n(e));
 			}, (e) => {
 				console.warn("[tavern-map] POI OSM API fallback failed", pI(e)), i(e);
@@ -36717,23 +36731,23 @@ async function VI(e, t, n) {
 	});
 	try {
 		let e = await Promise.any([c, u]);
-		return l !== void 0 && window.clearTimeout(l), NI.set(i, {
+		return l !== void 0 && window.clearTimeout(l), FI.set(i, {
 			at: Date.now(),
 			pois: e
 		}), e;
 	} catch (e) {
 		l !== void 0 && window.clearTimeout(l), console.warn("[tavern-map] POI sources exhausted", pI(e));
 	}
-	let d = (await xI(e, t, r)).slice(0, 24).map((e) => ({
+	let d = (await CI(e, t, r)).slice(0, 24).map((e) => ({
 		...e,
-		group: LI(e.category)
+		group: zI(e.category)
 	}));
-	return NI.set(i, {
+	return FI.set(i, {
 		at: Date.now(),
 		pois: d
 	}), d;
 }
-function HI(e, t = 900, n = 18) {
+function WI(e, t = 900, n = 18) {
 	if (e.length === 0) return [];
 	let r = [], i = e[0];
 	r.push({
@@ -36754,15 +36768,15 @@ function HI(e, t = 900, n = 18) {
 		lng: o[0]
 	}), r.slice(0, n);
 }
-async function UI(e, t = 100) {
-	let n = Math.max(25, Math.min(500, t)), r = HI(e);
+async function GI(e, t = 100) {
+	let n = Math.max(25, Math.min(500, t)), r = WI(e);
 	if (r.length === 0) return [];
 	let i = `[out:json][timeout:20];\n(\n${r.map((e) => `nwr(around:${n},${e.lat.toFixed(6)},${e.lng.toFixed(6)})[name];`).join("\n")}\n);\nout center 300;`, a = (e) => uI(e, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({ data: i })
-	}, 15e3), o = Promise.any(AI.map(async (e) => {
-		let t = await a(e), n = r[0], i = RI((t.elements ?? []).map((e) => FI(e, n.lat, n.lng)).filter((e) => !!e));
+	}, 15e3), o = Promise.any(MI.map(async (e) => {
+		let t = await a(e), n = r[0], i = BI((t.elements ?? []).map((e) => LI(e, n.lat, n.lng)).filter((e) => !!e));
 		if (i.length === 0) throw Error("route Overpass 返回空结果");
 		return i.slice(0, 50).map((e) => ({
 			id: e.id,
@@ -36778,7 +36792,7 @@ async function UI(e, t = 100) {
 		}));
 	})), s, c = new Promise((t, r) => {
 		s = window.setTimeout(() => {
-			GI(e, n).then((e) => {
+			qI(e, n).then((e) => {
 				e.length === 0 ? r(/* @__PURE__ */ Error("route OSM 返回空结果")) : t(e);
 			}, r);
 		}, 1200);
@@ -36790,7 +36804,7 @@ async function UI(e, t = 100) {
 		return s !== void 0 && window.clearTimeout(s), console.warn("[tavern-map] route POI lookup failed", pI(e)), [];
 	}
 }
-function WI(e, t, n = 100) {
+function KI(e, t, n = 100) {
 	if (e.length === 0 || t.length === 0) return [];
 	let r = e[0], i = [];
 	for (let r of t) {
@@ -36817,16 +36831,16 @@ function WI(e, t, n = 100) {
 		openingHours: e.openingHours
 	}));
 }
-async function GI(e, t) {
-	let n = HI(e, 1600, 6), r = [];
+async function qI(e, t) {
+	let n = WI(e, 1600, 6), r = [];
 	for (let e of n) try {
-		r.push(...await BI(e.lat, e.lng, 250));
+		r.push(...await HI(e.lat, e.lng, 250));
 	} catch (e) {
 		console.warn("[tavern-map] route OSM fallback sample failed", pI(e));
 	}
-	return WI(e, r, t);
+	return KI(e, r, t);
 }
-function KI(e, t, n) {
+function JI(e, t, n) {
 	let r = e.map(() => []), i = Math.max(25, Math.min(500, n));
 	for (let n of t) {
 		let t = -1, a = Infinity, o = 0;
@@ -36852,18 +36866,18 @@ function KI(e, t, n) {
 	return r.map((e) => e.sort((e, t) => (e.alongM ?? 0) - (t.alongM ?? 0)));
 }
 // src/prompt.ts
-var qI = "tavern-map-scene", JI = !1;
-function YI(e, t, n, r) {
-	typeof e.setExtensionPrompt == "function" ? e.setExtensionPrompt(qI, n ? t : "", e.extension_prompt_types?.IN_CHAT ?? 1, r, !1, e.extension_prompt_roles?.SYSTEM ?? 0, () => n) : JI || (JI = !0, console.warn("[tavern-map] setExtensionPrompt is unavailable; prompt injection disabled"));
+var YI = "tavern-map-scene", XI = !1;
+function ZI(e, t, n, r) {
+	typeof e.setExtensionPrompt == "function" ? e.setExtensionPrompt(YI, n ? t : "", e.extension_prompt_types?.IN_CHAT ?? 1, r, !1, e.extension_prompt_roles?.SYSTEM ?? 0, () => n) : XI || (XI = !0, console.warn("[tavern-map] setExtensionPrompt is unavailable; prompt injection disabled"));
 }
-function XI(e) {
-	typeof e.setExtensionPrompt == "function" && e.setExtensionPrompt(qI, "", 0, 0, !1, 0);
+function QI(e) {
+	typeof e.setExtensionPrompt == "function" && e.setExtensionPrompt(YI, "", 0, 0, !1, 0);
 }
 // src/route.ts
-function ZI(e, t) {
+function $I(e, t) {
 	return `${e.lng},${e.lat};${t.lng},${t.lat}`;
 }
-var QI = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${ZI(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/foot/${ZI(e, t)}?overview=full&geometries=geojson&steps=true`], $I = [(e, t) => `https://routing.openstreetmap.de/routed-car/route/v1/driving/${ZI(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/driving/${ZI(e, t)}?overview=full&geometries=geojson&steps=true`], eL = {
+var eL = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${$I(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/foot/${$I(e, t)}?overview=full&geometries=geojson&steps=true`], tL = [(e, t) => `https://routing.openstreetmap.de/routed-car/route/v1/driving/${$I(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/driving/${$I(e, t)}?overview=full&geometries=geojson&steps=true`], nL = {
 	left: "左转",
 	right: "右转",
 	straight: "直行",
@@ -36872,7 +36886,7 @@ var QI = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/
 	"sharp left": "急左转",
 	"sharp right": "急右转",
 	uturn: "掉头"
-}, tL = {
+}, rL = {
 	merge: "汇入",
 	fork: "走岔路",
 	"end of road": "到道路尽头",
@@ -36880,7 +36894,7 @@ var QI = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/
 	continue: "继续",
 	"use lane": "保持车道"
 };
-function nL(e) {
+function iL(e) {
 	let t = e.maneuver?.type, n = e.maneuver?.modifier;
 	if (t === "depart") return "出发";
 	if (t === "arrive") return "到达目的地";
@@ -36888,15 +36902,15 @@ function nL(e) {
 		let t = e.maneuver?.exit;
 		return `进入环岛${t ? `，第 ${t} 个出口` : ""}`;
 	}
-	return t === "continue" ? "继续前进" : (n ? eL[n] : "") || (t ? tL[t] : "") || "继续前进";
+	return t === "continue" ? "继续前进" : (n ? nL[n] : "") || (t ? rL[t] : "") || "继续前进";
 }
-function rL(e) {
+function aL(e) {
 	return e.name?.trim() || e.ref?.trim() || void 0;
 }
-function iL(e, t) {
+function oL(e, t) {
 	let n = [];
 	for (let r of e ?? []) {
-		let e = nL(r), i = rL(r) ?? (t === "foot" ? "未命名步道" : "未命名道路"), a = Number.isFinite(r.distance) ? Number(r.distance) : 0, o = Number.isFinite(r.duration) ? Number(r.duration) : 0, s = (r.geometry?.coordinates ?? []).filter((e) => Array.isArray(e) && e.length >= 2 && Number.isFinite(e[0]) && Number.isFinite(e[1])).map((e) => [e[0], e[1]]);
+		let e = iL(r), i = aL(r) ?? (t === "foot" ? "未命名步道" : "未命名道路"), a = Number.isFinite(r.distance) ? Number(r.distance) : 0, o = Number.isFinite(r.duration) ? Number(r.duration) : 0, s = (r.geometry?.coordinates ?? []).filter((e) => Array.isArray(e) && e.length >= 2 && Number.isFinite(e[0]) && Number.isFinite(e[1])).map((e) => [e[0], e[1]]);
 		if (n.length > 0 && n[n.length - 1].instruction === e && n[n.length - 1].road === i && n[n.length - 1].coordinates?.length === s.length) {
 			let e = n[n.length - 1];
 			e.distance += a, e.duration += o;
@@ -36911,8 +36925,8 @@ function iL(e, t) {
 	}
 	return n;
 }
-async function aL(e, t, n) {
-	let r = n === "driving" ? $I : QI;
+async function sL(e, t, n) {
+	let r = n === "driving" ? tL : eL;
 	for (let i of r) try {
 		let r = await uI(i(e, t), { headers: { Accept: "application/json" } }, 1e4), a = r.routes?.[0], o = a?.geometry?.coordinates;
 		if (r.code !== "Ok" || !a || !o || o.length < 2) throw Error("路线为空");
@@ -36922,7 +36936,7 @@ async function aL(e, t, n) {
 			distance: a.distance ?? $F(e.lat, e.lng, t.lat, t.lng),
 			duration: a.duration ?? (a.distance ?? 0) / (n === "driving" ? 13.9 : 1.35),
 			coordinates: s,
-			steps: iL(a.legs?.[0]?.steps, n),
+			steps: oL(a.legs?.[0]?.steps, n),
 			profile: n
 		};
 	} catch (e) {
@@ -36942,7 +36956,7 @@ async function aL(e, t, n) {
 		fallback: !0
 	};
 }
-var oL = {
+var cL = {
 	WALK: "步行",
 	BIKE: "骑行",
 	BUS: "公交",
@@ -36962,10 +36976,10 @@ var oL = {
 	TROLLEYBUS: "无轨电车",
 	SHARE_TAXI: "拼车"
 };
-function sL(e) {
-	return oL[e ?? ""] ?? e ?? "公共交通";
+function lL(e) {
+	return cL[e ?? ""] ?? e ?? "公共交通";
 }
-function cL(e, t = 6) {
+function uL(e, t = 6) {
 	let n = [], r = 0, i = 0, a = 0, o = 10 ** t;
 	for (; r < e.length;) {
 		let t = 0, s = 0, c = 0;
@@ -36980,7 +36994,7 @@ function cL(e, t = 6) {
 	}
 	return n;
 }
-function lL(e) {
+function dL(e) {
 	let t = 0;
 	for (let n = 1; n < e.length; n += 1) {
 		let [r, i] = e[n - 1], [a, o] = e[n];
@@ -36988,12 +37002,12 @@ function lL(e) {
 	}
 	return t;
 }
-function uL(e, t, n) {
+function fL(e, t, n) {
 	if (!Number.isFinite(t) || !Number.isFinite(n)) return;
 	let r = e[e.length - 1];
 	r && Math.abs(r[0] - t) < 1e-7 && Math.abs(r[1] - n) < 1e-7 || e.push([t, n]);
 }
-async function dL(e, t) {
+async function pL(e, t) {
 	let n = (await uI(`https://api.transitous.org/api/v6/plan?${new URLSearchParams({
 		fromPlace: `${e.lat},${e.lng}`,
 		toPlace: `${t.lat},${t.lng}`,
@@ -37003,14 +37017,14 @@ async function dL(e, t) {
 	if (!n || !Array.isArray(r) || r.length === 0) throw Error("没有可用的公共交通路线");
 	let i = [], a = [], o = 0, s = null, c = (e) => {
 		let t = e.routeShortName || e.routeLongName || "";
-		return `${t ? `${t} ` : ""}${sL(e.mode)}`;
+		return `${t ? `${t} ` : ""}${lL(e.mode)}`;
 	}, l = (e) => {
 		a.length < 40 && a.push(e);
 	};
 	for (let e = 0; e < r.length; e += 1) {
 		let t = r[e], n = r[e - 1], a = r[e + 1], u = t.legGeometry, d = [];
-		if (u?.points) for (let e of cL(u.points, u.precision ?? 6)) uL(d, e[0], e[1]), uL(i, e[0], e[1]);
-		else uL(d, t.from?.lon, t.from?.lat), uL(d, t.to?.lon, t.to?.lat), uL(i, t.from?.lon, t.from?.lat), uL(i, t.to?.lon, t.to?.lat);
+		if (u?.points) for (let e of uL(u.points, u.precision ?? 6)) fL(d, e[0], e[1]), fL(i, e[0], e[1]);
+		else fL(d, t.from?.lon, t.from?.lat), fL(d, t.to?.lon, t.to?.lat), fL(i, t.from?.lon, t.from?.lat), fL(i, t.to?.lon, t.to?.lat);
 		let f = Number.isFinite(t.duration) ? Number(t.duration) : 0, p = Number.isFinite(t.distance) ? Number(t.distance) : 0, m = t.from?.name?.trim() || "起点", h = t.to?.name?.trim() || "终点";
 		if (o += f, t.mode === "WALK") {
 			let e = !!(n && n.mode !== "WALK"), t = !!(a && a.mode !== "WALK");
@@ -37035,7 +37049,7 @@ async function dL(e, t) {
 					duration: t * 60
 				});
 			}
-			let n = t.routeShortName || t.routeLongName || "", r = sL(t.mode), i = t.headsign ? `（${t.headsign}）` : "";
+			let n = t.routeShortName || t.routeLongName || "", r = lL(t.mode), i = t.headsign ? `（${t.headsign}）` : "";
 			l({
 				instruction: `乘坐 ${n ? `${n} ` : ""}${r}${i} 从 ${m} 到 ${h}`,
 				name: n || void 0,
@@ -37049,14 +37063,14 @@ async function dL(e, t) {
 	}
 	if (i.length < 2) throw Error("公共交通路线没有可用几何");
 	return {
-		distance: lL(i) || $F(e.lat, e.lng, t.lat, t.lng),
+		distance: dL(i) || $F(e.lat, e.lng, t.lat, t.lng),
 		duration: n.duration ?? o,
 		coordinates: i,
 		steps: a,
 		profile: "transit"
 	};
 }
-function fL(e, t) {
+function mL(e, t) {
 	let n = $F(e.lat, e.lng, t.lat, t.lng);
 	return {
 		distance: n,
@@ -37071,37 +37085,37 @@ function fL(e, t) {
 		fallback: !0
 	};
 }
-async function pL(e, t, n = "foot") {
+async function hL(e, t, n = "foot") {
 	if (n === "transit") try {
-		return await dL(e, t);
+		return await pL(e, t);
 	} catch (n) {
-		return console.warn("[tavern-map] public transit route failed", n), fL(e, t);
+		return console.warn("[tavern-map] public transit route failed", n), mL(e, t);
 	}
-	return aL(e, t, n);
+	return sL(e, t, n);
 }
 // src/search.ts
-function mL(e) {
+function gL(e) {
 	return e?.trim() || void 0;
 }
-function hL(e) {
+function _L(e) {
 	let t = e.properties, n = e.geometry?.coordinates;
 	if (!t || !n || !Number.isFinite(n[0]) || !Number.isFinite(n[1])) return null;
-	let r = mL(t.name) ?? mL(t.street) ?? mL(t.city) ?? mL(t.country);
+	let r = gL(t.name) ?? gL(t.street) ?? gL(t.city) ?? gL(t.country);
 	if (!r) return null;
 	let i = [
-		mL(t.street),
-		mL(t.locality),
-		mL(t.district),
-		mL(t.city),
-		mL(t.county),
-		mL(t.state),
-		mL(t.country)
+		gL(t.street),
+		gL(t.locality),
+		gL(t.district),
+		gL(t.city),
+		gL(t.county),
+		gL(t.state),
+		gL(t.country)
 	].filter((e) => !!e), a = Array.from(new Set(i)).join(", "), o = t.extent, s = Array.isArray(o) && o.length === 4 && o.every((e) => Number.isFinite(e)) && o[0] < o[2] && o[1] < o[3] ? [
 		o[0],
 		o[1],
 		o[2],
 		o[3]
-	] : void 0, c = mL(t["name:zh"]);
+	] : void 0, c = gL(t["name:zh"]);
 	return {
 		id: t.osm_type && t.osm_id != null ? `osm:${t.osm_type}/${t.osm_id}` : `search:${n[1]},${n[0]}`,
 		name: r,
@@ -37112,10 +37126,10 @@ function hL(e) {
 		lng: n[0],
 		bounds: s,
 		resultType: t.type,
-		country: mL(t.country)
+		country: gL(t.country)
 	};
 }
-function gL(e, t, n) {
+function vL(e, t, n) {
 	let r = t.trim().toLowerCase(), i = r.split(/\s+/).filter((e) => e.length > 0);
 	return e.map((e) => {
 		let t = e.name.toLowerCase(), a = (e.nameZh ?? "").toLowerCase(), o = (e.address ?? "").toLowerCase(), s = t === r || a === r, c = t.startsWith(r) || a.startsWith(r), l = t.includes(r) || a.includes(r), u = i.filter((e) => t.includes(e) || a.includes(e) || o.includes(e)).length, d = (e.resultType ?? "").toLowerCase(), f = [
@@ -37155,7 +37169,7 @@ function gL(e, t, n) {
 		};
 	}).sort((e, t) => t.score - e.score || (e.result.distanceM ?? Infinity) - (t.result.distanceM ?? Infinity)).slice(0, 8).map(({ result: e }) => e);
 }
-async function _L(e, t) {
+async function yL(e, t) {
 	let n = e.trim();
 	if (n.length < 2) return [];
 	let r = (e) => {
@@ -37172,7 +37186,7 @@ async function _L(e, t) {
 	}
 	let s = /* @__PURE__ */ new Set(), c = [];
 	for (let { feature: e, rank: t } of o) {
-		let n = hL(e);
+		let n = _L(e);
 		if (!n) continue;
 		let r = `${n.name}|${n.lat.toFixed(4)}|${n.lng.toFixed(4)}`;
 		s.has(r) || (s.add(r), c.push({
@@ -37180,10 +37194,10 @@ async function _L(e, t) {
 			sourceRank: t
 		}));
 	}
-	return gL(c, n, t);
+	return vL(c, n, t);
 }
 // src/state.ts
-function vL(e) {
+function bL(e) {
 	if (!e || typeof e != "object") return;
 	let t = e, n = t.from, r = t.to;
 	if (!n || !r || typeof n.name != "string" || typeof r.name != "string" || !Number.isFinite(n.lat) || !Number.isFinite(n.lng) || !Number.isFinite(r.lat) || !Number.isFinite(r.lng)) return;
@@ -37229,7 +37243,7 @@ function vL(e) {
 		updatedAt: Number.isFinite(t.updatedAt) ? Number(t.updatedAt) : Date.now()
 	};
 }
-var yL = {
+var xL = {
 	version: 1,
 	enabled: !0,
 	center: {
@@ -37246,8 +37260,8 @@ var yL = {
 	poiAllToAI: !1,
 	updatedAt: Date.now()
 };
-function bL(e) {
-	let t = structuredClone(yL), n = e.chatMetadata?.["tavern-map"];
+function SL(e) {
+	let t = structuredClone(xL), n = e.chatMetadata?.["tavern-map"];
 	if (!n || typeof n != "object" || n.version !== 1) return t;
 	let r = n, i = r.center;
 	return {
@@ -37328,18 +37342,18 @@ function bL(e) {
 		} : void 0,
 		lastWikiMode: r.lastWikiMode === "intro" || r.lastWikiMode === "full" ? r.lastWikiMode : void 0,
 		wikiOpen: typeof r.wikiOpen == "boolean" ? r.wikiOpen : void 0,
-		itinerary: vL(r.itinerary)
+		itinerary: bL(r.itinerary)
 	};
 }
-function xL(e, t) {
+function CL(e, t) {
 	t.updatedAt = Date.now(), e.chatMetadata && (e.chatMetadata["tavern-map"] = t, e.saveMetadataDebounced?.());
 }
 // src/settings.ts
-var SL = "tavern-map", CL = [
+var wL = "tavern-map", TL = [
 	"en",
 	"ja",
 	"zh"
-], wL = {
+], EL = {
 	enabled: !0,
 	provider: "osm",
 	wikiLangs: ["en"],
@@ -37350,35 +37364,35 @@ var SL = "tavern-map", CL = [
 	showRoutePois: !0,
 	routePoiRadiusM: 100
 };
-function TL(e) {
-	let t = e.extensionSettings?.[SL];
-	if (!t || typeof t != "object") return { ...wL };
-	let n = t, r = (e, t, n, r) => typeof e != "number" || !Number.isFinite(e) ? t : Math.min(r, Math.max(n, e)), i = n.wikiLang, a = Array.isArray(n.wikiLangs) ? n.wikiLangs : typeof i == "string" ? [i] : [], o = Array.from(new Set(a.filter((e) => typeof e == "string" && CL.includes(e)))).slice(0, 5);
+function DL(e) {
+	let t = e.extensionSettings?.[wL];
+	if (!t || typeof t != "object") return { ...EL };
+	let n = t, r = (e, t, n, r) => typeof e != "number" || !Number.isFinite(e) ? t : Math.min(r, Math.max(n, e)), i = n.wikiLang, a = Array.isArray(n.wikiLangs) ? n.wikiLangs : typeof i == "string" ? [i] : [], o = Array.from(new Set(a.filter((e) => typeof e == "string" && TL.includes(e)))).slice(0, 5);
 	return {
-		enabled: typeof n.enabled == "boolean" ? n.enabled : wL.enabled,
+		enabled: typeof n.enabled == "boolean" ? n.enabled : EL.enabled,
 		provider: "osm",
-		wikiLangs: o.length > 0 ? o : [...wL.wikiLangs],
-		radiusM: r(n.radiusM, wL.radiusM, 50, 1e3),
-		maxNearby: Math.round(r(n.maxNearby, wL.maxNearby, 0, 12)),
-		depth: Math.round(r(n.depth, wL.depth, 0, 10)),
+		wikiLangs: o.length > 0 ? o : [...EL.wikiLangs],
+		radiusM: r(n.radiusM, EL.radiusM, 50, 1e3),
+		maxNearby: Math.round(r(n.maxNearby, EL.maxNearby, 0, 12)),
+		depth: Math.round(r(n.depth, EL.depth, 0, 10)),
 		showPois: typeof n.showPois != "boolean" || n.showPois,
-		showRoutePois: typeof n.showRoutePois == "boolean" ? n.showRoutePois : wL.showRoutePois,
-		routePoiRadiusM: Math.round(r(n.routePoiRadiusM, wL.routePoiRadiusM, 25, 500))
+		showRoutePois: typeof n.showRoutePois == "boolean" ? n.showRoutePois : EL.showRoutePois,
+		routePoiRadiusM: Math.round(r(n.routePoiRadiusM, EL.routePoiRadiusM, 25, 500))
 	};
 }
-function EL(e, t) {
-	e.extensionSettings && (e.extensionSettings[SL] = { ...t }, e.saveSettingsDebounced?.());
+function OL(e, t) {
+	e.extensionSettings && (e.extensionSettings[wL] = { ...t }, e.saveSettingsDebounced?.());
 }
 // src/wiki.ts
-function DL(e) {
+function kL(e) {
 	return `https://${e}.wikipedia.org/w/api.php`;
 }
-async function OL(e, t, n, r) {
+async function AL(e, t, n, r) {
 	let i = Array.from(new Set(r)).filter(Boolean);
 	if (i.length === 0) return [];
 	let a = await Promise.allSettled(i.map(async (r) => {
 		try {
-			return await kL(e, t, n, r);
+			return await jL(e, t, n, r);
 		} catch (e) {
 			throw console.warn(`[tavern-map] Wikipedia ${r} geosearch failed`, e), e;
 		}
@@ -37387,10 +37401,10 @@ async function OL(e, t, n, r) {
 		let e = a.find((e) => e.status === "rejected");
 		if (e) throw Error(`Wikipedia 请求失败：${pI(e.reason)}`);
 	}
-	return AL(o).slice(0, 30);
+	return ML(o).slice(0, 30);
 }
-async function kL(e, t, n, r) {
-	let i = new URL(DL(r));
+async function jL(e, t, n, r) {
+	let i = new URL(kL(r));
 	return i.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -37408,15 +37422,15 @@ async function kL(e, t, n, r) {
 		lng: e.lon
 	}));
 }
-function AL(e) {
+function ML(e) {
 	let t = /* @__PURE__ */ new Set();
 	return e.filter((e) => {
 		let n = `${e.lang}:${e.pageId}`;
 		return !t.has(n) && (t.add(n), !0);
 	}).sort((e, t) => e.dist - t.dist);
 }
-async function jL(e, t, n) {
-	let r = new URL(DL(e));
+async function NL(e, t, n) {
+	let r = new URL(kL(e));
 	r.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -37430,8 +37444,8 @@ async function jL(e, t, n) {
 	for (let e of a?.langlinks ?? []) o.has(e.lang) && e["*"] && (s[e.lang] = e["*"]);
 	return s;
 }
-async function ML(e) {
-	let t = e.lang, n = new URL(DL(t));
+async function PL(e) {
+	let t = e.lang, n = new URL(kL(t));
 	n.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -37458,8 +37472,8 @@ async function ML(e) {
 		revId: i.revisions?.[0]?.revid
 	};
 }
-async function NL(e, t) {
-	let n = new URL(DL(e));
+async function FL(e, t) {
+	let n = new URL(kL(e));
 	n.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -37475,35 +37489,35 @@ async function NL(e, t) {
 	return i.extract ?? "";
 }
 // src/ui.ts
-var PL = "tm-panel", FL = 6048e5, IL = "tavern-map:fab-position", LL = "tavern-map:panel-geometry", RL = "tm-route", zL = {
+var IL = "tm-panel", LL = 6048e5, RL = "tavern-map:fab-position", zL = "tavern-map:panel-geometry", BL = "tm-route", VL = {
 	en: "EN",
 	ja: "JA",
 	zh: "ZH"
-}, BL = {
+}, HL = {
 	foot: "步行",
 	driving: "驾车",
 	transit: "公共交通"
-}, VL = [
+}, UL = [
 	"foot",
 	"driving",
 	"transit"
 ];
-function HL(e, t) {
+function WL(e, t) {
 	return `${e}:${t}`;
 }
-function UL(e) {
-	return zL[e] ?? e.toUpperCase();
+function GL(e) {
+	return VL[e] ?? e.toUpperCase();
 }
-function WL(e) {
+function KL(e) {
 	return e >= 1e3 ? `${(e / 1e3).toFixed(1)}km` : `${Math.round(e)}m`;
 }
-function GL(e) {
+function qL(e) {
 	let t = Math.max(1, Math.round(e / 60));
 	if (t < 60) return `${t} 分钟`;
 	let n = Math.floor(t / 60), r = t % 60;
 	return r > 0 ? `${n} 小时 ${r} 分钟` : `${n} 小时`;
 }
-function KL(e, t, n) {
+function JL(e, t, n) {
 	let r = n / 111320, i = n / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), a = [];
 	for (let n = 0; n <= 72; n += 1) {
 		let o = n / 72 * Math.PI * 2;
@@ -37518,7 +37532,7 @@ function KL(e, t, n) {
 		}
 	};
 }
-function qL(e) {
+function YL(e) {
 	switch (e) {
 		case "country": return 5;
 		case "state":
@@ -37541,9 +37555,9 @@ function qL(e) {
 		default: return 14;
 	}
 }
-var JL = `
+var XL = `
 <button id="tm-fab" class="tm-fab" type="button" title="打开地图" aria-label="打开地图">🗺️</button>
-<section id="${PL}" class="tm-panel" aria-label="Tavern Map" hidden>
+<section id="${IL}" class="tm-panel" aria-label="Tavern Map" hidden>
   <header class="tm-head">
     <strong>Tavern Map</strong>
     <div class="tm-head-actions">
@@ -37686,7 +37700,7 @@ var JL = `
     <pre id="tm-preview-text"></pre>
   </div>
 </div>
-`, YL = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n      <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"50\" max=\"1000\" step=\"50\"></label>\n      <label class=\"tm-row\">周边地点数<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", XL = class {
+`, ZL = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n      <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"50\" max=\"1000\" step=\"50\"></label>\n      <label class=\"tm-row\">周边地点数<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", QL = class {
 	ctx;
 	settings;
 	state;
@@ -37797,14 +37811,14 @@ var JL = `
 		this.clampFab(), this.applyPanelGeometry();
 	};
 	constructor(e) {
-		this.ctx = e, this.settings = TL(e), this.state = bL(e), this.state.enabled = this.settings.enabled, this.routeMode = this.state.itinerary?.profile ?? "foot", this.mount(), this.applyFabGeometry(), this.applyPanelGeometry(), this.bindEvents(), this.sync(), this.render(), this.syncRadiusUi(), this.syncPoiUi();
+		this.ctx = e, this.settings = DL(e), this.state = SL(e), this.state.enabled = this.settings.enabled, this.routeMode = this.state.itinerary?.profile ?? "foot", this.mount(), this.applyFabGeometry(), this.applyPanelGeometry(), this.bindEvents(), this.sync(), this.render(), this.syncRadiusUi(), this.syncPoiUi();
 	}
 	mount() {
-		if (!document.getElementById(PL)) {
+		if (!document.getElementById(IL)) {
 			let e = document.createElement("template");
-			e.innerHTML = JL.trim(), document.body.append(e.content);
+			e.innerHTML = XL.trim(), document.body.append(e.content);
 		}
-		this.panelEl = document.getElementById(PL), this.canvasEl = document.getElementById("tm-canvas"), this.placeNameEl = document.getElementById("tm-place-name"), this.placeAddressEl = document.getElementById("tm-place-address"), this.statusEl = document.getElementById("tm-status"), this.listEl = document.getElementById("tm-list"), this.wikiEl = document.getElementById("tm-wiki"), this.wikiTitleEl = document.getElementById("tm-wiki-title"), this.wikiBodyEl = document.getElementById("tm-wiki-body"), this.wikiLinkEl = document.getElementById("tm-wiki-link"), this.starEl = document.getElementById("tm-star"), this.previewEl = document.getElementById("tm-preview"), this.previewTextEl = document.getElementById("tm-preview-text"), this.tokenEstimateEl = document.getElementById("tm-token-estimate"), this.savedCountEl = document.getElementById("tm-saved-count"), this.searchEl = this.panelEl.querySelector(".tm-search"), this.searchInputEl = document.getElementById("tm-search-input"), this.searchResultsEl = document.getElementById("tm-search-results"), this.radiusInputEl = document.getElementById("tm-radius"), this.radiusValueEl = document.getElementById("tm-radius-value"), this.poiToggleEl = document.getElementById("tm-poi-toggle"), this.poiAllEl = document.getElementById("tm-poi-all-ai"), this.poiCountEl = document.getElementById("tm-poi-count"), this.wikiLangsEl = document.getElementById("tm-wiki-langs"), this.wikiModesEl = document.getElementById("tm-wiki-modes"), this.wikiNoteEl = document.getElementById("tm-wiki-note"), this.wikiNoteStatusEl = document.getElementById("tm-wiki-note-status"), this.aiLangEl = document.getElementById("tm-wiki-ai-lang"), this.aiLangHintEl = document.getElementById("tm-ai-lang-hint"), this.wikiFullHintEl = document.getElementById("tm-wiki-full-hint"), this.routeCountEl = document.getElementById("tm-route-count"), this.recenterEl = document.getElementById("tm-recenter"), this.placeEl = document.getElementById("tm-place"), this.placeTitleEl = document.getElementById("tm-place-title"), this.placeSaveEl = document.getElementById("tm-place-save"), this.placeMetaEl = document.getElementById("tm-place-meta"), this.placeInfoEl = document.getElementById("tm-place-info"), this.placeNoteEl = document.getElementById("tm-place-note"), this.placeNoteStatusEl = document.getElementById("tm-place-note-status"), this.placeRouteSummaryEl = document.getElementById("tm-route-summary"), this.placeRouteTextEl = document.getElementById("tm-route-text"), this.placeRouteModeEl = document.getElementById("tm-place-route-mode"), this.placeStartEl = document.querySelector("[data-action=\"place-start\"]"), this.placeStopEl = document.querySelector("[data-action=\"place-stop\"]"), this.placeClearEl = document.querySelector("[data-action=\"place-clear-route\"]"), this.placeProgressEl = document.getElementById("tm-route-progress"), this.placeBarEl = document.getElementById("tm-route-bar"), this.placeRouteStepsEl = document.getElementById("tm-place-route-steps");
+		this.panelEl = document.getElementById(IL), this.canvasEl = document.getElementById("tm-canvas"), this.placeNameEl = document.getElementById("tm-place-name"), this.placeAddressEl = document.getElementById("tm-place-address"), this.statusEl = document.getElementById("tm-status"), this.listEl = document.getElementById("tm-list"), this.wikiEl = document.getElementById("tm-wiki"), this.wikiTitleEl = document.getElementById("tm-wiki-title"), this.wikiBodyEl = document.getElementById("tm-wiki-body"), this.wikiLinkEl = document.getElementById("tm-wiki-link"), this.starEl = document.getElementById("tm-star"), this.previewEl = document.getElementById("tm-preview"), this.previewTextEl = document.getElementById("tm-preview-text"), this.tokenEstimateEl = document.getElementById("tm-token-estimate"), this.savedCountEl = document.getElementById("tm-saved-count"), this.searchEl = this.panelEl.querySelector(".tm-search"), this.searchInputEl = document.getElementById("tm-search-input"), this.searchResultsEl = document.getElementById("tm-search-results"), this.radiusInputEl = document.getElementById("tm-radius"), this.radiusValueEl = document.getElementById("tm-radius-value"), this.poiToggleEl = document.getElementById("tm-poi-toggle"), this.poiAllEl = document.getElementById("tm-poi-all-ai"), this.poiCountEl = document.getElementById("tm-poi-count"), this.wikiLangsEl = document.getElementById("tm-wiki-langs"), this.wikiModesEl = document.getElementById("tm-wiki-modes"), this.wikiNoteEl = document.getElementById("tm-wiki-note"), this.wikiNoteStatusEl = document.getElementById("tm-wiki-note-status"), this.aiLangEl = document.getElementById("tm-wiki-ai-lang"), this.aiLangHintEl = document.getElementById("tm-ai-lang-hint"), this.wikiFullHintEl = document.getElementById("tm-wiki-full-hint"), this.routeCountEl = document.getElementById("tm-route-count"), this.recenterEl = document.getElementById("tm-recenter"), this.placeEl = document.getElementById("tm-place"), this.placeTitleEl = document.getElementById("tm-place-title"), this.placeSaveEl = document.getElementById("tm-place-save"), this.placeMetaEl = document.getElementById("tm-place-meta"), this.placeInfoEl = document.getElementById("tm-place-info"), this.placeNoteEl = document.getElementById("tm-place-note"), this.placeNoteStatusEl = document.getElementById("tm-place-note-status"), this.placeRouteSummaryEl = document.getElementById("tm-route-summary"), this.placeRouteTextEl = document.getElementById("tm-route-text"), this.placeRouteModeEl = document.getElementById("tm-place-route-mode"), this.placeStartEl = document.querySelector("[data-action=\"place-start\"]"), this.placeStopEl = document.querySelector("[data-action=\"place-stop\"]"), this.placeClearEl = document.querySelector("[data-action=\"place-clear-route\"]"), this.placeProgressEl = document.getElementById("tm-route-progress"), this.placeBarEl = document.getElementById("tm-route-bar"), this.placeRouteStepsEl = document.getElementById("tm-place-route-steps");
 	}
 	mountSettings(e = 0) {
 		if (!document.getElementById("tm-settings")) {
@@ -37814,7 +37828,7 @@ var JL = `
 				return;
 			}
 			let n = document.createElement("template");
-			n.innerHTML = YL.trim(), t.append(n.content);
+			n.innerHTML = ZL.trim(), t.append(n.content);
 		}
 		this.enabledEl = document.getElementById("tm-set-enabled"), this.langEls = Array.from(document.querySelectorAll("#tm-settings [data-tm-lang]")), this.radiusEl = document.getElementById("tm-set-radius"), this.nearbyEl = document.getElementById("tm-set-nearby"), this.depthEl = document.getElementById("tm-set-depth"), this.enabledEl && (this.writeSettingsToForm(), this.bindSettings());
 	}
@@ -37870,7 +37884,7 @@ var JL = `
 			return;
 		}
 		if (n === "close-wiki") {
-			this.wikiEl.hidden = !0, this.state.wikiOpen = !1, xL(this.ctx, this.state);
+			this.wikiEl.hidden = !0, this.state.wikiOpen = !1, CL(this.ctx, this.state);
 			return;
 		}
 		if (n === "star") {
@@ -37891,7 +37905,7 @@ var JL = `
 		}
 		if (n === "place-route") {
 			if (this.currentPlace) {
-				let e = this.placeRouteModeEl.value, t = VL.includes(e) ? e : this.routeMode;
+				let e = this.placeRouteModeEl.value, t = UL.includes(e) ? e : this.routeMode;
 				this.planRouteTo(this.currentPlace, t);
 			}
 			return;
@@ -37931,7 +37945,7 @@ var JL = `
 		}
 		let r = t.closest("[data-tab]")?.dataset.tab;
 		if (r === "nearby" || r === "wiki" || r === "saved" || r === "route") {
-			this.tab = r, this.state.lastTab = r, xL(this.ctx, this.state), this.render();
+			this.tab = r, this.state.lastTab = r, CL(this.ctx, this.state), this.render();
 			return;
 		}
 		let i = t.closest("[data-wiki-mode]")?.dataset.wikiMode;
@@ -37947,10 +37961,10 @@ var JL = `
 		if (t.matches("[data-route-ai]")) {
 			if (!this.state.itinerary) return;
 			this.state.itinerary.showToAI = t.checked, this.sync(), this.flushNoteSave(), this.syncRouteAiCheckboxes();
-		} else if (t.matches("[data-route-pois]")) this.settings.showRoutePois = t.checked, EL(this.ctx, this.settings), this.settings.showRoutePois && this.currentRoute && this.state.itinerary && !this.state.itinerary.steps.some((e) => e.pois?.length) && this.loadRoutePois(this.currentRoute, this.routeSeq), this.syncRoutePoiControls(), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
+		} else if (t.matches("[data-route-pois]")) this.settings.showRoutePois = t.checked, OL(this.ctx, this.settings), this.settings.showRoutePois && this.currentRoute && this.state.itinerary && !this.state.itinerary.steps.some((e) => e.pois?.length) && this.loadRoutePois(this.currentRoute, this.routeSeq), this.syncRoutePoiControls(), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
 		else if (t.matches("[data-route-poi-radius]")) {
 			let e = Number(t.value);
-			this.settings.routePoiRadiusM = Math.max(25, Math.min(500, e)), EL(this.ctx, this.settings), this.syncRoutePoiControls(), this.state.itinerary && this.state.itinerary.steps.forEach((e) => {
+			this.settings.routePoiRadiusM = Math.max(25, Math.min(500, e)), OL(this.ctx, this.settings), this.syncRoutePoiControls(), this.state.itinerary && this.state.itinerary.steps.forEach((e) => {
 				e.pois = [];
 			}), this.settings.showRoutePois && this.currentRoute && this.state.itinerary ? this.loadRoutePois(this.currentRoute, this.routeSeq) : (this.commit(), this.renderPlace(), this.tab === "route" && this.render());
 		}
@@ -37977,7 +37991,7 @@ var JL = `
 		}, 150);
 	}
 	closePanel() {
-		this.panelEl.hidden = !0, this.state.wikiOpen = !this.wikiEl.hidden, xL(this.ctx, this.state);
+		this.panelEl.hidden = !0, this.state.wikiOpen = !this.wikiEl.hidden, CL(this.ctx, this.state);
 	}
 	personMarkerElement() {
 		let e = document.createElement("div");
@@ -38021,7 +38035,7 @@ var JL = `
 					lng: t.lng
 				},
 				zoom: this.state.zoom
-			}, xL(this.ctx, this.state);
+			}, CL(this.ctx, this.state);
 		}), e.on("style.load", () => {
 			this.drawRadius(), this.currentRoute && this.drawRouteLine(this.currentRoute, !1), this.updatePoiSource();
 		}), e.once("load", () => this.drawRadius()), e.once("idle", () => this.drawRadius()), this.resizeObserver = new ResizeObserver(() => this.map?.resize()), this.resizeObserver.observe(this.canvasEl);
@@ -38029,7 +38043,7 @@ var JL = `
 	drawRadius() {
 		let e = this.map;
 		if (!e || !e.isStyleLoaded()) return;
-		let t = KL(this.state.center.lat, this.state.center.lng, this.settings.radiusM), n = e.getSource("tm-radius");
+		let t = JL(this.state.center.lat, this.state.center.lng, this.settings.radiusM), n = e.getSource("tm-radius");
 		n ? n.setData(t) : (e.addSource("tm-radius", {
 			type: "geojson",
 			data: t
@@ -38189,7 +38203,7 @@ var JL = `
 		let n = ++this.poiSeq;
 		this.loadingPois = !0, this.syncPoiUi();
 		try {
-			let r = await VI(e, t, this.settings.radiusM);
+			let r = await UI(e, t, this.settings.radiusM);
 			if (n !== this.poiSeq) return;
 			this.pois = r, this.poisById = new Map(r.map((e) => [e.id, e])), this.state.poiBriefs = r.map((e) => ({
 				id: e.id,
@@ -38201,7 +38215,7 @@ var JL = `
 				cuisine: e.cuisine,
 				openingHours: e.openingHours,
 				addedAt: Date.now()
-			})), this.updatePoiSource(), this.syncPoiUi(), xL(this.ctx, this.state), this.state.poiAllToAI && this.sync(), this.render();
+			})), this.updatePoiSource(), this.syncPoiUi(), CL(this.ctx, this.state), this.state.poiAllToAI && this.sync(), this.render();
 		} catch (e) {
 			console.warn("[tavern-map] POI layer failed", pI(e));
 		} finally {
@@ -38212,10 +38226,10 @@ var JL = `
 		this.settings = {
 			...this.settings,
 			showPois: !this.settings.showPois
-		}, EL(this.ctx, this.settings), this.setPoiVisibility(), this.syncPoiUi(), this.settings.showPois && this.refreshPois(this.state.center.lat, this.state.center.lng);
+		}, OL(this.ctx, this.settings), this.setPoiVisibility(), this.syncPoiUi(), this.settings.showPois && this.refreshPois(this.state.center.lat, this.state.center.lng);
 	}
 	onPoiAllChange() {
-		this.state.poiAllToAI = this.poiAllEl.checked, this.state.poiAllToAI && this.state.poiBriefs.length === 0 && this.refreshPois(this.state.center.lat, this.state.center.lng), this.sync(), xL(this.ctx, this.state), this.syncPoiUi();
+		this.state.poiAllToAI = this.poiAllEl.checked, this.state.poiAllToAI && this.state.poiBriefs.length === 0 && this.refreshPois(this.state.center.lat, this.state.center.lng), this.sync(), CL(this.ctx, this.state), this.syncPoiUi();
 	}
 	syncPoiUi() {
 		this.poiToggleEl && (this.poiToggleEl.classList.toggle("active", this.settings.showPois), this.poiToggleEl.classList.toggle("loading", this.loadingPois), this.poiToggleEl.setAttribute("aria-pressed", String(this.settings.showPois)), this.poiAllEl.checked = this.state.poiAllToAI, this.poiCountEl.textContent = String(this.state.poiBriefs.length));
@@ -38274,17 +38288,17 @@ var JL = `
 		this.loadingNearby = !0, this.loadingWiki = !0, this.setStatus("正在获取：地点、周边、维基…"), this.render(), this.refreshPois(t, n);
 		let s = window.setTimeout(() => {
 			e === this.seq && i.has("nearby") && this.setStatus("周边加载较慢，正在切换备用数据源…");
-		}, 4e3), c = hI(t, n).then((t) => {
+		}, 4e3), c = _I(t, n).then((t) => {
 			e === this.seq && (this.state.place = t, this.commit());
 		}).catch((e) => {
 			a.place = pI(e);
-		}).finally(() => o("place")), l = xI(t, n, this.settings.radiusM).then((t) => {
+		}).finally(() => o("place")), l = CI(t, n, this.settings.radiusM).then((t) => {
 			e === this.seq && (this.state.nearby = t, this.commit());
 		}).catch((e) => {
 			a.nearby = pI(e);
 		}).finally(() => {
 			e === this.seq && (this.loadingNearby = !1, window.clearTimeout(s), this.render()), o("nearby");
-		}), u = OL(t, n, Math.max(300, this.settings.radiusM * 2), this.settings.wikiLangs).then((t) => {
+		}), u = AL(t, n, Math.max(300, this.settings.radiusM * 2), this.settings.wikiLangs).then((t) => {
 			e === this.seq && (this.state.wiki = t, this.commit());
 		}).catch((e) => {
 			a.wiki = pI(e);
@@ -38304,12 +38318,12 @@ var JL = `
 		}
 	}
 	commit() {
-		this.state.enabled = this.settings.enabled, xL(this.ctx, this.state), this.sync(), this.render();
+		this.state.enabled = this.settings.enabled, CL(this.ctx, this.state), this.sync(), this.render();
 	}
 	sync() {
 		this.state.enabled = this.settings.enabled;
 		let e = lI(this.state, this.settings);
-		!this.settings.enabled || !e ? XI(this.ctx) : YI(this.ctx, e, !0, this.settings.depth), this.previewEl && !this.previewEl.hidden && this.preview();
+		!this.settings.enabled || !e ? QI(this.ctx) : ZI(this.ctx, e, !0, this.settings.depth), this.previewEl && !this.previewEl.hidden && this.preview();
 	}
 	render() {
 		if (!this.panelEl) return;
@@ -38381,7 +38395,7 @@ var JL = `
 		r.className = "tm-item-name", r.textContent = e.title;
 		let i = !!this.findStar(e), a = document.createElement("span");
 		return a.className = "tm-item-meta", a.textContent = [
-			`[${UL(e.lang)}]`,
+			`[${GL(e.lang)}]`,
 			eI(e.dist),
 			i ? "★ 已加入" : ""
 		].filter(Boolean).join(" · "), n.append(r, a), n.addEventListener("click", () => void this.openWiki(e)), t.append(n), t;
@@ -38440,9 +38454,9 @@ var JL = `
 		let i = document.createElement("div");
 		i.className = "tm-saved-name";
 		let a = e.aiLang || e.lang, o = e.aiTitle || e.title;
-		i.textContent = `[${UL(a)}] ${o}`;
+		i.textContent = `[${GL(a)}] ${o}`;
 		let s = document.createElement("div");
-		s.className = "tm-saved-meta", s.textContent = `Wikipedia · 给 AI ${UL(a)} · ${e.contextMode === "full" ? "全文" : "概览"}`, r.append(i, s);
+		s.className = "tm-saved-meta", s.textContent = `Wikipedia · 给 AI ${GL(a)} · ${e.contextMode === "full" ? "全文" : "概览"}`, r.append(i, s);
 		let c = document.createElement("div");
 		c.className = "tm-saved-actions";
 		let l = this.miniButton("打开", () => {
@@ -38474,7 +38488,7 @@ var JL = `
 		}), n.addEventListener("change", () => this.flushNoteSave()), n;
 	}
 	openPlace(e) {
-		this.currentPlace = e, this.wikiEl.hidden = !0, this.state.wikiOpen = !1, xL(this.ctx, this.state), this.placeEl.classList.add("tm-place-inline"), this.placeEl.hidden = !1, this.render();
+		this.currentPlace = e, this.wikiEl.hidden = !0, this.state.wikiOpen = !1, CL(this.ctx, this.state), this.placeEl.classList.add("tm-place-inline"), this.placeEl.hidden = !1, this.render();
 	}
 	closePlace() {
 		this.placeEl.hidden = !0, this.placeEl.classList.remove("tm-place-inline"), this.currentPlace = null, this.render();
@@ -38531,7 +38545,7 @@ var JL = `
 		let t = [
 			"Tavern Map 行程",
 			`${e.from.name} → ${e.to.name}`,
-			`${BL[e.profile ?? "foot"]} ${eI(e.distance)} · 约 ${GL(e.duration)}`
+			`${HL[e.profile ?? "foot"]} ${eI(e.distance)} · 约 ${qL(e.duration)}`
 		];
 		return e.fallback && t.push("（路线服务不可用，按直线估计）"), e.steps.forEach((e, n) => {
 			let r = e.road ? ` — ${e.road}` : "", i = e.distance > 0 ? `（${eI(e.distance)}）` : "";
@@ -38553,7 +38567,7 @@ var JL = `
 			return;
 		}
 		let r = e.fallback ? " · 直线估计" : "";
-		this.placeRouteTextEl.textContent = `${BL[e.profile ?? "foot"]} ${eI(e.distance)} · 约 ${GL(e.duration)}${r}`, this.placeStartEl.hidden = !this.currentRoute || this.moving, this.placeStopEl.hidden = !this.moving, this.placeProgressEl.hidden = !this.moving, this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`, this.fillRouteSteps(this.placeRouteStepsEl, e), this.syncRoutePoiControls(), this.syncRouteAiCheckboxes();
+		this.placeRouteTextEl.textContent = `${HL[e.profile ?? "foot"]} ${eI(e.distance)} · 约 ${qL(e.duration)}${r}`, this.placeStartEl.hidden = !this.currentRoute || this.moving, this.placeStopEl.hidden = !this.moving, this.placeProgressEl.hidden = !this.moving, this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`, this.fillRouteSteps(this.placeRouteStepsEl, e), this.syncRoutePoiControls(), this.syncRouteAiCheckboxes();
 	}
 	syncRoutePoiControls() {
 		if (this.panelEl) {
@@ -38630,7 +38644,7 @@ var JL = `
 	}
 	onPlaceRouteModeChange() {
 		let e = this.placeRouteModeEl.value;
-		VL.includes(e) && (this.routeMode = e, this.currentPlace && this.planRouteTo(this.currentPlace, e));
+		UL.includes(e) && (this.routeMode = e, this.currentPlace && this.planRouteTo(this.currentPlace, e));
 	}
 	setRouteMode(e) {
 		this.routeMode = e, this.placeRouteModeEl && (this.placeRouteModeEl.value = e);
@@ -38641,31 +38655,40 @@ var JL = `
 	isUnnamedRoad(e) {
 		return !e || e === "未命名步道" || e === "未命名道路" || /^[A-Z]?\d+[FB]?$/i.test(e.trim());
 	}
-	resolveRouteRoads(e, t) {
-		let n = this.fallbackStreet(t), r = e.map((e) => this.isUnnamedRoad(e.road) ? void 0 : e.road);
-		return e.map((e, t) => {
-			if (e.road === void 0 || !this.isUnnamedRoad(e.road)) return e;
-			let i, a;
-			for (let e = t - 1; e >= 0; --e) if (r[e]) {
-				i = {
+	async resolveRouteRoads(e, t) {
+		if (e.every((e) => e.road === void 0)) return e;
+		let n = this.fallbackStreet(t), r = t.address?.split(",")[0]?.trim() || void 0, i = e.map((e) => this.isUnnamedRoad(e.road) ? void 0 : e.road), a = e.map((e, t) => ({
+			step: e,
+			index: t
+		})).filter(({ step: e }) => e.road !== void 0 && this.isUnnamedRoad(e.road)).slice(0, 12), o = /* @__PURE__ */ new Map();
+		return await Promise.all(a.map(async ({ step: e, index: t }) => {
+			let n = e.coordinates;
+			if (!n || n.length === 0) return;
+			let r = n[Math.floor(n.length / 2)], i = await gI(r[1], r[0]);
+			i && o.set(t, i);
+		})), e.map((t, a) => {
+			if (t.road === void 0 || !this.isUnnamedRoad(t.road)) return t;
+			let s, c;
+			for (let e = a - 1; e >= 0; --e) if (i[e]) {
+				s = {
 					index: e,
-					name: r[e]
+					name: i[e]
 				};
 				break;
 			}
-			for (let e = t + 1; e < r.length; e += 1) if (r[e]) {
-				a = {
+			for (let e = a + 1; e < i.length; e += 1) if (i[e]) {
+				c = {
 					index: e,
-					name: r[e]
+					name: i[e]
 				};
 				break;
 			}
-			let o = i && a ? t - i.index <= a.index - t ? i.name : a.name : i?.name ?? a?.name, s = n ?? o;
-			return s ? {
-				...e,
-				road: s,
-				name: s
-			} : e;
+			let l = s && c ? a - s.index <= c.index - a ? s.name : c.name : s?.name ?? c?.name, u = a === e.length - 1 ? r : a === 0 ? n : void 0, d = a === 0 ? n ?? o.get(a) ?? l : o.get(a) ?? u ?? n ?? l;
+			return d ? {
+				...t,
+				road: d,
+				name: d
+			} : t;
 		});
 	}
 	async planRouteTo(e, t = this.routeMode) {
@@ -38678,22 +38701,26 @@ var JL = `
 		};
 		if ($F(r.lat, r.lng, e.lat, e.lng) < 5) this.toast("已经在这个地点");
 		else {
-			this.setStatus(`正在规划${BL[t]}路线…`);
+			this.setStatus(`正在规划${HL[t]}路线…`);
 			try {
-				let i = await pL(r, {
+				let i = await hL(r, {
 					lat: e.lat,
 					lng: e.lng
 				}, t);
 				if (n !== this.routeSeq) return;
 				this.currentRoute = i;
-				let a = this.state.place?.name ?? "当前位置", o = this.resolveRouteRoads(i.steps, e).map((t) => ({
+				let a = this.state.place?.name ?? "当前位置";
+				this.setStatus(`正在补充${HL[t]}道路名…`);
+				let o = await this.resolveRouteRoads(i.steps, e);
+				if (n !== this.routeSeq) return;
+				let s = o.map((t) => ({
 					instruction: t.instruction.replace(/\bSTART\b/g, a).replace(/\bEND\b/g, e.name),
 					name: t.name,
 					road: t.road,
 					distance: t.distance,
 					duration: t.duration,
 					pois: []
-				})), s = this.state.itinerary?.showToAI ?? !1;
+				})), c = this.state.itinerary?.showToAI ?? !1;
 				this.state.itinerary = {
 					from: {
 						id: this.state.place?.id,
@@ -38710,11 +38737,11 @@ var JL = `
 					distance: i.distance,
 					duration: i.duration,
 					profile: i.profile,
-					steps: o,
+					steps: s,
 					fallback: i.fallback,
-					showToAI: s,
+					showToAI: c,
 					updatedAt: Date.now()
-				}, this.drawRouteLine(i, !0), this.commit(), this.renderPlace(), this.setStatus(i.fallback ? `${BL[t]}路线服务不可用，已显示直线估计` : ""), this.toast("行程已生成，可在“行程”页查看和复制"), this.settings.showRoutePois && this.loadRoutePois(i, n);
+				}, this.drawRouteLine(i, !0), this.commit(), this.renderPlace(), this.setStatus(i.fallback ? `${HL[t]}路线服务不可用，已显示直线估计` : ""), this.toast("行程已生成，可在“行程”页查看和复制"), this.settings.showRoutePois && this.loadRoutePois(i, n);
 			} catch (e) {
 				this.setStatus(`路线规划失败：${pI(e)}`);
 			}
@@ -38724,7 +38751,7 @@ var JL = `
 		if (!this.settings.showRoutePois) return;
 		let n = this.state.itinerary;
 		if (!n) return;
-		let r = KI(e.steps, t, this.settings.routePoiRadiusM);
+		let r = JI(e.steps, t, this.settings.routePoiRadiusM);
 		n.steps.forEach((e, t) => {
 			e.pois = r[t] ?? [];
 		}), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
@@ -38732,21 +38759,21 @@ var JL = `
 	async loadRoutePois(e, t) {
 		let n = ++this.routePoiSeq, r = this.settings.routePoiRadiusM;
 		if (!this.settings.showRoutePois) return;
-		let i = WI(e.coordinates, this.pois, r);
+		let i = KI(e.coordinates, this.pois, r);
 		i.length > 0 && this.applyRoutePois(e, i);
-		let a = await UI(e.coordinates, r);
+		let a = await GI(e.coordinates, r);
 		if (n !== this.routePoiSeq || t !== this.routeSeq) return;
 		let o = a;
 		if (o.length === 0) {
 			let i = this.pois;
 			if (i.length === 0 && e.coordinates.length > 0) try {
 				let t = e.coordinates[0];
-				i = await VI(t[1], t[0], Math.max(250, r));
+				i = await UI(t[1], t[0], Math.max(250, r));
 			} catch (e) {
 				console.warn("[tavern-map] route POI fallback failed", pI(e));
 			}
 			if (n !== this.routePoiSeq || t !== this.routeSeq) return;
-			o = WI(e.coordinates, i, r);
+			o = KI(e.coordinates, i, r);
 		}
 		let s = /* @__PURE__ */ new Map();
 		for (let e of i) s.set(e.id, e);
@@ -38764,14 +38791,14 @@ var JL = `
 				type: "LineString",
 				coordinates: e.coordinates
 			}
-		}, i = n.getSource(RL);
-		i ? i.setData(r) : (n.addSource(RL, {
+		}, i = n.getSource(BL);
+		i ? i.setData(r) : (n.addSource(BL, {
 			type: "geojson",
 			data: r
 		}), n.addLayer({
 			id: "tm-route-casing",
 			type: "line",
-			source: RL,
+			source: BL,
 			layout: {
 				"line-join": "round",
 				"line-cap": "round"
@@ -38784,7 +38811,7 @@ var JL = `
 		}), n.addLayer({
 			id: "tm-route-line",
 			type: "line",
-			source: RL,
+			source: BL,
 			layout: {
 				"line-join": "round",
 				"line-cap": "round"
@@ -38811,7 +38838,7 @@ var JL = `
 	clearRouteLine() {
 		this.routeEndMarker?.remove(), this.routeEndMarker = null;
 		let e = this.map;
-		e && e.isStyleLoaded() && (e.getLayer("tm-route-line") && e.removeLayer("tm-route-line"), e.getLayer("tm-route-casing") && e.removeLayer("tm-route-casing"), e.getSource(RL) && e.removeSource(RL)), this.currentRoute = null;
+		e && e.isStyleLoaded() && (e.getLayer("tm-route-line") && e.removeLayer("tm-route-line"), e.getLayer("tm-route-casing") && e.removeLayer("tm-route-casing"), e.getSource(BL) && e.removeSource(BL)), this.currentRoute = null;
 	}
 	clearItinerary() {
 		this.moving && this.stopMovement(), this.routeSeq += 1, this.clearRouteLine(), delete this.state.itinerary, this.moveProgress = 0, this.commit(), this.renderPlace(), this.tab === "route" && this.render(), this.toast("已清除当前行程");
@@ -38850,13 +38877,13 @@ var JL = `
 		s.textContent = "方式";
 		let c = document.createElement("select");
 		c.className = "tm-route-mode";
-		for (let e of VL) c.append(new Option(BL[e], e));
+		for (let e of UL) c.append(new Option(HL[e], e));
 		c.value = e.profile ?? this.routeMode, c.addEventListener("change", () => {
 			let e = c.value;
-			VL.includes(e) && (this.setRouteMode(e), this.replanItinerary());
+			UL.includes(e) && (this.setRouteMode(e), this.replanItinerary());
 		}), o.append(s, c);
 		let l = document.createElement("div");
-		l.className = "tm-itinerary-meta", l.textContent = `${BL[e.profile ?? "foot"]} ${eI(e.distance)} · 约 ${GL(e.duration)}${e.fallback ? " · 直线估计" : ""}`;
+		l.className = "tm-itinerary-meta", l.textContent = `${HL[e.profile ?? "foot"]} ${eI(e.distance)} · 约 ${qL(e.duration)}${e.fallback ? " · 直线估计" : ""}`;
 		let u = document.createElement("label");
 		u.className = "tm-route-ai";
 		let d = document.createElement("input");
@@ -38940,7 +38967,7 @@ var JL = `
 		let t = ++this.searchSeq;
 		this.renderSearchMessage("搜索中…");
 		try {
-			let n = await _L(e, this.state.place ?? this.state.center);
+			let n = await yL(e, this.state.place ?? this.state.center);
 			if (t !== this.searchSeq) return;
 			this.searchResults = n, this.renderSearchResults(n);
 		} catch (e) {
@@ -38988,7 +39015,7 @@ var JL = `
 			duration: 600
 		}) : t.flyTo({
 			center: [e.lng, e.lat],
-			zoom: qL(e.resultType),
+			zoom: YL(e.resultType),
 			duration: 600
 		})), this.drawRadius(), this.commit(), e.resultType === "country" || e.resultType === "state" || e.resultType === "region" ? this.setStatus("已定位到国家/地区，点击地图选择具体地点") : (this.setStatus("正在获取地点信息…"), this.scheduleRefresh(0), window.setTimeout(() => {
 			!this.panelEl.hidden && this.state.place === e && this.openPlace(e);
@@ -38999,10 +39026,10 @@ var JL = `
 		this.settings = {
 			...this.settings,
 			radiusM: t
-		}, EL(this.ctx, this.settings), this.radiusValueEl.textContent = WL(t), this.radiusEl && (this.radiusEl.value = String(t)), this.drawRadius(), this.scheduleRefresh(500);
+		}, OL(this.ctx, this.settings), this.radiusValueEl.textContent = KL(t), this.radiusEl && (this.radiusEl.value = String(t)), this.drawRadius(), this.scheduleRefresh(500);
 	}
 	syncRadiusUi() {
-		this.radiusInputEl && (this.radiusInputEl.value = String(this.settings.radiusM), this.radiusValueEl.textContent = WL(this.settings.radiusM), this.radiusEl && (this.radiusEl.value = String(this.settings.radiusM)));
+		this.radiusInputEl && (this.radiusInputEl.value = String(this.settings.radiusM), this.radiusValueEl.textContent = KL(this.settings.radiusM), this.radiusEl && (this.radiusEl.value = String(this.settings.radiusM)));
 	}
 	findSavedPlace(e) {
 		let t = tI(e);
@@ -39053,7 +39080,7 @@ var JL = `
 			let e = this.state.stars.find((e) => (e.lang ?? "en") === t && e.title.trim().toLowerCase() === n);
 			if (e) return e;
 		}
-		return this.state.stars.find((n) => HL(n.lang ?? "en", n.pageId) === HL(t, e.pageId)) || this.state.stars.find((t) => this.articleMatches(e, t));
+		return this.state.stars.find((n) => WL(n.lang ?? "en", n.pageId) === WL(t, e.pageId)) || this.state.stars.find((t) => this.articleMatches(e, t));
 	}
 	reconcileStars(e) {
 		let t = this.findArticleStars(e);
@@ -39067,15 +39094,15 @@ var JL = `
 			!i.aiLang && e.aiLang && (i.aiLang = e.aiLang, i.aiTitle = e.aiTitle, i.aiExtract = e.aiExtract, i.aiFullText = e.aiFullText), !i.fullText && e.fullText && (e.lang ?? "en") === (i.lang ?? "en") && (i.fullText = e.fullText), e.contextMode === "full" && i.contextMode !== "full" && (i.contextMode = "full"), this.state.stars = this.state.stars.filter((t) => t !== e), a = !0;
 		}
 		let o = (i.lang ?? "en") !== n || i.title.trim().toLowerCase() !== r;
-		return o || i.pageId !== e.pageId || i.url !== e.url ? (i.lang = n, i.title = e.title, i.pageId = e.pageId, i.url = e.url, i.lat = e.lat, i.lng = e.lng, i.extract = e.extract, o && (i.fullText = void 0), a = !0) : e.extract && i.extract !== e.extract && (i.extract = e.extract, a = !0), a && (this.sync(), xL(this.ctx, this.state)), i;
+		return o || i.pageId !== e.pageId || i.url !== e.url ? (i.lang = n, i.title = e.title, i.pageId = e.pageId, i.url = e.url, i.lat = e.lat, i.lng = e.lng, i.extract = e.extract, o && (i.fullText = void 0), a = !0) : e.extract && i.extract !== e.extract && (i.extract = e.extract, a = !0), a && (this.sync(), CL(this.ctx, this.state)), i;
 	}
 	removeStar(e) {
 		let t = this.articleTitles(e), n = e.lang || "en", r = e.title.trim().toLowerCase();
-		this.state.stars = this.state.stars.filter((i) => !(t.get(i.lang ?? "en") === i.title.trim().toLowerCase() || (i.lang ?? "en") === n && i.title.trim().toLowerCase() === r || e.pageId != null && HL(i.lang ?? "en", i.pageId) === HL(n, e.pageId)));
+		this.state.stars = this.state.stars.filter((i) => !(t.get(i.lang ?? "en") === i.title.trim().toLowerCase() || (i.lang ?? "en") === n && i.title.trim().toLowerCase() === r || e.pageId != null && WL(i.lang ?? "en", i.pageId) === WL(n, e.pageId)));
 	}
 	async openWiki(e, t = "intro") {
 		let n = ++this.wikiSeq;
-		this.wikiEl.hidden = !1, this.placeEl.hidden = !0, this.currentPlace = null, this.wikiMode = t, this.wikiFullText = null, this.wikiLangLinks = {}, this.currentWiki = null, this.wikiTitleEl.textContent = `[${UL(e.lang)}] ${e.title}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.value = "", this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), this.renderAiLang(), this.render(), await this.loadWikiCandidate(e, n, !0);
+		this.wikiEl.hidden = !1, this.placeEl.hidden = !0, this.currentPlace = null, this.wikiMode = t, this.wikiFullText = null, this.wikiLangLinks = {}, this.currentWiki = null, this.wikiTitleEl.textContent = `[${GL(e.lang)}] ${e.title}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.value = "", this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), this.renderAiLang(), this.render(), await this.loadWikiCandidate(e, n, !0);
 	}
 	async restoreWiki(e) {
 		await this.openWiki({
@@ -39089,8 +39116,8 @@ var JL = `
 	}
 	async loadWikiCandidate(e, t, n) {
 		let r = ZF(e.lang, e.title), i = await YF(r);
-		if (!(i && typeof i.fetchedAt == "number" && typeof i.extract == "string" && typeof i.url == "string" && typeof i.lang == "string") || Date.now() - i.fetchedAt > FL) try {
-			i = await ML(e), await XF(r, i);
+		if (!(i && typeof i.fetchedAt == "number" && typeof i.extract == "string" && typeof i.url == "string" && typeof i.lang == "string") || Date.now() - i.fetchedAt > LL) try {
+			i = await PL(e), await XF(r, i);
 		} catch (e) {
 			if (!i) {
 				t === this.wikiSeq && (this.wikiBodyEl.textContent = `加载失败：${pI(e)}`, this.starEl.disabled = !0);
@@ -39111,12 +39138,12 @@ var JL = `
 			title: i.title,
 			lat: i.lat,
 			lng: i.lng
-		}, this.state.wikiOpen = !0, this.state.lastWikiMode = this.wikiMode, xL(this.ctx, this.state), this.renderWikiPage(), this.loadWikiLangLinks(i, t);
+		}, this.state.wikiOpen = !0, this.state.lastWikiMode = this.wikiMode, CL(this.ctx, this.state), this.renderWikiPage(), this.loadWikiLangLinks(i, t);
 	}
 	async loadWikiLangLinks(e, t) {
-		let n = CL.filter((t) => t !== e.lang);
+		let n = TL.filter((t) => t !== e.lang);
 		try {
-			let r = await jL(e.lang, e.title, n);
+			let r = await NL(e.lang, e.title, n);
 			if (t !== this.wikiSeq) return;
 			this.wikiLangLinks = {
 				[e.lang]: e.title,
@@ -39130,7 +39157,7 @@ var JL = `
 	renderWikiPage() {
 		let e = this.currentWiki;
 		if (!e) return;
-		this.wikiTitleEl.textContent = `[${UL(e.lang)}] ${e.title}`, this.renderWikiToolbar(), this.renderWikiBody(), this.wikiLinkEl.href = e.url, this.wikiLinkEl.hidden = !1;
+		this.wikiTitleEl.textContent = `[${GL(e.lang)}] ${e.title}`, this.renderWikiToolbar(), this.renderWikiBody(), this.wikiLinkEl.href = e.url, this.wikiLinkEl.hidden = !1;
 		let t = !!this.findStar(e);
 		this.starEl.disabled = !e.extract && !t, this.updateStarButton(), this.renderWikiNote(), this.renderAiLang();
 	}
@@ -39146,7 +39173,7 @@ var JL = `
 			let n = this.findStar(t);
 			n && (n.contextMode = e, e === "full" && this.wikiFullText && (n.fullText = this.wikiFullText), e === "full" && n.aiLang && n.aiLang !== t.lang && this.ensureAiFullText(n), this.sync());
 		}
-		xL(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.renderWikiBody();
+		CL(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.renderWikiBody();
 	}
 	async loadFullText() {
 		let e = this.currentWiki;
@@ -39171,7 +39198,7 @@ var JL = `
 					return;
 				}
 				try {
-					let r = await NL(e.lang, e.title);
+					let r = await FL(e.lang, e.title);
 					if (!r.trim()) throw Error("全文为空");
 					if (await XF(t, r), n !== this.fullSeq || this.currentWiki !== e || this.wikiMode !== "full") {
 						this.fallbackFullStar(e);
@@ -39189,21 +39216,21 @@ var JL = `
 	}
 	fallbackFullStar(e) {
 		let t = this.findStar(e);
-		!t || t.contextMode !== "full" || t.fullText || t.aiFullText || (t.contextMode = "intro", this.sync(), xL(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.toast("全文加载失败，已改为概览注入；可以稍后再切一次全文重试"));
+		!t || t.contextMode !== "full" || t.fullText || t.aiFullText || (t.contextMode = "intro", this.sync(), CL(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.toast("全文加载失败，已改为概览注入；可以稍后再切一次全文重试"));
 	}
 	rememberFullText(e) {
 		if (this.wikiMode !== "full" || this.wikiFullText === null) return;
 		let t = this.findStar(e);
-		t && (t.contextMode = "full", t.fullText = this.wikiFullText, this.sync(), xL(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton());
+		t && (t.contextMode = "full", t.fullText = this.wikiFullText, this.sync(), CL(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton());
 	}
 	renderWikiToolbar() {
 		let e = this.currentWiki;
 		this.wikiLangsEl.replaceChildren();
-		for (let t of CL) {
+		for (let t of TL) {
 			let n = document.createElement("button");
-			n.type = "button", n.className = "tm-pill", n.dataset.wikiLang = t, n.textContent = UL(t);
+			n.type = "button", n.className = "tm-pill", n.dataset.wikiLang = t, n.textContent = GL(t);
 			let r = e?.lang === t, i = r || !!this.wikiLangLinks[t];
-			n.classList.toggle("active", r), n.disabled = !i, n.title = i ? `切换到 ${UL(t)}` : "该条目没有此语言版本", this.wikiLangsEl.append(n);
+			n.classList.toggle("active", r), n.disabled = !i, n.title = i ? `切换到 ${GL(t)}` : "该条目没有此语言版本", this.wikiLangsEl.append(n);
 		}
 		for (let e of this.wikiModesEl.querySelectorAll("[data-wiki-mode]")) e.classList.toggle("active", e.dataset.wikiMode === this.wikiMode);
 		let t = e ? this.findStar(e) : void 0, n = t?.contextMode === "full";
@@ -39218,7 +39245,7 @@ var JL = `
 			return;
 		}
 		let r = ++this.wikiSeq;
-		this.wikiFullText = null, this.currentWiki = null, this.wikiTitleEl.textContent = `[${UL(e)}] ${n}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), await this.loadWikiCandidate({
+		this.wikiFullText = null, this.currentWiki = null, this.wikiTitleEl.textContent = `[${GL(e)}] ${n}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), await this.loadWikiCandidate({
 			pageId: 0,
 			title: n,
 			dist: 0,
@@ -39235,9 +39262,9 @@ var JL = `
 		let e = this.currentWiki, t = e ? this.findStar(e) : void 0;
 		if (this.aiLangEl.replaceChildren(), !e) this.aiLangEl.disabled = !0, this.aiLangHintEl.textContent = "";
 		else {
-			this.aiLangEl.append(new Option(`跟随星标页（${UL(t?.lang ?? e.lang)}）`, ""));
-			for (let n of CL) {
-				let r = new Option(UL(n), n);
+			this.aiLangEl.append(new Option(`跟随星标页（${GL(t?.lang ?? e.lang)}）`, ""));
+			for (let n of TL) {
+				let r = new Option(GL(n), n);
 				r.disabled = n !== e.lang && !this.wikiLangLinks[n] && t?.aiLang !== n, this.aiLangEl.append(r);
 			}
 			this.aiLangEl.disabled = !t, this.aiLangEl.value = t?.aiLang ?? "", this.aiLangHintEl.textContent = t ? "收藏与 AI 预览只显示给 AI 的语言" : "星标后可选择";
@@ -39262,7 +39289,7 @@ var JL = `
 			this.aiLangEl.disabled = !0, this.aiLangHintEl.textContent = "正在加载 AI 语言…";
 			try {
 				let e = await this.loadAiPage(n, r, t);
-				t.aiLang = n, t.aiTitle = e.title, t.aiExtract = e.extract, t.aiFullText = void 0, this.sync(), t.contextMode === "full" && await this.ensureAiFullText(t), this.flushNoteSave(), this.toast(`AI 将使用 ${UL(n)} 版本${t.contextMode === "full" ? "（全文）" : ""}`);
+				t.aiLang = n, t.aiTitle = e.title, t.aiExtract = e.extract, t.aiFullText = void 0, this.sync(), t.contextMode === "full" && await this.ensureAiFullText(t), this.flushNoteSave(), this.toast(`AI 将使用 ${GL(n)} 版本${t.contextMode === "full" ? "（全文）" : ""}`);
 			} catch (e) {
 				this.toast(`加载失败：${pI(e)}`);
 			} finally {
@@ -39273,10 +39300,10 @@ var JL = `
 	async ensureAiFullText(e) {
 		if (e.contextMode !== "full" || !e.aiLang || !e.aiTitle) return;
 		let t = QF(e.aiLang, e.aiTitle), n = await YF(t);
-		if (typeof n == "string" && n.length > 0) e.aiFullText = n, this.sync(), xL(this.ctx, this.state);
+		if (typeof n == "string" && n.length > 0) e.aiFullText = n, this.sync(), CL(this.ctx, this.state);
 		else try {
-			let n = await NL(e.aiLang, e.aiTitle);
-			await XF(t, n), e.aiFullText = n, this.sync(), xL(this.ctx, this.state);
+			let n = await FL(e.aiLang, e.aiTitle);
+			await XF(t, n), e.aiFullText = n, this.sync(), CL(this.ctx, this.state);
 		} catch (e) {
 			console.warn("[tavern-map] AI full text failed", pI(e)), this.toast("AI 语言全文加载失败，仍会使用该语言的简介");
 		}
@@ -39284,7 +39311,7 @@ var JL = `
 	async loadAiPage(e, t, n) {
 		let r = ZF(e, t), i = await YF(r);
 		if (i && typeof i.fetchedAt == "number" && typeof i.extract == "string" && typeof i.lang == "string") return i;
-		let a = await ML({
+		let a = await PL({
 			pageId: 0,
 			title: t,
 			dist: 0,
@@ -39302,11 +39329,11 @@ var JL = `
 	}
 	scheduleNoteSave() {
 		this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.noteSaveTimer = window.setTimeout(() => {
-			this.noteSaveTimer = void 0, xL(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
+			this.noteSaveTimer = void 0, CL(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
 		}, 400);
 	}
 	flushNoteSave() {
-		this.noteSaveTimer !== void 0 && (window.clearTimeout(this.noteSaveTimer), this.noteSaveTimer = void 0), xL(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
+		this.noteSaveTimer !== void 0 && (window.clearTimeout(this.noteSaveTimer), this.noteSaveTimer = void 0), CL(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
 	}
 	async toggleStar() {
 		let e = this.currentWiki;
@@ -39353,7 +39380,7 @@ var JL = `
 			radiusM: e(this.radiusEl, this.settings.radiusM, 50, 1e3),
 			maxNearby: Math.round(e(this.nearbyEl, this.settings.maxNearby, 0, 12)),
 			depth: Math.round(e(this.depthEl, this.settings.depth, 0, 10))
-		}, EL(this.ctx, this.settings), this.writeSettingsToForm(), this.state.enabled = this.settings.enabled, this.commit();
+		}, OL(this.ctx, this.settings), this.writeSettingsToForm(), this.state.enabled = this.settings.enabled, this.commit();
 	}
 	writeSettingsToForm() {
 		if (this.enabledEl) {
@@ -39366,7 +39393,7 @@ var JL = `
 		this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.moving && this.stopMovement(), this.clearRouteLine(), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.state.nearby = [], this.state.wiki = [], this.state.stars = [], this.state.savedPlaces = [], this.state.poiBriefs = [], this.state.poiAllToAI = !1, this.state.place = void 0, this.pois = [], this.poisById.clear(), this.poiSeq += 1, delete this.state.itinerary, delete this.state.lastWiki, delete this.state.lastWikiMode, this.state.wikiOpen = !1, this.state.lastTab = "nearby", this.currentWiki = null, this.currentPlace = null, this.tab = "nearby", this.moveProgress = 0, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.updatePoiSource(), this.syncPoiUi(), this.commit(), this.toast("已清空本聊天地的地点与收藏");
 	}
 	onChatChanged() {
-		if (this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.moving && this.stopMovement(), this.clearRouteLine(), this.ctx = this.liveContext(), this.settings = TL(this.ctx), this.state = bL(this.ctx), this.state.enabled = this.settings.enabled, this.pois = [], this.poisById.clear(), this.poiSeq += 1, this.tab = this.state.lastTab ?? "nearby", this.currentWiki = null, this.currentPlace = null, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.writeSettingsToForm(), this.map) {
+		if (this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.moving && this.stopMovement(), this.clearRouteLine(), this.ctx = this.liveContext(), this.settings = DL(this.ctx), this.state = SL(this.ctx), this.state.enabled = this.settings.enabled, this.pois = [], this.poisById.clear(), this.poiSeq += 1, this.tab = this.state.lastTab ?? "nearby", this.currentWiki = null, this.currentPlace = null, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.writeSettingsToForm(), this.map) {
 			let e = this.state.view;
 			this.map.jumpTo({
 				center: e ? [e.center.lng, e.center.lat] : [this.state.center.lng, this.state.center.lat],
@@ -39380,7 +39407,7 @@ var JL = `
 	applyFabGeometry() {
 		let e = document.getElementById("tm-fab");
 		if (e) try {
-			let t = localStorage.getItem(IL);
+			let t = localStorage.getItem(RL);
 			if (!t) return;
 			let n = JSON.parse(t);
 			if (!Number.isFinite(n.left) || !Number.isFinite(n.top)) return;
@@ -39417,7 +39444,7 @@ var JL = `
 			}, 0);
 			let n = e.getBoundingClientRect();
 			try {
-				localStorage.setItem(IL, JSON.stringify({
+				localStorage.setItem(RL, JSON.stringify({
 					left: n.left,
 					top: n.top
 				}));
@@ -39435,7 +39462,7 @@ var JL = `
 			"height"
 		]) this.panelEl.style.removeProperty(e);
 		else try {
-			let e = localStorage.getItem(LL);
+			let e = localStorage.getItem(zL);
 			if (!e) return;
 			let t = JSON.parse(e);
 			if (!Number.isFinite(t.left) || !Number.isFinite(t.top) || !Number.isFinite(t.width) || !Number.isFinite(t.height)) return;
@@ -39453,7 +39480,7 @@ var JL = `
 			"height"
 		]) this.panelEl.style.removeProperty(e);
 		try {
-			localStorage.removeItem(LL);
+			localStorage.removeItem(zL);
 		} catch {}
 	}
 	bindPanelDrag() {
@@ -39476,7 +39503,7 @@ var JL = `
 				if (window.removeEventListener("pointermove", c), window.removeEventListener("pointerup", l), document.body.style.userSelect = "", !s) return;
 				let e = this.panelEl.getBoundingClientRect();
 				try {
-					localStorage.setItem(LL, JSON.stringify({
+					localStorage.setItem(zL, JSON.stringify({
 						left: e.left,
 						top: e.top,
 						width: e.width,
@@ -39497,13 +39524,13 @@ var JL = `
 		t.className = "tm-toast", t.setAttribute("role", "status"), t.textContent = e, document.body.append(t), window.setTimeout(() => t.remove(), 2600);
 	}
 	cleanup() {
-		XI(this.ctx), this.offs.forEach((e) => e()), this.offs.length = 0, this.refreshTimer !== void 0 && window.clearTimeout(this.refreshTimer), this.settingsTimer !== void 0 && window.clearTimeout(this.settingsTimer), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.searchTimer !== void 0 && window.clearTimeout(this.searchTimer), this.moveFrame !== null && window.cancelAnimationFrame(this.moveFrame), this.moveFrame = null, this.moving = !1, this.clearRouteLine(), this.resizeObserver?.disconnect(), this.map?.remove(), this.map = null, this.marker = null, window.removeEventListener("beforeunload", this.onUnload), document.getElementById("tm-fab")?.remove(), this.panelEl?.remove(), this.previewEl?.remove(), document.getElementById("tm-settings")?.remove();
+		QI(this.ctx), this.offs.forEach((e) => e()), this.offs.length = 0, this.refreshTimer !== void 0 && window.clearTimeout(this.refreshTimer), this.settingsTimer !== void 0 && window.clearTimeout(this.settingsTimer), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.searchTimer !== void 0 && window.clearTimeout(this.searchTimer), this.moveFrame !== null && window.cancelAnimationFrame(this.moveFrame), this.moveFrame = null, this.moving = !1, this.clearRouteLine(), this.resizeObserver?.disconnect(), this.map?.remove(), this.map = null, this.marker = null, window.removeEventListener("beforeunload", this.onUnload), document.getElementById("tm-fab")?.remove(), this.panelEl?.remove(), this.previewEl?.remove(), document.getElementById("tm-settings")?.remove();
 	}
 };
 // src/index.ts
 HF(UF);
-var ZL = "__tavernMapBooted", QL = 100, $L = 200;
-function eR() {
+var $L = "__tavernMapBooted", eR = 100, tR = 200;
+function nR() {
 	let e = window.SillyTavern;
 	try {
 		let t = e?.getContext?.();
@@ -39513,20 +39540,20 @@ function eR() {
 	}
 	return null;
 }
-function tR(e = 0) {
+function rR(e = 0) {
 	let t = window;
-	if (t[ZL]) return;
-	let n = eR();
-	if (!n) e < QL ? window.setTimeout(() => tR(e + 1), $L) : console.error("[tavern-map] SillyTavern context unavailable; extension did not start");
+	if (t[$L]) return;
+	let n = nR();
+	if (!n) e < eR ? window.setTimeout(() => rR(e + 1), tR) : console.error("[tavern-map] SillyTavern context unavailable; extension did not start");
 	else {
-		t[ZL] = !0;
+		t[$L] = !0;
 		try {
-			t.__tavernMapUI = new XL(n);
+			t.__tavernMapUI = new QL(n);
 		} catch (e) {
-			t[ZL] = !1, console.error("[tavern-map] failed to mount UI", e);
+			t[$L] = !1, console.error("[tavern-map] failed to mount UI", e);
 		}
 	}
 }
-document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => tR(), { once: !0 }) : tR();
+document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => rR(), { once: !0 }) : rR();
 
 //# sourceMappingURL=index.js.map

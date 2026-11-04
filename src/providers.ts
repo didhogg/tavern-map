@@ -43,6 +43,31 @@ async function osmNameZh(type: string | undefined, id: number | undefined): Prom
   }
 }
 
+
+const streetCache = new Map<string, string | undefined>()
+
+/** Look up the street name at a route vertex without the extra name:zh call. */
+export async function reverseStreet(lat: number, lng: number): Promise<string | undefined> {
+  const key = `${lat.toFixed(5)},${lng.toFixed(5)}`
+  if (streetCache.has(key)) return streetCache.get(key)
+  try {
+    const url = new URL('https://photon.komoot.io/reverse')
+    url.searchParams.set('lat', lat.toFixed(6))
+    url.searchParams.set('lon', lng.toFixed(6))
+    url.searchParams.set('lang', 'en')
+    url.searchParams.set('layer', 'street')
+    const data = await fetchJson<PhotonResponse>(url, undefined, 6000)
+    const properties = data.features?.[0]?.properties
+    const street = (properties?.name || properties?.street)?.trim() || undefined
+    streetCache.set(key, street)
+    return street
+  } catch (error) {
+    console.warn('[tavern-map] reverse street lookup failed', error)
+    streetCache.set(key, undefined)
+    return undefined
+  }
+}
+
 /** Photon public instance: CORS-enabled, OSM-based, no key. */
 export async function reverseGeocode(lat: number, lng: number): Promise<Place> {
   try {

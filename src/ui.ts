@@ -18,7 +18,7 @@ import {
   type Poi,
 } from './poi'
 import { syncPrompt, clearPrompt } from './prompt'
-import { nearbyPlaces, reverseGeocode } from './providers'
+import { nearbyPlaces, reverseGeocode, reverseStreet } from './providers'
 import { routeBetween, type Route, type RouteStep } from './route'
 import { searchPlaces, type SearchResult } from './search'
 import { loadState, saveState } from './state'
@@ -1895,9 +1895,28 @@ export class MapUI {
    * (B2F / B3F). When the path has no real street name, prefer the nearest
    * named step and then the current street.
    */
-  private resolveRouteRoads(steps: RouteStep[], place: Place): RouteStep[] {
+  private async resolveRouteRoads(steps: RouteStep[], place: Place): Promise<RouteStep[]> {
+    // Transit/wait steps intentionally have no road; do not try to invent one.
+    if (steps.every((step) => step.road === undefined)) return steps
     const fallback = this.fallbackStreet(place)
+    const destinationFallback = place.address?.split(',')[0]?.trim() || undefined
     const names = steps.map((step) => (this.isUnnamedRoad(step.road) ? undefined : step.road))
+    const unnamed = steps
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => step.road !== undefined && this.isUnnamedRoad(step.road))
+      .slice(0, 12)
+
+    const streetByIndex = new Map<number, string>()
+    await Promise.all(
+      unnamed.map(async ({ step, index }) => {
+        const coordinates = step.coordinates
+        if (!coordinates || coordinates.length === 0) return
+        const middle = coordinates[Math.floor(coordinates.length / 2)]
+        const street = await reverseStreet(middle[1], middle[0])
+        if (street) streetByIndex.set(index, street)
+      }),
+    )
+
     return steps.map((step, index) => {
       // Transit and wait steps intentionally have no street name.
       if (step.road === undefined) return step
@@ -1922,9 +1941,12 @@ export class MapUI {
             ? previous.name
             : next.name
           : previous?.name ?? next?.name
-      // User preference: when the sidewalk/footway is unnamed, prefer the
-      // current street over a far named step (which may be a different road).
-      const road = fallback ?? nearest
+      const streetFallback =
+        index === steps.length - 1 ? destinationFallback : index === 0 ? fallback : undefined
+      const road =
+        index === 0
+          ? fallback ?? streetByIndex.get(index) ?? nearest
+          : streetByIndex.get(index) ?? streetFallback ?? fallback ?? nearest
       return road ? { ...step, road, name: road } : step
     })
   }
@@ -1944,7 +1966,9 @@ export class MapUI {
       if (seq !== this.routeSeq) return
       this.currentRoute = route
       const fromName = this.state.place?.name ?? '当前位置'
-      const resolvedSteps = this.resolveRouteRoads(route.steps, place)
+      this.setStatus(`正在补充${ROUTE_MODE_LABELS[mode]}道路名…`)
+      const resolvedSteps = await this.resolveRouteRoads(route.steps, place)
+      if (seq !== this.routeSeq) return
       const steps = resolvedSteps.map((step) => ({
         instruction: step.instruction
           .replace(/\bSTART\b/g, fromName)
