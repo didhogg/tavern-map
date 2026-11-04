@@ -355,15 +355,16 @@ export async function fetchRoutePois(
       15000,
     )
 
-  try {
-    const data = await Promise.any(ENDPOINTS.map((endpoint) => request(endpoint)))
-    const origin = points[0]
-    const pois = dedupe(
-      (data.elements ?? [])
-        .map((element) => makePoi(element, origin.lat, origin.lng))
-        .filter((poi): poi is Poi => Boolean(poi)),
-    )
-    if (pois.length > 0) {
+  const overpass = Promise.any(
+    ENDPOINTS.map(async (endpoint) => {
+      const data = await request(endpoint)
+      const origin = points[0]
+      const pois = dedupe(
+        (data.elements ?? [])
+          .map((element) => makePoi(element, origin.lat, origin.lng))
+          .filter((poi): poi is Poi => Boolean(poi)),
+      )
+      if (pois.length === 0) throw new Error('route Overpass 返回空结果')
       return pois.slice(0, 50).map((poi) => ({
         id: poi.id,
         name: poi.name,
@@ -376,11 +377,31 @@ export async function fetchRoutePois(
         cuisine: poi.cuisine,
         openingHours: poi.openingHours,
       }))
-    }
+    }),
+  )
+
+  let osmTimer: number | undefined
+  const osm = new Promise<RoutePoi[]>((resolve, reject) => {
+    osmTimer = window.setTimeout(() => {
+      routeOsmFallback(coordinates, corridor).then(
+        (pois) => {
+          if (pois.length === 0) reject(new Error('route OSM 返回空结果'))
+          else resolve(pois)
+        },
+        reject,
+      )
+    }, 1200)
+  })
+
+  try {
+    const pois = await Promise.any([overpass, osm])
+    if (osmTimer !== undefined) window.clearTimeout(osmTimer)
+    return pois
   } catch (error) {
+    if (osmTimer !== undefined) window.clearTimeout(osmTimer)
     console.warn('[tavern-map] route POI lookup failed', errorMessage(error))
+    return []
   }
-  return routeOsmFallback(coordinates, corridor)
 }
 
 /** Fallback when Overpass is unavailable: filter already-loaded POIs by route corridor. */

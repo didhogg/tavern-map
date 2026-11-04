@@ -19,7 +19,7 @@ import {
 } from './poi'
 import { syncPrompt, clearPrompt } from './prompt'
 import { nearbyPlaces, reverseGeocode } from './providers'
-import { routeBetween, type Route } from './route'
+import { routeBetween, type Route, type RouteStep } from './route'
 import { searchPlaces, type SearchResult } from './search'
 import { loadState, saveState } from './state'
 import { loadSettings, saveSettings, WIKI_LANGS } from './settings'
@@ -27,6 +27,7 @@ import type {
   MapState,
   Place,
   RouteItinerary,
+  RoutePoi,
   RouteProfile,
   SavedPlace,
   Settings,
@@ -233,8 +234,6 @@ const PANEL_HTML = `
           <button type="button" data-action="place-start" class="tm-route-start" hidden>开始移动</button>
           <button type="button" data-action="place-stop" class="tm-route-stop" hidden>停止</button>
         </div>
-        <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
-        <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
         <div class="tm-route-poi-controls">
           <label><input type="checkbox" data-route-pois> 显示沿途 POI</label>
           <label class="tm-route-poi-radius">范围
@@ -242,10 +241,12 @@ const PANEL_HTML = `
             <span data-route-poi-radius-value>100m</span>
           </label>
         </div>
+        <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
+        <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
       </div>
       <div class="tm-place-note">
         <label for="tm-place-note">我的笔记</label>
-        <textarea id="tm-place-note" placeholder="收藏后可写笔记…" disabled></textarea>
+        <textarea id="tm-place-note" placeholder="写下地点笔记（不收藏也会保存）…" disabled></textarea>
         <div id="tm-place-note-status" class="tm-note-status"></div>
       </div>
     </div>
@@ -1875,6 +1876,59 @@ export class MapUI {
     if (this.placeRouteModeEl) this.placeRouteModeEl.value = mode
   }
 
+  private fallbackStreet(place: Place): string | undefined {
+    const address = this.state.place?.address || place.address || ''
+    return address.split(',')[0]?.trim() || undefined
+  }
+
+  private isUnnamedRoad(road: string | undefined): boolean {
+    return (
+      !road ||
+      road === '未命名步道' ||
+      road === '未命名道路' ||
+      /^[A-Z]?\d+[FB]?$/i.test(road.trim())
+    )
+  }
+
+  /**
+   * OSRM's foot profile often snaps to unnamed sidewalks or indoor levels
+   * (B2F / B3F). When the path has no real street name, prefer the nearest
+   * named step and then the current street.
+   */
+  private resolveRouteRoads(steps: RouteStep[], place: Place): RouteStep[] {
+    const fallback = this.fallbackStreet(place)
+    const names = steps.map((step) => (this.isUnnamedRoad(step.road) ? undefined : step.road))
+    return steps.map((step, index) => {
+      // Transit and wait steps intentionally have no street name.
+      if (step.road === undefined) return step
+      if (!this.isUnnamedRoad(step.road)) return step
+      let previous: { index: number; name: string } | undefined
+      let next: { index: number; name: string } | undefined
+      for (let i = index - 1; i >= 0; i -= 1) {
+        if (names[i]) {
+          previous = { index: i, name: names[i]! }
+          break
+        }
+      }
+      for (let i = index + 1; i < names.length; i += 1) {
+        if (names[i]) {
+          next = { index: i, name: names[i]! }
+          break
+        }
+      }
+      const nearest =
+        previous && next
+          ? index - previous.index <= next.index - index
+            ? previous.name
+            : next.name
+          : previous?.name ?? next?.name
+      // User preference: when the sidewalk/footway is unnamed, prefer the
+      // current street over a far named step (which may be a different road).
+      const road = fallback ?? nearest
+      return road ? { ...step, road, name: road } : step
+    })
+  }
+
   private async planRouteTo(place: Place, mode: RouteProfile = this.routeMode): Promise<void> {
     if (this.moving) this.stopMovement()
     const seq = ++this.routeSeq
@@ -1890,7 +1944,8 @@ export class MapUI {
       if (seq !== this.routeSeq) return
       this.currentRoute = route
       const fromName = this.state.place?.name ?? '当前位置'
-      const steps = route.steps.map((step) => ({
+      const resolvedSteps = this.resolveRouteRoads(route.steps, place)
+      const steps = resolvedSteps.map((step) => ({
         instruction: step.instruction
           .replace(/\bSTART\b/g, fromName)
           .replace(/\bEND\b/g, place.name),
@@ -1928,34 +1983,58 @@ export class MapUI {
     }
   }
 
-  private async loadRoutePois(route: Route, seq: number): Promise<void> {
-    const loadSeq = ++this.routePoiSeq
-    const radius = this.settings.routePoiRadiusM
-    let pois = await fetchRoutePois(route.coordinates, radius)
-    if (loadSeq !== this.routePoiSeq || seq !== this.routeSeq) return
-    if (pois.length === 0) {
-      let candidates = this.pois
-      if (candidates.length === 0 && route.coordinates.length > 0) {
-        try {
-          const start = route.coordinates[0]
-          candidates = await fetchPois(start[1], start[0], this.settings.radiusM)
-        } catch (error) {
-          console.warn('[tavern-map] route POI fallback failed', errorMessage(error))
-        }
-      }
-      if (loadSeq !== this.routePoiSeq || seq !== this.routeSeq) return
-      pois = filterPoisAlongRoute(route.coordinates, candidates, radius)
-    }
+  private applyRoutePois(route: Route, pois: RoutePoi[]): void {
+    if (!this.settings.showRoutePois) return
     const itinerary = this.state.itinerary
     if (!itinerary) return
-    if (!this.settings.showRoutePois) return
-    const byStep = assignRoutePoisToSteps(route.steps, pois, radius)
+    const byStep = assignRoutePoisToSteps(
+      route.steps,
+      pois,
+      this.settings.routePoiRadiusM,
+    )
     itinerary.steps.forEach((step, index) => {
       step.pois = byStep[index] ?? []
     })
     this.commit()
     this.renderPlace()
     if (this.tab === 'route') this.render()
+  }
+
+  private async loadRoutePois(route: Route, seq: number): Promise<void> {
+    const loadSeq = ++this.routePoiSeq
+    const radius = this.settings.routePoiRadiusM
+    if (!this.settings.showRoutePois) return
+
+    // Show POIs already loaded around the current map immediately; the route
+    // corridor fetch below is independent of the map radius and can widen it.
+    const initial = filterPoisAlongRoute(route.coordinates, this.pois, radius)
+    if (initial.length > 0) this.applyRoutePois(route, initial)
+
+    const fetched = await fetchRoutePois(route.coordinates, radius)
+    if (loadSeq !== this.routePoiSeq || seq !== this.routeSeq) return
+    let fetchedPois: RoutePoi[] = fetched
+    if (fetchedPois.length === 0) {
+      let candidates = this.pois
+      if (candidates.length === 0 && route.coordinates.length > 0) {
+        try {
+          const start = route.coordinates[0]
+          candidates = await fetchPois(start[1], start[0], Math.max(250, radius))
+        } catch (error) {
+          console.warn('[tavern-map] route POI fallback failed', errorMessage(error))
+        }
+      }
+      if (loadSeq !== this.routePoiSeq || seq !== this.routeSeq) return
+      fetchedPois = filterPoisAlongRoute(route.coordinates, candidates, radius)
+    }
+    // Union with the immediate map-POI pass: a partial Overpass response must
+    // not erase POIs already attached to other steps.
+    const merged = new Map<string, RoutePoi>()
+    for (const poi of initial) merged.set(poi.id, poi)
+    for (const poi of fetchedPois) merged.set(poi.id, poi)
+    const pois = [...merged.values()]
+    if (pois.length > 0 || initial.length === 0) {
+      this.applyRoutePois(route, pois)
+    }
   }
 
   private drawRouteLine(route: Route, fit: boolean): void {

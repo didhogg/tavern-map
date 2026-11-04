@@ -36761,10 +36761,10 @@ async function UI(e, t = 100) {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({ data: i })
-	}, 15e3);
-	try {
-		let e = await Promise.any(AI.map((e) => a(e))), t = r[0], n = RI((e.elements ?? []).map((e) => FI(e, t.lat, t.lng)).filter((e) => !!e));
-		if (n.length > 0) return n.slice(0, 50).map((e) => ({
+	}, 15e3), o = Promise.any(AI.map(async (e) => {
+		let t = await a(e), n = r[0], i = RI((t.elements ?? []).map((e) => FI(e, n.lat, n.lng)).filter((e) => !!e));
+		if (i.length === 0) throw Error("route Overpass 返回空结果");
+		return i.slice(0, 50).map((e) => ({
 			id: e.id,
 			name: e.name,
 			nameZh: e.nameZh,
@@ -36776,10 +36776,19 @@ async function UI(e, t = 100) {
 			cuisine: e.cuisine,
 			openingHours: e.openingHours
 		}));
+	})), s, c = new Promise((t, r) => {
+		s = window.setTimeout(() => {
+			GI(e, n).then((e) => {
+				e.length === 0 ? r(/* @__PURE__ */ Error("route OSM 返回空结果")) : t(e);
+			}, r);
+		}, 1200);
+	});
+	try {
+		let e = await Promise.any([o, c]);
+		return s !== void 0 && window.clearTimeout(s), e;
 	} catch (e) {
-		console.warn("[tavern-map] route POI lookup failed", pI(e));
+		return s !== void 0 && window.clearTimeout(s), console.warn("[tavern-map] route POI lookup failed", pI(e)), [];
 	}
-	return GI(e, n);
 }
 function WI(e, t, n = 100) {
 	if (e.length === 0 || t.length === 0) return [];
@@ -37646,8 +37655,6 @@ var JL = `
           <button type="button" data-action="place-start" class="tm-route-start" hidden>开始移动</button>
           <button type="button" data-action="place-stop" class="tm-route-stop" hidden>停止</button>
         </div>
-        <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
-        <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
         <div class="tm-route-poi-controls">
           <label><input type="checkbox" data-route-pois> 显示沿途 POI</label>
           <label class="tm-route-poi-radius">范围
@@ -37655,10 +37662,12 @@ var JL = `
             <span data-route-poi-radius-value>100m</span>
           </label>
         </div>
+        <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
+        <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
       </div>
       <div class="tm-place-note">
         <label for="tm-place-note">我的笔记</label>
-        <textarea id="tm-place-note" placeholder="收藏后可写笔记…" disabled></textarea>
+        <textarea id="tm-place-note" placeholder="写下地点笔记（不收藏也会保存）…" disabled></textarea>
         <div id="tm-place-note-status" class="tm-note-status"></div>
       </div>
     </div>
@@ -38626,6 +38635,39 @@ var JL = `
 	setRouteMode(e) {
 		this.routeMode = e, this.placeRouteModeEl && (this.placeRouteModeEl.value = e);
 	}
+	fallbackStreet(e) {
+		return (this.state.place?.address || e.address || "").split(",")[0]?.trim() || void 0;
+	}
+	isUnnamedRoad(e) {
+		return !e || e === "未命名步道" || e === "未命名道路" || /^[A-Z]?\d+[FB]?$/i.test(e.trim());
+	}
+	resolveRouteRoads(e, t) {
+		let n = this.fallbackStreet(t), r = e.map((e) => this.isUnnamedRoad(e.road) ? void 0 : e.road);
+		return e.map((e, t) => {
+			if (e.road === void 0 || !this.isUnnamedRoad(e.road)) return e;
+			let i, a;
+			for (let e = t - 1; e >= 0; --e) if (r[e]) {
+				i = {
+					index: e,
+					name: r[e]
+				};
+				break;
+			}
+			for (let e = t + 1; e < r.length; e += 1) if (r[e]) {
+				a = {
+					index: e,
+					name: r[e]
+				};
+				break;
+			}
+			let o = i && a ? t - i.index <= a.index - t ? i.name : a.name : i?.name ?? a?.name, s = n ?? o;
+			return s ? {
+				...e,
+				road: s,
+				name: s
+			} : e;
+		});
+	}
 	async planRouteTo(e, t = this.routeMode) {
 		this.moving && this.stopMovement();
 		let n = ++this.routeSeq;
@@ -38644,7 +38686,7 @@ var JL = `
 				}, t);
 				if (n !== this.routeSeq) return;
 				this.currentRoute = i;
-				let a = this.state.place?.name ?? "当前位置", o = i.steps.map((t) => ({
+				let a = this.state.place?.name ?? "当前位置", o = this.resolveRouteRoads(i.steps, e).map((t) => ({
 					instruction: t.instruction.replace(/\bSTART\b/g, a).replace(/\bEND\b/g, e.name),
 					name: t.name,
 					road: t.road,
@@ -38678,26 +38720,39 @@ var JL = `
 			}
 		}
 	}
+	applyRoutePois(e, t) {
+		if (!this.settings.showRoutePois) return;
+		let n = this.state.itinerary;
+		if (!n) return;
+		let r = KI(e.steps, t, this.settings.routePoiRadiusM);
+		n.steps.forEach((e, t) => {
+			e.pois = r[t] ?? [];
+		}), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
+	}
 	async loadRoutePois(e, t) {
-		let n = ++this.routePoiSeq, r = this.settings.routePoiRadiusM, i = await UI(e.coordinates, r);
+		let n = ++this.routePoiSeq, r = this.settings.routePoiRadiusM;
+		if (!this.settings.showRoutePois) return;
+		let i = WI(e.coordinates, this.pois, r);
+		i.length > 0 && this.applyRoutePois(e, i);
+		let a = await UI(e.coordinates, r);
 		if (n !== this.routePoiSeq || t !== this.routeSeq) return;
-		if (i.length === 0) {
-			let a = this.pois;
-			if (a.length === 0 && e.coordinates.length > 0) try {
+		let o = a;
+		if (o.length === 0) {
+			let i = this.pois;
+			if (i.length === 0 && e.coordinates.length > 0) try {
 				let t = e.coordinates[0];
-				a = await VI(t[1], t[0], this.settings.radiusM);
+				i = await VI(t[1], t[0], Math.max(250, r));
 			} catch (e) {
 				console.warn("[tavern-map] route POI fallback failed", pI(e));
 			}
 			if (n !== this.routePoiSeq || t !== this.routeSeq) return;
-			i = WI(e.coordinates, a, r);
+			o = WI(e.coordinates, i, r);
 		}
-		let a = this.state.itinerary;
-		if (!a || !this.settings.showRoutePois) return;
-		let o = KI(e.steps, i, r);
-		a.steps.forEach((e, t) => {
-			e.pois = o[t] ?? [];
-		}), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
+		let s = /* @__PURE__ */ new Map();
+		for (let e of i) s.set(e.id, e);
+		for (let e of o) s.set(e.id, e);
+		let c = [...s.values()];
+		(c.length > 0 || i.length === 0) && this.applyRoutePois(e, c);
 	}
 	drawRouteLine(e, t) {
 		let n = this.map;
