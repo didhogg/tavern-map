@@ -426,6 +426,7 @@ export class MapUI {
     this.settings = loadSettings(ctx)
     this.state = loadState(ctx)
     this.state.enabled = this.settings.enabled
+    this.migrateSavedPlaceNotes()
     this.routeMode = this.state.itinerary?.profile ?? 'foot'
     this.mount()
     this.applyFabGeometry()
@@ -1499,10 +1500,9 @@ export class MapUI {
     const detail = this.miniButton('详情', () => this.openPlace(place))
     const go = this.miniButton('前往', () => void this.moveTo(place.lat, place.lng, true))
     const remove = this.miniButton('移除', () => {
-      const key = placeKey(place)
-      this.state.savedPlaces = this.state.savedPlaces.filter((item) => placeKey(item) !== key)
+      this.removeSavedPlace(place)
       this.commit()
-      this.toast('已移除收藏地点')
+      this.toast('已移除收藏地点，地点笔记仍保留')
     })
     actions.append(detail, go, remove)
     head.append(title, actions)
@@ -2528,6 +2528,34 @@ export class MapUI {
     if (this.radiusEl) this.radiusEl.value = String(this.settings.radiusM)
   }
 
+  private migrateSavedPlaceNotes(): void {
+    for (const place of this.state.savedPlaces) {
+      this.preservePlaceNote(place, place.note)
+    }
+  }
+
+  private preservePlaceNote(place: Place, note: string): void {
+    if (!note.trim()) return
+    const notes = this.state.placeNotes ?? (this.state.placeNotes = {})
+    const key = placeKey(place)
+    if (notes[key]) return
+    notes[key] = {
+      note,
+      name: place.name,
+      nameZh: place.nameZh,
+      lat: place.lat,
+      lng: place.lng,
+      updatedAt: Date.now(),
+    }
+  }
+
+  private removeSavedPlace(place: Place): void {
+    const saved = this.findSavedPlace(place)
+    if (saved?.note) this.preservePlaceNote(place, saved.note)
+    const key = placeKey(place)
+    this.state.savedPlaces = this.state.savedPlaces.filter((item) => placeKey(item) !== key)
+  }
+
   private findSavedPlace(place: Place): SavedPlace | undefined {
     const key = placeKey(place)
     return this.state.savedPlaces.find((item) => placeKey(item) === key)
@@ -2561,8 +2589,8 @@ export class MapUI {
     const key = placeKey(place)
     const index = this.state.savedPlaces.findIndex((item) => placeKey(item) === key)
     if (index >= 0) {
-      this.state.savedPlaces.splice(index, 1)
-      this.toast('已从 AI 上下文移除')
+      this.removeSavedPlace(place)
+      this.toast('已从 AI 上下文移除，地点笔记仍保留')
     } else {
       this.state.savedPlaces.push({
         ...place,

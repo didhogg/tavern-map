@@ -128,6 +128,7 @@ ln -s /Users/xxx/tavern-map /path/to/SillyTavern/data/<user-handle>/extensions/t
 - 0.3.6 实测 POI 按步骤归属：驾车路线每一步只显示本段 100m 内的 POI，显示名称/分类/菜系/距本段/距段首；默认显示 5 个，更多可展开。
 - 0.3.6 实测“显示沿途 POI”勾选默认开启，取消后步骤 POI 和 prompt 中的 POI 行同时消失，再勾选立即恢复；范围滑块 25–500m 可调，设置写入 extensionSettings。
 - 0.3.6 实测未收藏地点笔记：详情 textarea 可编辑，`placeNotes` 保存；关闭再打开仍在，不需要先收藏。
+- 0.3.10 实测收藏地点笔记后取消收藏：`placeNotes` 仍保留，地点详情 textarea、重新打开和 prompt 里的当前地点笔记都还在；旧版本只有 `savedPlaces[].note` 的笔记会在启动时迁移到 `placeNotes`。
 - 0.3.7 实测短路线（约 300m）先用当前地图 POI 立即填充步骤 POI，再后台补充路线走廊；范围滑块与地图半径独立；B2F/B3F 或“未命名步道”会优先回退到当前街道，不再全段显示无名。
 - 0.3.9 实测巴尔的摩 Ivy Hotel → Belvedere Hotel 的步行步骤逐段反查到 East Biddle Street / North Calvert Street / East Chase Street 等不同街道，不再把整段都写成 East Biddle Street；到达步骤优先用目的地街道。Photon 反查改为串行、小批量，避免一次并发触发失败。
 - 0.3.0 实测 POI 图层：Overpass 失败时 OSM API 回退返回 500 个 POI，地图上出现分类色点/聚合/标签，下方“周边”列表同步显示 500 个；地点详情在下方列表内展开，不遮挡地图。
@@ -142,7 +143,7 @@ ln -s /Users/xxx/tavern-map /path/to/SillyTavern/data/<user-handle>/extensions/t
 - 未选地点时不注入默认东京坐标；Esc 可关闭预览/抽屉。
 - 用嵌套静态路径加载生产 bundle：CSS、MapLibre worker（HTTP 200）、地图 canvas、prompt 注入都正常。
 - 1440×900 与 390×844 两种视口的面板布局检查通过。
-- **0.3.9 尚未在真实 ST 里做完整回归**；POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、未收藏地点笔记、搜索排序、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、收藏星标和多语言切换的实机表现仍需确认。
+- **0.3.10 尚未在真实 ST 里做完整回归**；POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、取消收藏后笔记保留、搜索排序、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、收藏星标和多语言切换的实机表现仍需确认。
 
 ## 使用流程
 
@@ -262,7 +263,7 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 - 公共交通覆盖取决于 Transitous 对当地 GTFS 数据的收录；没有班次/无覆盖时会显示直线估算，不代表真实公交路线。换乘和等待来自 MOTIS 返回的行程，可能因实时数据/班次变化而失效。
 - 道路名来自 OSRM 解析的 OSM `name/ref`；OSM 没有命名的步道会先用 Photon 反向地理编码逐段反查街道（优先街道类型），再回退到最近有名路段/当前街道/目的地街道。仍查不到时才显示“未命名步道”。
 - 路线 POI 通过每个步骤的几何就近归属；同一步骤 POI 过多时 UI 默认折叠为 5 个，可展开。
-- 未收藏地点的笔记会保存，但只有它成为当前地点、或你收藏该地点后，才会进入 AI 场景块；其余未收藏笔记不会自动注入。
+- 未收藏地点的笔记会保存在 `placeNotes`，取消收藏不会删除；只有它成为当前地点、或你收藏该地点后，才会进入 AI 场景块；其余未收藏笔记不会自动注入。
 - 沿途 POI 优先用 Overpass 按设置的走廊宽度查询（默认 100m，可调 25–500m）；Overpass 失败时会尝试 OSM 路线采样回退，再回退到当前已拉取的周边 POI，因此长路线后半段仍可能不完整。
 - 搜索是启发式排序：文本匹配、结果类型、Photon 原始排名和离当前地点距离共同计分；不是 Google 级别的本地意图理解。
 - “复制行程”依赖浏览器 Clipboard API；非安全上下文（非 localhost/HTTPS）可能失败。
@@ -280,7 +281,7 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 - OSM API 回退会下载整个 bbox 的 XML（含建筑节点），密集城区可能 1–2 MB。
 - 桌面面板可拖动；<=640px 时面板固定全屏，FAB 仍可拖动。
 - 重新打开时恢复最后 Wiki 的前提是关闭面板时 Wiki 抽屉仍然开着；主动关闭 Wiki 后不会强制恢复。
-- 0.1.0 已在真实 SillyTavern 实机运行；0.3.9 的 POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、未收藏地点笔记、搜索排序、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、路线、拖动和恢复状态仍需要在真实 ST 里做一轮回归。桌面和 390×844 布局已在本地浏览器检查。
+- 0.1.0 已在真实 SillyTavern 实机运行；0.3.10 的 POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、取消收藏后笔记保留、搜索排序、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、路线、拖动和恢复状态仍需要在真实 ST 里做一轮回归。桌面和 390×844 布局已在本地浏览器检查。
 - `maplibre-gl` 被打进 `dist/index.js`，产物较大；如果后续在意加载体积，可以改成 CDN/ESM external。
 - 地图状态没有迁移器；`MapState.version` 目前固定为 1。
 
@@ -320,7 +321,7 @@ manifest.json    ST 扩展清单
 
 ## 下一步
 
-1. 在真实 SillyTavern 实例里回归 0.3.9：POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、未收藏地点笔记、搜索排序、全文注入、Wiki 星标增删、同一文章多语言去重、AI 语言单一化、星标收藏、语言切换、FAB 遮挡、移动端底栏。
+1. 在真实 SillyTavern 实例里回归 0.3.10：POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、未收藏地点笔记、搜索排序、全文注入、Wiki 星标增删、同一文章多语言去重、AI 语言单一化、星标收藏、语言切换、FAB 遮挡、移动端底栏。
 2. 视需要把自绘搜索框换成 `@maplibre/maplibre-gl-geocoder` 或其它现成 map UI kit；当前自绘是为了绕开 Nominatim 的浏览器 CORS 限制并直接接 Photon。
 3. 评估把地图状态、收藏和笔记移植到 TRPG assistant 的哪一层。
 4. 如确实需要 Google 数据，单独做 Google adapter，不和 OSM 混图。

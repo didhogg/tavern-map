@@ -37811,7 +37811,7 @@ var XL = `
 		this.clampFab(), this.applyPanelGeometry();
 	};
 	constructor(e) {
-		this.ctx = e, this.settings = DL(e), this.state = SL(e), this.state.enabled = this.settings.enabled, this.routeMode = this.state.itinerary?.profile ?? "foot", this.mount(), this.applyFabGeometry(), this.applyPanelGeometry(), this.bindEvents(), this.sync(), this.render(), this.syncRadiusUi(), this.syncPoiUi();
+		this.ctx = e, this.settings = DL(e), this.state = SL(e), this.state.enabled = this.settings.enabled, this.migrateSavedPlaceNotes(), this.routeMode = this.state.itinerary?.profile ?? "foot", this.mount(), this.applyFabGeometry(), this.applyPanelGeometry(), this.bindEvents(), this.sync(), this.render(), this.syncRadiusUi(), this.syncPoiUi();
 	}
 	mount() {
 		if (!document.getElementById(IL)) {
@@ -38435,8 +38435,7 @@ var XL = `
 		let o = document.createElement("div");
 		o.className = "tm-saved-actions";
 		let s = this.miniButton("详情", () => this.openPlace(e)), c = this.miniButton("前往", () => void this.moveTo(e.lat, e.lng, !0)), l = this.miniButton("移除", () => {
-			let t = tI(e);
-			this.state.savedPlaces = this.state.savedPlaces.filter((e) => tI(e) !== t), this.commit(), this.toast("已移除收藏地点");
+			this.removeSavedPlace(e), this.commit(), this.toast("已移除收藏地点，地点笔记仍保留");
 		});
 		o.append(s, c, l), n.append(r, o);
 		let u = this.noteInput(this.getPlaceNote(e), (t) => {
@@ -39032,6 +39031,27 @@ var XL = `
 	syncRadiusUi() {
 		this.radiusInputEl && (this.radiusInputEl.value = String(this.settings.radiusM), this.radiusValueEl.textContent = KL(this.settings.radiusM), this.radiusEl && (this.radiusEl.value = String(this.settings.radiusM)));
 	}
+	migrateSavedPlaceNotes() {
+		for (let e of this.state.savedPlaces) this.preservePlaceNote(e, e.note);
+	}
+	preservePlaceNote(e, t) {
+		if (!t.trim()) return;
+		let n = this.state.placeNotes ?? (this.state.placeNotes = {}), r = tI(e);
+		n[r] || (n[r] = {
+			note: t,
+			name: e.name,
+			nameZh: e.nameZh,
+			lat: e.lat,
+			lng: e.lng,
+			updatedAt: Date.now()
+		});
+	}
+	removeSavedPlace(e) {
+		let t = this.findSavedPlace(e);
+		t?.note && this.preservePlaceNote(e, t.note);
+		let n = tI(e);
+		this.state.savedPlaces = this.state.savedPlaces.filter((e) => tI(e) !== n);
+	}
 	findSavedPlace(e) {
 		let t = tI(e);
 		return this.state.savedPlaces.find((e) => tI(e) === t);
@@ -39053,8 +39073,8 @@ var XL = `
 		i && (i.note = t);
 	}
 	toggleSavedPlace(e) {
-		let t = tI(e), n = this.state.savedPlaces.findIndex((e) => tI(e) === t);
-		n >= 0 ? (this.state.savedPlaces.splice(n, 1), this.toast("已从 AI 上下文移除")) : (this.state.savedPlaces.push({
+		let t = tI(e);
+		this.state.savedPlaces.findIndex((e) => tI(e) === t) >= 0 ? (this.removeSavedPlace(e), this.toast("已从 AI 上下文移除，地点笔记仍保留")) : (this.state.savedPlaces.push({
 			...e,
 			note: this.getPlaceNote(e),
 			savedAt: Date.now()
