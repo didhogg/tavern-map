@@ -187,8 +187,18 @@ function render(
     lines.push(`From: ${clean(itinerary.from.name)} → ${clean(itinerary.to.name)}`)
     lines.push(`Distance: ${formatDistance(itinerary.distance)} · ${formatDuration(itinerary.duration)}`)
     for (const [index, step] of routeSteps.entries()) {
+      const road = step.road ? ` — ${clean(step.road)}` : ''
       const stepDistance = step.distance > 0 ? ` (${formatDistance(step.distance)})` : ''
-      lines.push(`${index + 1}. ${clean(step.instruction)}${stepDistance}`)
+      lines.push(`${index + 1}. ${clean(step.instruction)}${road}${stepDistance}`)
+    }
+    if (itinerary.pois?.length) {
+      lines.push('Along the route:')
+      for (const poi of itinerary.pois) {
+        const category = poi.category ? ` (${clean(poi.category)})` : ''
+        const cuisine = poi.cuisine ? `, cuisine: ${clean(poi.cuisine)}` : ''
+        const chinese = poi.nameZh ? ` / ${clean(poi.nameZh)}` : ''
+        lines.push(`- ${clean(poi.name)}${chinese}${category}${cuisine}`)
+      }
     }
   }
   lines.push('[/SCENE MAP]')

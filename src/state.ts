@@ -30,6 +30,7 @@ function validItinerary(raw: unknown): RouteItinerary | undefined {
         .map((step) => ({
           instruction: step.instruction,
           name: typeof step.name === 'string' ? step.name : undefined,
+          road: typeof step.road === 'string' ? step.road : undefined,
           distance: step.distance,
           duration: step.duration,
         }))
@@ -54,6 +55,30 @@ function validItinerary(raw: unknown): RouteItinerary | undefined {
         ? value.profile
         : 'foot',
     steps,
+    pois: Array.isArray(value.pois)
+      ? value.pois
+          .filter(
+            (poi) =>
+              poi &&
+              typeof poi.id === 'string' &&
+              typeof poi.name === 'string' &&
+              Number.isFinite(poi.lat) &&
+              Number.isFinite(poi.lng),
+          )
+          .slice(0, 30)
+          .map((poi) => ({
+            id: poi.id,
+            name: poi.name,
+            nameZh: typeof poi.nameZh === 'string' ? poi.nameZh : undefined,
+            category: typeof poi.category === 'string' ? poi.category : undefined,
+            address: typeof poi.address === 'string' ? poi.address : undefined,
+            lat: poi.lat,
+            lng: poi.lng,
+            distanceM: typeof poi.distanceM === 'number' ? poi.distanceM : undefined,
+            cuisine: typeof poi.cuisine === 'string' ? poi.cuisine : undefined,
+            openingHours: typeof poi.openingHours === 'string' ? poi.openingHours : undefined,
+          }))
+      : [],
     fallback: Boolean(value.fallback),
     showToAI: Boolean(value.showToAI),
     updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),

@@ -1,7 +1,7 @@
 import { haversine } from './geo'
 import { errorMessage, fetchJson, fetchText } from './http'
 import { nearbyPlaces } from './providers'
-import type { Place } from './types'
+import type { Place, RoutePoi } from './types'
 
 export type PoiGroup = 'food' | 'shopping' | 'culture' | 'nature' | 'transit' | 'service' | 'other'
 
@@ -303,4 +303,133 @@ export async function fetchPois(lat: number, lng: number, radiusM: number): Prom
   )
   cache.set(key, { at: Date.now(), pois })
   return pois
+}
+
+function sampleRoute(
+  coordinates: Array<[number, number]>,
+  spacing = 900,
+  maxPoints = 18,
+): Array<{ lat: number; lng: number }> {
+  if (coordinates.length === 0) return []
+  const points: Array<{ lat: number; lng: number }> = []
+  const first = coordinates[0]
+  points.push({ lat: first[1], lng: first[0] })
+  let accumulated = 0
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const previous = coordinates[index - 1]
+    const current = coordinates[index]
+    accumulated += haversine(previous[1], previous[0], current[1], current[0])
+    if (accumulated >= spacing && points.length < maxPoints) {
+      points.push({ lat: current[1], lng: current[0] })
+      accumulated = 0
+    }
+  }
+  const last = coordinates[coordinates.length - 1]
+  const lastPoint = points[points.length - 1]
+  if (!lastPoint || haversine(lastPoint.lat, lastPoint.lng, last[1], last[0]) > 30) {
+    points.push({ lat: last[1], lng: last[0] })
+  }
+  return points.slice(0, maxPoints)
+}
+
+/** Named POIs within a ~120m corridor of a planned route. */
+export async function fetchRoutePois(
+  coordinates: Array<[number, number]>,
+): Promise<RoutePoi[]> {
+  const points = sampleRoute(coordinates)
+  if (points.length === 0) return []
+  const clauses = points
+    .map((point) => `nwr(around:120,${point.lat.toFixed(6)},${point.lng.toFixed(6)})[name];`)
+    .join('\n')
+  const query = `[out:json][timeout:20];\n(\n${clauses}\n);\nout center 300;`
+  const request = (endpoint: string) =>
+    fetchJson<OverpassResponse>(
+      endpoint,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ data: query }),
+      },
+      15000,
+    )
+
+  try {
+    const data = await Promise.any(ENDPOINTS.map((endpoint) => request(endpoint)))
+    const origin = points[0]
+    const pois = dedupe(
+      (data.elements ?? [])
+        .map((element) => makePoi(element, origin.lat, origin.lng))
+        .filter((poi): poi is Poi => Boolean(poi)),
+    )
+    if (pois.length > 0) {
+      return pois.slice(0, 50).map((poi) => ({
+        id: poi.id,
+        name: poi.name,
+        nameZh: poi.nameZh,
+        category: poi.category,
+        address: poi.address,
+        lat: poi.lat,
+        lng: poi.lng,
+        distanceM: poi.distanceM,
+        cuisine: poi.cuisine,
+        openingHours: poi.openingHours,
+      }))
+    }
+  } catch (error) {
+    console.warn('[tavern-map] route POI lookup failed', errorMessage(error))
+  }
+  return routeOsmFallback(coordinates)
+}
+
+/** Fallback when Overpass is unavailable: filter already-loaded POIs by route corridor. */
+export function filterPoisAlongRoute(
+  coordinates: Array<[number, number]>,
+  candidates: Poi[],
+): RoutePoi[] {
+  if (coordinates.length === 0 || candidates.length === 0) return []
+  const start = coordinates[0]
+  const results: Array<{ poi: Poi; order: number }> = []
+  for (const poi of candidates) {
+    let nearest = Number.POSITIVE_INFINITY
+    let order = 0
+    for (let index = 0; index < coordinates.length; index += 1) {
+      const [lng, lat] = coordinates[index]
+      const distance = haversine(poi.lat, poi.lng, lat, lng)
+      if (distance < nearest) {
+        nearest = distance
+        order = index
+      }
+    }
+    if (nearest <= 180) results.push({ poi, order })
+  }
+  return results
+    .sort((a, b) => a.order - b.order)
+    .slice(0, 50)
+    .map(({ poi }) => ({
+      id: poi.id,
+      name: poi.name,
+      nameZh: poi.nameZh,
+      category: poi.category,
+      address: poi.address,
+      lat: poi.lat,
+      lng: poi.lng,
+      distanceM: haversine(start[1], start[0], poi.lat, poi.lng),
+      cuisine: poi.cuisine,
+      openingHours: poi.openingHours,
+    }))
+}
+
+async function routeOsmFallback(
+  coordinates: Array<[number, number]>,
+): Promise<RoutePoi[]> {
+  const points = sampleRoute(coordinates, 1600, 6)
+  const candidates: Poi[] = []
+  for (const point of points) {
+    try {
+      candidates.push(...(await osmFallback(point.lat, point.lng, 250)))
+    } catch (error) {
+      console.warn('[tavern-map] route OSM fallback sample failed', errorMessage(error))
+    }
+  }
+  return filterPoisAlongRoute(coordinates, candidates)
 }

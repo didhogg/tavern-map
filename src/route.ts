@@ -5,6 +5,8 @@ import type { LatLng, RouteProfile } from './types'
 export type RouteStep = {
   instruction: string
   name?: string
+  /** Exact OSM road/path name for this segment, when available. */
+  road?: string
   distance: number
   duration: number
 }
@@ -23,6 +25,7 @@ type OsrmStep = {
   distance?: number
   duration?: number
   name?: string
+  ref?: string
   mode?: string
   maneuver?: { type?: string; modifier?: string; exit?: number }
 }
@@ -76,36 +79,44 @@ const MANEUVERS: Record<string, string> = {
 }
 
 function instruction(step: OsrmStep): string {
-  const name = step.name?.trim()
   const type = step.maneuver?.type
   const modifier = step.maneuver?.modifier
-  if (type === 'depart') return name ? `从 ${name} 出发` : '出发'
+  if (type === 'depart') return '出发'
   if (type === 'arrive') return '到达目的地'
   if (type === 'roundabout' || type === 'rotary' || type === 'roundabout turn') {
     const exit = step.maneuver?.exit
-    return `进入环岛${exit ? `，第 ${exit} 个出口` : ''}${name ? `，进入 ${name}` : ''}`
+    return `进入环岛${exit ? `，第 ${exit} 个出口` : ''}`
   }
-  if (type === 'continue') return name ? `继续沿 ${name} 前进` : '继续前进'
+  if (type === 'continue') return '继续前进'
   const modifierLabel = modifier ? MODIFIERS[modifier] : ''
-  if (modifierLabel) return `${modifierLabel}${name ? `进入 ${name}` : ''}`
+  if (modifierLabel) return modifierLabel
   const maneuverLabel = type ? MANEUVERS[type] : ''
-  if (maneuverLabel) return `${maneuverLabel}${name ? `进入 ${name}` : ''}`
-  return name ? `沿 ${name} 前进` : '继续前进'
+  if (maneuverLabel) return maneuverLabel
+  return '继续前进'
 }
 
-function parseSteps(raw: OsrmStep[] | undefined): RouteStep[] {
+function roadName(step: OsrmStep): string | undefined {
+  return step.name?.trim() || step.ref?.trim() || undefined
+}
+
+function parseSteps(raw: OsrmStep[] | undefined, profile: RouteProfile): RouteStep[] {
   const steps: RouteStep[] = []
   for (const item of raw ?? []) {
     const text = instruction(item)
+    const road = roadName(item) ?? (profile === 'foot' ? '未命名步道' : '未命名道路')
     const distance = Number.isFinite(item.distance) ? Number(item.distance) : 0
     const duration = Number.isFinite(item.duration) ? Number(item.duration) : 0
-    if (steps.length > 0 && steps[steps.length - 1].instruction === text) {
+    if (
+      steps.length > 0 &&
+      steps[steps.length - 1].instruction === text &&
+      steps[steps.length - 1].road === road
+    ) {
       const previous = steps[steps.length - 1]
       previous.distance += distance
       previous.duration += duration
       continue
     }
-    steps.push({ instruction: text, name: item.name, distance, duration })
+    steps.push({ instruction: text, road, name: road, distance, duration })
     if (steps.length >= 40) break
   }
   return steps
@@ -139,7 +150,7 @@ async function roadRoute(from: LatLng, to: LatLng, profile: 'foot' | 'driving'):
           route.duration ??
           (route.distance ?? 0) / (profile === 'driving' ? 13.9 : 1.35),
         coordinates,
-        steps: parseSteps(route.legs?.[0]?.steps),
+        steps: parseSteps(route.legs?.[0]?.steps, profile),
         profile,
       }
     } catch (error) {
@@ -293,8 +304,20 @@ async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
   const coordinates: Array<[number, number]> = []
   const steps: RouteStep[] = []
   let stepDuration = 0
+  let previousEndTime: number | null = null
 
-  for (const leg of legs) {
+  const lineLabel = (line: MotisLeg): string => {
+    const name = line.routeShortName || line.routeLongName || ''
+    return `${name ? `${name} ` : ''}${transitModeLabel(line.mode)}`
+  }
+  const pushStep = (step: RouteStep): void => {
+    if (steps.length < 40) steps.push(step)
+  }
+
+  for (let index = 0; index < legs.length; index += 1) {
+    const leg = legs[index]
+    const previous = legs[index - 1]
+    const next = legs[index + 1]
     const geometry = leg.legGeometry
     if (geometry?.points) {
       for (const point of decodePolyline(geometry.points, geometry.precision ?? 6)) {
@@ -312,23 +335,48 @@ async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
     stepDuration += duration
 
     if (leg.mode === 'WALK') {
-      steps.push({
-        instruction: `步行到 ${endName}`,
-        distance,
-        duration,
-      })
+      const previousIsTransit = Boolean(previous && previous.mode !== 'WALK')
+      const nextIsTransit = Boolean(next && next.mode !== 'WALK')
+      if (previousIsTransit && nextIsTransit) {
+        const nextLabel = next ? lineLabel(next) : '下一班公共交通'
+        const heading = next?.headsign ? `（${next.headsign}）` : ''
+        pushStep({
+          instruction: `在 ${endName} 换乘 ${nextLabel}${heading}`,
+          distance,
+          duration,
+        })
+      } else {
+        pushStep({
+          instruction: `步行到 ${endName}`,
+          distance,
+          duration,
+        })
+      }
     } else {
+      const startMs = Date.parse(leg.startTime ?? '')
+      if (previousEndTime != null && Number.isFinite(startMs)) {
+        const waitMinutes = Math.max(0, Math.round((startMs - previousEndTime) / 60000))
+        if (waitMinutes >= 1) {
+          pushStep({
+            instruction: `在 ${startName} 等待约 ${waitMinutes} 分钟`,
+            distance: 0,
+            duration: waitMinutes * 60,
+          })
+        }
+      }
       const line = leg.routeShortName || leg.routeLongName || ''
       const mode = transitModeLabel(leg.mode)
       const heading = leg.headsign ? `（${leg.headsign}）` : ''
-      steps.push({
+      pushStep({
         instruction: `乘坐 ${line ? `${line} ` : ''}${mode}${heading} 从 ${startName} 到 ${endName}`,
         name: line || undefined,
         distance,
         duration,
       })
     }
-    if (steps.length >= 40) break
+
+    const endMs = Date.parse(leg.endTime ?? '')
+    if (Number.isFinite(endMs)) previousEndTime = endMs
   }
 
   if (coordinates.length < 2) throw new Error('公共交通路线没有可用几何')

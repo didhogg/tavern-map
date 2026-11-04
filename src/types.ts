@@ -74,8 +74,23 @@ export type MapView = {
 export type ItineraryStep = {
   instruction: string
   name?: string
+  /** Exact OSM road/path name for this segment, when available. */
+  road?: string
   distance: number
   duration: number
+}
+
+export type RoutePoi = {
+  id: string
+  name: string
+  nameZh?: string
+  category?: string
+  address?: string
+  lat: number
+  lng: number
+  distanceM?: number
+  cuisine?: string
+  openingHours?: string
 }
 
 export type PoiBrief = {
@@ -97,6 +112,8 @@ export type RouteItinerary = {
   duration: number
   profile: RouteProfile
   steps: ItineraryStep[]
+  /** Named POIs found within the route corridor. */
+  pois?: RoutePoi[]
   fallback?: boolean
   showToAI: boolean
   updatedAt: number

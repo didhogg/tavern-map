@@ -985,8 +985,9 @@
 .tm-route-steps li {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 8px;
+  gap: 3px 8px;
   padding: 6px 0 6px 22px;
   border-top: 1px solid var(--tm-line);
   color: var(--tm-muted);
@@ -1020,6 +1021,48 @@
   color: var(--tm-faint);
   font-size: 9px;
   font-style: normal;
+}
+
+.tm-route-road {
+  flex: 1 0 100%;
+  color: var(--tm-brass);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.tm-route-pois {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--tm-line);
+}
+
+.tm-route-pois-title {
+  margin-bottom: 5px;
+  color: var(--tm-brass);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.tm-route-pois-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tm-route-poi {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--tm-muted);
+  font: inherit;
+  font-size: 9.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tm-route-poi:hover {
+  color: var(--tm-brass-strong);
 }
 
 .tm-place-route-steps {
