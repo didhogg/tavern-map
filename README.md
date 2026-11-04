@@ -24,7 +24,9 @@
 - Wikipedia GeoSearch + 条目简介/全文，可同时勾选英文/日文/中文，多语言候选合并显示
 - Wiki 抽屉支持“概览 / 全文”切换；**星标为概览时注入完整简介，星标为全文时注入完整全文**，两者都不再按字数截断
 - Wiki 抽屉支持 EN / 日本語 / 中文 显示切换，通过 `langlinks` 找同一词条的对应版本
+- **同一篇文章只保留一个 Wiki 星标**：切换显示语言会更新现有星标，不会在收藏/AI 预览里新增另一种语言；收藏卡和 AI 预览只显示“给 AI 的语言”
 - Wiki 抽屉有“给 AI 的语言”下拉框，可以中文阅读、英文注入；选择结果保存在星标上
+- **AI 注入会剔除 Wikipedia 的编辑性尾节**：`Further reading`、`References`、`External links`、`See also`、`Notes`、`Bibliography` 等；本地阅读的原文仍保留这些小节
 - “收藏”页统一管理收藏地点和 Wiki，支持收藏、移除、写自己的笔记（不限字数，完整注入，不省略）
 - 收藏地点、Wiki 星标和笔记都会进入场景块；当前地点的笔记会显示在 `Where` 下方
 - 通过 `setExtensionPrompt` 注入 `IN_CHAT`，默认 depth 2、SYSTEM role
@@ -111,6 +113,9 @@ ln -s /Users/xxx/tavern-map /path/to/SillyTavern/data/<user-handle>/extensions/t
 - 0.3.1 实测 prompt 顺序：`Where` → `Place note` → `Coords` → `Nearby` → `POI briefs` → `Saved places` → `Wiki`；`Nearby` 不再出现在 `Saved places` 下面。
 - 0.3.1 实测 AI 预览会跟随星标增删实时刷新，不需要关闭再打开；预览里的 `Wiki (starred)` 出现/消失与 star 状态一致。
 - 0.3.2 实测移除所有字数/预算裁剪：注入 2,520 字符 Wiki 简介后 prompt 不再追加省略号；注入 162,000 字符全文后 prompt 长度 162,600，内容没有被截断；United States 的 3,531 字符简介和 Shibuya Crossing 的 585 字符简介都完整进入 prompt。设置里不再有“每篇 Wiki 字符数”和“上下文预算”。
+- 0.3.3 实测切换 Wiki 显示语言（EN → JA → EN）后，`state.stars` 始终只有 1 条，收藏仍只有 1 张卡，AI 预览只有 1 行 `Wiki (starred)`；设置 AI 语言为 ZH 后，即使界面切到 JA，收藏卡和 AI 预览也只显示 `[ZH]` 版本。
+- 0.3.3 实测手动构造 EN/JA 重复星标后，切回 EN 会自动合并为 1 条，笔记保留，收藏卡和 prompt 都只剩 1 条。
+- 0.3.3 实测 `Further reading`、`References`、`External links`、`See also`、`Notes`、`Bibliography` 及其子小节从 AI 注入里删除，其他章节保留；AI 语言为 ZH 时不会回退到英文全文。
 - 0.3.0 实测 POI 图层：Overpass 失败时 OSM API 回退返回 500 个 POI，地图上出现分类色点/聚合/标签，下方“周边”列表同步显示 500 个；地点详情在下方列表内展开，不遮挡地图。
 - 地点卡实测显示菜系、营业时间、网站，**不显示电话**；星标加入 AI 上下文，取消星标移出收藏。
 - “全部 POI 给 AI”勾选后，prompt 出现 `POI briefs:`，实测 500 条 POI brief，不限制 5 条。
@@ -123,7 +128,7 @@ ln -s /Users/xxx/tavern-map /path/to/SillyTavern/data/<user-handle>/extensions/t
 - 未选地点时不注入默认东京坐标；Esc 可关闭预览/抽屉。
 - 用嵌套静态路径加载生产 bundle：CSS、MapLibre worker（HTTP 200）、地图 canvas、prompt 注入都正常。
 - 1440×900 与 390×844 两种视口的面板布局检查通过。
-- **0.3.2 尚未在真实 ST 里做完整回归**；POI 图层、下方地点卡、全部 POI briefs、全文注入、Wiki 星标增删、收藏星标和多语言切换的实机表现仍需确认。
+- **0.3.3 尚未在真实 ST 里做完整回归**；POI 图层、下方地点卡、全部 POI briefs、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、收藏星标和多语言切换的实机表现仍需确认。
 
 ## 使用流程
 
@@ -239,6 +244,8 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 - 路线服务是公共 OSRM；不可用时退化为直线估计并标注“直线估计”。行程最多保留 40 步，prompt 会注入当前保存的全部步骤。
 - “复制行程”依赖浏览器 Clipboard API；非安全上下文（非 localhost/HTTPS）可能失败。
 - Wiki 星标选择“全文”时会把全文直接放进 prompt；抽屉和 prompt 都使用完整缓存全文，不再显示截断提示。全文可能非常长，token 会显著增加。
+- 0.3.3 起切换显示语言不会新增 Wiki 收藏；旧版本可能已经留下的同一文章多语言重复条目，在打开或切换一次该文章后会自动合并，之后不再重复。
+- `Further reading` / `References` / `External links` 等尾节只从 **AI 注入**里删除；Wiki 抽屉里的本地阅读仍保留 Wikipedia 原文小节。
 - 多语言候选是“每个语言分别 GeoSearch，再按距离合并”；抽屉里的 EN / 日本語 / 中文 切换用 `langlinks` 找同一词条，但并非所有词条都有对应语言版本，没版本的语言按钮会禁用。
 - 设置里的“Wiki 搜索语言”只影响候选发现；收藏和笔记不会因搜索语言变化被删除。
 - 搜索使用 Photon，结果是英文/当地名混合；国家/州级别只定位，不自动拉周边，点地图或选城市/具体地点才会刷新。
@@ -250,7 +257,7 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 - OSM API 回退会下载整个 bbox 的 XML（含建筑节点），密集城区可能 1–2 MB。
 - 桌面面板可拖动；<=640px 时面板固定全屏，FAB 仍可拖动。
 - 重新打开时恢复最后 Wiki 的前提是关闭面板时 Wiki 抽屉仍然开着；主动关闭 Wiki 后不会强制恢复。
-- 0.1.0 已在真实 SillyTavern 实机运行；0.3.2 的 POI 图层、下方地点卡、全部 POI briefs、全文注入、Wiki 星标增删、多语言、路线、拖动和恢复状态仍需要在真实 ST 里做一轮回归。桌面和 390×844 布局已在本地浏览器检查。
+- 0.1.0 已在真实 SillyTavern 实机运行；0.3.3 的 POI 图层、下方地点卡、全部 POI briefs、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、路线、拖动和恢复状态仍需要在真实 ST 里做一轮回归。桌面和 390×844 布局已在本地浏览器检查。
 - `maplibre-gl` 被打进 `dist/index.js`，产物较大；如果后续在意加载体积，可以改成 CDN/ESM external。
 - 地图状态没有迁移器；`MapState.version` 目前固定为 1。
 
@@ -290,7 +297,7 @@ manifest.json    ST 扩展清单
 
 ## 下一步
 
-1. 在真实 SillyTavern 实例里回归 0.3.2：POI 图层、下方地点卡、全部 POI briefs、全文注入、Wiki 星标增删、星标收藏、语言切换、FAB 遮挡、移动端底栏。
+1. 在真实 SillyTavern 实例里回归 0.3.3：POI 图层、下方地点卡、全部 POI briefs、全文注入、Wiki 星标增删、同一文章多语言去重、AI 语言单一化、星标收藏、语言切换、FAB 遮挡、移动端底栏。
 2. 视需要把自绘搜索框换成 `@maplibre/maplibre-gl-geocoder` 或其它现成 map UI kit；当前自绘是为了绕开 Nominatim 的浏览器 CORS 限制并直接接 Photon。
 3. 评估把地图状态、收藏和笔记移植到 TRPG assistant 的哪一层。
 4. 如确实需要 Google 数据，单独做 Google adapter，不和 OSM 混图。

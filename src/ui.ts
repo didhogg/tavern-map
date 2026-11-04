@@ -1448,10 +1448,12 @@ export class MapUI {
     title.className = 'tm-saved-title'
     const name = document.createElement('div')
     name.className = 'tm-saved-name'
-    name.textContent = `[${langLabel(page.lang)}] ${page.title}`
+    const displayLang = page.aiLang || page.lang
+    const displayTitle = page.aiTitle || page.title
+    name.textContent = `[${langLabel(displayLang)}] ${displayTitle}`
     const meta = document.createElement('div')
     meta.className = 'tm-saved-meta'
-    meta.textContent = `Wikipedia · 给 AI ${langLabel(page.aiLang || page.lang)} · ${
+    meta.textContent = `Wikipedia · 给 AI ${langLabel(displayLang)} · ${
       page.contextMode === 'full' ? '全文' : '概览'
     }`
     title.append(name, meta)
@@ -2166,6 +2168,52 @@ export class MapUI {
     if (this.currentPlace) this.renderPlace()
   }
 
+  /**
+   * The same Wikipedia article has different titles/pageIds per language.
+   * `wikiLangLinks` is the bridge; only use it while the page being queried is
+   * the currently open article, otherwise a saved card could match a different
+   * article that happens to share a title.
+   */
+  private articleTitles(page: { lang?: string; title?: string }): Map<string, string> {
+    const known = new Map<string, string>()
+    const lang = page.lang || 'en'
+    const title = page.title?.trim().toLowerCase()
+    if (!title) return known
+    known.set(lang, title)
+    const current = this.currentWiki
+    if (
+      current &&
+      (current.lang || 'en') === lang &&
+      current.title.trim().toLowerCase() === title
+    ) {
+      for (const [linkLang, linkTitle] of Object.entries(this.wikiLangLinks)) {
+        if (typeof linkTitle === 'string' && linkTitle.trim()) {
+          known.set(linkLang, linkTitle.trim().toLowerCase())
+        }
+      }
+    }
+    return known
+  }
+
+  private articleMatches(
+    page: { lang: string; pageId: number; title?: string },
+    star: StarredWiki,
+  ): boolean {
+    const known = this.articleTitles(page)
+    const starLang = star.lang ?? 'en'
+    const starTitle = star.title.trim().toLowerCase()
+    if (known.get(starLang) === starTitle) return true
+    return starLang === (page.lang || 'en') && star.pageId === page.pageId
+  }
+
+  private findArticleStars(page: {
+    lang: string
+    pageId: number
+    title?: string
+  }): StarredWiki[] {
+    return this.state.stars.filter((star) => this.articleMatches(page, star))
+  }
+
   private findStar(page: { lang: string; pageId: number; title?: string }): StarredWiki | undefined {
     const lang = page.lang || 'en'
     const title = page.title?.trim().toLowerCase()
@@ -2175,15 +2223,85 @@ export class MapUI {
       )
       if (byTitle) return byTitle
     }
-    return this.state.stars.find(
+    const byId = this.state.stars.find(
       (item) => wikiKey(item.lang ?? 'en', item.pageId) === wikiKey(lang, page.pageId),
     )
+    if (byId) return byId
+    return this.state.stars.find((item) => this.articleMatches(page, item))
+  }
+
+  private reconcileStars(page: WikiPage): StarredWiki | undefined {
+    const matches = this.findArticleStars(page)
+    if (matches.length === 0) return undefined
+    const pageLang = page.lang || 'en'
+    const pageTitle = page.title.trim().toLowerCase()
+    const primary =
+      matches.find(
+        (item) =>
+          (item.lang ?? 'en') === pageLang &&
+          item.title.trim().toLowerCase() === pageTitle,
+      ) ??
+      matches.find((item) => item.pageId === page.pageId) ??
+      matches[0]
+
+    let changed = false
+    for (const other of matches) {
+      if (other === primary) continue
+      if (other.note) {
+        const notes = [primary.note, other.note].map((note) => note.trim()).filter(Boolean)
+        primary.note = Array.from(new Set(notes)).join('\n')
+      }
+      if (!primary.aiLang && other.aiLang) {
+        primary.aiLang = other.aiLang
+        primary.aiTitle = other.aiTitle
+        primary.aiExtract = other.aiExtract
+        primary.aiFullText = other.aiFullText
+      }
+      if (
+        !primary.fullText &&
+        other.fullText &&
+        (other.lang ?? 'en') === (primary.lang ?? 'en')
+      ) {
+        primary.fullText = other.fullText
+      }
+      if (other.contextMode === 'full' && primary.contextMode !== 'full') {
+        primary.contextMode = 'full'
+      }
+      this.state.stars = this.state.stars.filter((item) => item !== other)
+      changed = true
+    }
+
+    const languageChanged =
+      (primary.lang ?? 'en') !== pageLang ||
+      primary.title.trim().toLowerCase() !== pageTitle
+    if (languageChanged || primary.pageId !== page.pageId || primary.url !== page.url) {
+      primary.lang = pageLang
+      primary.title = page.title
+      primary.pageId = page.pageId
+      primary.url = page.url
+      primary.lat = page.lat
+      primary.lng = page.lng
+      primary.extract = page.extract
+      if (languageChanged) primary.fullText = undefined
+      changed = true
+    } else if (page.extract && primary.extract !== page.extract) {
+      primary.extract = page.extract
+      changed = true
+    }
+
+    if (changed) {
+      this.sync()
+      saveState(this.ctx, this.state)
+    }
+    return primary
   }
 
   private removeStar(page: { lang?: string; pageId?: number; title: string }): void {
+    const known = this.articleTitles(page)
     const lang = page.lang || 'en'
     const title = page.title.trim().toLowerCase()
     this.state.stars = this.state.stars.filter((item) => {
+      if (known.get(item.lang ?? 'en') === item.title.trim().toLowerCase()) return false
       if ((item.lang ?? 'en') === lang && item.title.trim().toLowerCase() === title) return false
       if (page.pageId != null && wikiKey(item.lang ?? 'en', item.pageId) === wikiKey(lang, page.pageId)) {
         return false
@@ -2257,15 +2375,10 @@ export class MapUI {
     if (!preserveMode) this.wikiMode = 'intro'
     this.wikiFullText = null
     this.currentWiki = page
-    const star = this.findStar(page)
+    const star = this.reconcileStars(page)
     if (star) {
       this.wikiMode = star.contextMode ?? 'intro'
       if (this.wikiMode === 'full' && star.fullText) this.wikiFullText = star.fullText
-      if (page.extract && star.extract !== page.extract) {
-        star.extract = page.extract
-        this.sync()
-        saveState(this.ctx, this.state)
-      }
       if (
         this.wikiMode === 'full' &&
         star.aiLang &&
@@ -2300,8 +2413,11 @@ export class MapUI {
       if (seq === this.wikiSeq) this.wikiLangLinks = { [page.lang]: page.title }
     }
     if (seq === this.wikiSeq) {
+      this.reconcileStars(page)
       this.renderWikiToolbar()
+      this.renderWikiNote()
       this.renderAiLang()
+      this.updateStarButton()
     }
   }
 
@@ -2522,7 +2638,9 @@ export class MapUI {
     }
     this.aiLangEl.disabled = !star
     this.aiLangEl.value = star?.aiLang ?? ''
-    this.aiLangHintEl.textContent = star ? '显示语言与 AI 语言可以不同' : '星标后可选择'
+    this.aiLangHintEl.textContent = star
+      ? '收藏与 AI 预览只显示给 AI 的语言'
+      : '星标后可选择'
   }
 
   private async onAiLangChange(): Promise<void> {

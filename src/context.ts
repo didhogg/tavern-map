@@ -16,6 +16,76 @@ function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * Wikipedia plaintext contains trailing editorial sections that are not useful
+ * for roleplay. Drop those sections (heading + body) from the AI context only;
+ * the reader can still show the original article.
+ */
+const WIKI_BOILERPLATE_HEADINGS = new Set([
+  'further reading',
+  'further information',
+  'references',
+  'external links',
+  'see also',
+  'notes',
+  'bibliography',
+  'citations',
+  'sources',
+  'footnotes',
+  'works cited',
+  '延伸阅读',
+  '进一步阅读',
+  '参考文献',
+  '参考资料',
+  '外部链接',
+  '外部連結',
+  '参见',
+  '參見',
+  '相关条目',
+  '相關條目',
+  '注释',
+  '註釋',
+  '脚注',
+  '腳註',
+  '来源',
+  '來源',
+  '参考',
+  '參考',
+  '书目',
+  '書目',
+  '引用',
+  '関連項目',
+  '関連記事',
+  '参考文献',
+  '外部リンク',
+  '脚注',
+  '注釈',
+  '出典',
+])
+
+export function stripWikiBoilerplate(text: string): string {
+  const lines = text.split(/\r?\n/)
+  const kept: string[] = []
+  let skipLevel = 0
+  for (const line of lines) {
+    const heading = line.match(/^\s*(={2,})\s*(.+?)\s*={2,}\s*$/)
+    if (heading) {
+      const level = heading[1].length
+      if (skipLevel > 0 && level > skipLevel) continue
+      const name = heading[2].replace(/[_\s]+/g, ' ').trim().toLowerCase()
+      if (WIKI_BOILERPLATE_HEADINGS.has(name)) {
+        skipLevel = level
+        continue
+      }
+      skipLevel = 0
+      kept.push(line)
+      continue
+    }
+    if (skipLevel === 0) kept.push(line)
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 function formatPlace(place: Place): string {
   const category = place.category ? `, ${clean(place.category)}` : ''
   const distance = place.distanceM == null ? '' : `, ${Math.round(place.distanceM)}m`
@@ -77,15 +147,24 @@ function render(
   if (stars.length > 0) {
     lines.push('Wiki (starred):')
     for (const page of stars) {
-      const aiLang = page.aiLang || page.lang
-      const aiTitle = page.aiTitle || page.title
-      const fullText = page.contextMode === 'full' ? page.aiFullText || page.fullText : undefined
-      const aiExtract = fullText || page.aiExtract || page.extract
-      const language = aiLang ? `[${aiLang.toUpperCase()}] ` : ''
+      const hasAiLang = Boolean(page.aiLang)
+      const lang = hasAiLang ? page.aiLang : page.lang
+      const title = hasAiLang ? page.aiTitle || page.title : page.title
+      const fullText = page.contextMode === 'full'
+        ? hasAiLang
+          ? page.aiFullText
+          : page.fullText
+        : undefined
+      // Never fall back to the display-language body when an AI language is set:
+      // a single saved article must produce exactly one language in the prompt.
+      const body = hasAiLang ? page.aiExtract : page.extract
+      const text = stripWikiBoilerplate(fullText || body || '')
+      if (!text) continue
+      const language = lang ? `[${lang.toUpperCase()}] ` : ''
       const note = page.note ? ` — note: ${clean(page.note)}` : ''
       const mode = fullText ? ' · full text' : ''
       lines.push(
-        `- ${language}${clean(aiTitle)} (CC BY-SA 4.0)${mode}${note}: ${aiExtract.trim()}`,
+        `- ${language}${clean(title)} (CC BY-SA 4.0)${mode}${note}: ${text}`,
       )
     }
   }
@@ -125,8 +204,10 @@ export function buildContext(state: MapState, settings: Settings): string {
   const nearby = state.nearby.slice(0, Math.max(0, settings.maxNearby))
   const savedPlaces = state.savedPlaces
   const poiBriefs = state.poiAllToAI ? state.poiBriefs : []
-  const stars = state.stars.filter(
-    (page) => page.aiFullText || page.fullText || page.aiExtract || page.extract,
+  const stars = state.stars.filter((page) =>
+    page.aiLang
+      ? Boolean(page.aiFullText || page.aiExtract)
+      : Boolean(page.fullText || page.extract),
   )
   const routeSteps = state.itinerary?.showToAI ? state.itinerary.steps : []
 
