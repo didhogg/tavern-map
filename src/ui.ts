@@ -1904,18 +1904,17 @@ export class MapUI {
     const unnamed = steps
       .map((step, index) => ({ step, index }))
       .filter(({ step }) => step.road !== undefined && this.isUnnamedRoad(step.road))
-      .slice(0, 12)
+      .slice(0, 8)
 
     const streetByIndex = new Map<number, string>()
-    await Promise.all(
-      unnamed.map(async ({ step, index }) => {
-        const coordinates = step.coordinates
-        if (!coordinates || coordinates.length === 0) return
-        const middle = coordinates[Math.floor(coordinates.length / 2)]
-        const street = await reverseStreet(middle[1], middle[0])
-        if (street) streetByIndex.set(index, street)
-      }),
-    )
+    // Sequential, small batch: Photon rate-limits parallel reverse bursts.
+    for (const { step, index } of unnamed) {
+      const coordinates = step.coordinates
+      if (!coordinates || coordinates.length === 0) continue
+      const middle = coordinates[Math.floor(coordinates.length / 2)]
+      const street = await reverseStreet(middle[1], middle[0])
+      if (street) streetByIndex.set(index, street)
+    }
 
     return steps.map((step, index) => {
       // Transit and wait steps intentionally have no street name.

@@ -55,15 +55,18 @@ export async function reverseStreet(lat: number, lng: number): Promise<string | 
     url.searchParams.set('lat', lat.toFixed(6))
     url.searchParams.set('lon', lng.toFixed(6))
     url.searchParams.set('lang', 'en')
-    url.searchParams.set('layer', 'street')
     const data = await fetchJson<PhotonResponse>(url, undefined, 6000)
     const properties = data.features?.[0]?.properties
-    const street = (properties?.name || properties?.street)?.trim() || undefined
-    streetCache.set(key, street)
+    // Photon's layer=street filter is not reliable on every deployment/network;
+    // the normal reverse response still distinguishes streets from houses.
+    const street =
+      properties?.type === 'street'
+        ? properties.name?.trim() || undefined
+        : properties?.street?.trim() || undefined
+    if (street) streetCache.set(key, street)
     return street
   } catch (error) {
     console.warn('[tavern-map] reverse street lookup failed', error)
-    streetCache.set(key, undefined)
     return undefined
   }
 }

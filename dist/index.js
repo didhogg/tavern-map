@@ -36337,11 +36337,11 @@ async function gI(e, t) {
 	if (hI.has(n)) return hI.get(n);
 	try {
 		let r = new URL("https://photon.komoot.io/reverse");
-		r.searchParams.set("lat", e.toFixed(6)), r.searchParams.set("lon", t.toFixed(6)), r.searchParams.set("lang", "en"), r.searchParams.set("layer", "street");
-		let i = (await uI(r, void 0, 6e3)).features?.[0]?.properties, a = (i?.name || i?.street)?.trim() || void 0;
-		return hI.set(n, a), a;
+		r.searchParams.set("lat", e.toFixed(6)), r.searchParams.set("lon", t.toFixed(6)), r.searchParams.set("lang", "en");
+		let i = (await uI(r, void 0, 6e3)).features?.[0]?.properties, a = i?.type === "street" ? i.name?.trim() || void 0 : i?.street?.trim() || void 0;
+		return a && hI.set(n, a), a;
 	} catch (e) {
-		console.warn("[tavern-map] reverse street lookup failed", e), hI.set(n, void 0);
+		console.warn("[tavern-map] reverse street lookup failed", e);
 		return;
 	}
 }
@@ -38660,13 +38660,14 @@ var XL = `
 		let n = this.fallbackStreet(t), r = t.address?.split(",")[0]?.trim() || void 0, i = e.map((e) => this.isUnnamedRoad(e.road) ? void 0 : e.road), a = e.map((e, t) => ({
 			step: e,
 			index: t
-		})).filter(({ step: e }) => e.road !== void 0 && this.isUnnamedRoad(e.road)).slice(0, 12), o = /* @__PURE__ */ new Map();
-		return await Promise.all(a.map(async ({ step: e, index: t }) => {
+		})).filter(({ step: e }) => e.road !== void 0 && this.isUnnamedRoad(e.road)).slice(0, 8), o = /* @__PURE__ */ new Map();
+		for (let { step: e, index: t } of a) {
 			let n = e.coordinates;
-			if (!n || n.length === 0) return;
+			if (!n || n.length === 0) continue;
 			let r = n[Math.floor(n.length / 2)], i = await gI(r[1], r[0]);
 			i && o.set(t, i);
-		})), e.map((t, a) => {
+		}
+		return e.map((t, a) => {
 			if (t.road === void 0 || !this.isUnnamedRoad(t.road)) return t;
 			let s, c;
 			for (let e = a - 1; e >= 0; --e) if (i[e]) {
