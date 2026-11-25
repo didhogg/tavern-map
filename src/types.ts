@@ -187,6 +187,7 @@ export type StContext = {
   saveSettingsDebounced?: () => void
   chatMetadata?: Record<string, unknown>
   saveMetadataDebounced?: () => void
+  saveMetadata?: () => void | Promise<void>
   setExtensionPrompt?: (
     key: string,
     value: string,

@@ -278,5 +278,14 @@ export function saveState(ctx: StContext, state: MapState): void {
   state.updatedAt = Date.now()
   if (!ctx.chatMetadata) return
   ctx.chatMetadata['tavern-map'] = state
-  ctx.saveMetadataDebounced?.()
+  if (ctx.saveMetadata) {
+    try {
+      const result = ctx.saveMetadata()
+      if (result && typeof result.catch === 'function') void result.catch(() => undefined)
+    } catch {
+      ctx.saveMetadataDebounced?.()
+    }
+  } else {
+    ctx.saveMetadataDebounced?.()
+  }
 }

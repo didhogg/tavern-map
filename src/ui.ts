@@ -3451,21 +3451,30 @@ export class MapUI {
   private applyFabGeometry(): void {
     const fab = document.getElementById('tm-fab')
     if (!fab) return
+    const rect = fab.getBoundingClientRect()
+    const width = rect.width || 52
+    const height = rect.height || 52
+    const mobile = window.matchMedia('(max-width: 640px)').matches
+    // SillyTavern's mobile layout can make `bottom` resolve against a zero-height
+    // fixed body. Always write explicit left/top so the FAB stays on screen.
+    let left = Math.max(0, window.innerWidth - width - (mobile ? 14 : 18))
+    let top = Math.max(0, window.innerHeight - height - (mobile ? 124 : 96))
     try {
       const raw = localStorage.getItem(FAB_POS_KEY)
-      if (!raw) return
-      const value = JSON.parse(raw) as { left?: number; top?: number }
-      if (!Number.isFinite(value.left) || !Number.isFinite(value.top)) return
-      const rect = fab.getBoundingClientRect()
-      const left = Math.min(Math.max(0, value.left!), Math.max(0, window.innerWidth - rect.width))
-      const top = Math.min(Math.max(0, value.top!), Math.max(0, window.innerHeight - rect.height))
-      fab.style.left = `${left}px`
-      fab.style.top = `${top}px`
-      fab.style.right = 'auto'
-      fab.style.bottom = 'auto'
+      if (raw) {
+        const value = JSON.parse(raw) as { left?: number; top?: number }
+        if (Number.isFinite(value.left) && Number.isFinite(value.top)) {
+          left = Math.min(Math.max(0, value.left!), Math.max(0, window.innerWidth - width))
+          top = Math.min(Math.max(0, value.top!), Math.max(0, window.innerHeight - height))
+        }
+      }
     } catch {
       // localStorage can be unavailable in private or restricted contexts.
     }
+    fab.style.left = `${left}px`
+    fab.style.top = `${top}px`
+    fab.style.right = 'auto'
+    fab.style.bottom = 'auto'
   }
 
   private clampFab(): void {

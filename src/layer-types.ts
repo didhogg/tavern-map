@@ -2,6 +2,17 @@ import type { StContext } from './types'
 
 export type LayerMapKind = 'image' | 'tiles'
 export type LayerMapSource = 'fandom' | 'mapgenie' | 'manual'
+export type LayerImageSource = 'package' | 'fandom-url' | 'local' | 'none'
+export type LayerImageFit = 'stretch' | 'contain' | 'custom'
+export type LayerTileOrder = 'zyx' | 'zxy' | 'unknown'
+
+/** Normalized rectangle inside the logical map canvas (0..1). */
+export type LayerImageRect = {
+  x: number
+  y: number
+  w: number
+  h: number
+}
 
 export type LayerCategory = {
   id: string
@@ -76,6 +87,22 @@ export type LayerTileConfig = {
     minY: number
     maxY: number
   }
+  /** How the local tile files name their axes (internal storage is always z/y/x). */
+  order?: LayerTileOrder
+  /** Zoom range actually present in the imported local tiles. */
+  coverageMinZoom?: number
+  coverageMaxZoom?: number
+  /** Expected / missing tile counts for the covered zoom levels. */
+  expectedCount?: number
+  missingCount?: number
+  setName?: string
+  setIndex?: number
+  setCount?: number
+  /** Per-zoom tile bounds from mapData, used when rescanning a new tile folder. */
+  boundsByZoom?: Record<
+    string,
+    { xMin: number; xMax: number; yMin: number; yMax: number }
+  >
 }
 
 export type LayerMapPackage = {
@@ -83,12 +110,31 @@ export type LayerMapPackage = {
   name: string
   kind: LayerMapKind
   source: LayerMapSource
+  /** Stable identity used to update the same map package on re-import. */
+  sourceKey?: string
+  sourceUrl?: string
+  wikiBase?: string
+  /** True after the user renamed the package; re-import must keep the name. */
+  nameLocked?: boolean
   /** Image maps use the original pixel dimensions for aspect ratio. */
   width: number
   height: number
   /** Image maps only. Stored as a Blob so local images survive reloads. */
   image?: Blob
   imageType?: string
+  imageName?: string
+  imagePageUrl?: string
+  imageWidth?: number
+  imageHeight?: number
+  imageBytes?: number
+  imageSource?: LayerImageSource
+  imageFit?: LayerImageFit
+  imageRect?: LayerImageRect
+  /** True after the user manually replaced or removed the image. */
+  imageLocked?: boolean
+  /** Small preview used by package management; never the only copy of the image. */
+  thumbnail?: Blob
+  dataBytes?: number
   tile?: LayerTileConfig
   /** Optional local tile blobs keyed as `z/y/x` (without extension). */
   tileFiles?: Record<string, Blob>
@@ -106,9 +152,27 @@ export type LayerPackageMeta = {
   name: string
   kind: LayerMapKind
   source: LayerMapSource
+  sourceKey?: string
   markerCount: number
   regionCount: number
   categoryCount: number
+  descriptionCount?: number
+  linkCount?: number
+  hasImage?: boolean
+  imageName?: string
+  imagePageUrl?: string
+  imageWidth?: number
+  imageHeight?: number
+  imageBytes?: number
+  imageSource?: LayerImageSource
+  tileCount?: number
+  tileZoomMin?: number
+  tileZoomMax?: number
+  missingTiles?: number
+  sizeBytes?: number
+  fileCount?: number
+  missingAsset?: 'image' | 'tiles' | null
+  thumbnail?: Blob
   updatedAt: number
 }
 
@@ -294,5 +358,14 @@ export function saveLayerState(ctx: StContext, state: LayerChatState): void {
   state.updatedAt = Date.now()
   if (!ctx.chatMetadata) return
   ctx.chatMetadata[LAYER_STATE_KEY] = state
-  ctx.saveMetadataDebounced?.()
+  if (ctx.saveMetadata) {
+    try {
+      const result = ctx.saveMetadata()
+      if (result && typeof result.catch === 'function') void result.catch(() => undefined)
+    } catch {
+      ctx.saveMetadataDebounced?.()
+    }
+  } else {
+    ctx.saveMetadataDebounced?.()
+  }
 }

@@ -1,18 +1,41 @@
 import { buildLayerContext } from './layer-context'
 import { estimateTokens } from './context'
+import { errorMessage } from './http'
 import {
-  cleanSourceText,
-  fallbackPackageName,
-  parseFandomPackage,
-  parseMapGeniePackage,
-} from './layer-import'
-import { getLayerPackage, listLayerPackages, putLayerPackage } from './layer-store'
+  formatBytes,
+  formatCount,
+  imageAspectNote,
+  imageFitLabel,
+  imageRectFor,
+  imageSourceLabel,
+  makeLayerThumbnail,
+  readLayerImage,
+  sanitizeRect,
+} from './layer-image'
+import { cleanSourceText, type MapGenieTileSetInfo } from './layer-import'
+import { LayerImportUI } from './layer-import-ui'
+import { LayerPackagesUI } from './layer-packages-ui'
+import {
+  filesToBundle,
+  scanTileFiles,
+} from './layer-source'
+import {
+  getLayerPackage,
+  listLayerPackages,
+  removeLayerImage,
+  setLayerImage,
+  setLayerImageFit,
+  setLayerTiles,
+  updateLayerPackage,
+} from './layer-store'
 import {
   DEFAULT_LAYER_STATE,
   loadLayerState,
   saveLayerState,
   type LayerChatState,
   type LayerContextSnapshot,
+  type LayerImageFit,
+  type LayerImageRect,
   type LayerLink,
   type LayerLinkKind,
   type LayerMapPackage,
@@ -21,11 +44,10 @@ import {
   type LayerRegion,
   type LayerView,
 } from './layer-types'
-import { errorMessage } from './http'
+import { LayerWindowController } from './layer-window'
 import type { StContext } from './types'
 
 const PANEL_ID = 'tm-layer'
-const IMPORT_ID = 'tml-import'
 const IMAGE_FIT_MARGIN = 0.94
 const LABEL_IMAGE_ZOOM = 1.7
 const LABEL_TILE_ZOOM = 11
@@ -33,6 +55,7 @@ const MARKER_HIT_RADIUS = 12
 const REGION_HIT_MIN_ZOOM = 8
 const MARKER_INDEX_CELL = 0.025
 const LABEL_CELL_PX = 48
+const IMAGE_PANEL_WIDTH = 340
 /** Decoded-tile cache only; imported tile files and map data are never discarded. */
 const DECODED_TILE_MEMORY_BUDGET = 256 * 1024 * 1024
 const TILE_LOAD_CONCURRENCY = 8
@@ -55,11 +78,22 @@ const PANEL_HTML = `
     </div>
     <div class="tml-mode-tabs" role="tablist" aria-label="地图模式">
       <button type="button" data-action="real-map">现实地图</button>
-      <button type="button" class="active" aria-selected="true">图层地图</button>
+      <button type="button" class="active" role="tab" aria-selected="true">图层地图</button>
     </div>
     <div class="tml-head-center">
       <select id="tml-package" class="tml-select" aria-label="选择地图包"></select>
       <button type="button" class="tml-btn" data-action="import">导入</button>
+      <button type="button" class="tml-btn" data-action="manage">管理</button>
+      <button type="button" class="tml-header-image" data-action="image-panel" aria-label="底图" aria-haspopup="dialog" aria-expanded="false" title="底图">
+        <img id="tml-header-image" alt="" hidden>
+        <span id="tml-header-image-empty" class="tml-header-image-empty" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/>
+            <path d="M8.5 9a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/>
+            <path d="m4 16 4.5-4.5 3.5 3.5 3-3L20 17"/>
+          </svg>
+        </span>
+      </button>
     </div>
     <div class="tml-head-actions">
       <button type="button" class="tml-btn" data-action="ai">AI 上下文</button>
@@ -101,6 +135,14 @@ const PANEL_HTML = `
       <div id="tml-viewport" class="tml-viewport">
         <canvas id="tml-canvas"></canvas>
         <div id="tml-empty" class="tml-empty" hidden></div>
+        <div id="tml-align-bar" class="tml-align-bar" hidden>
+          <span>拖动图片对齐地点，滚轮缩放；地点标记固定不动。</span>
+          <div class="tml-align-actions">
+            <button type="button" class="tml-mini" data-align-action="reset">重置铺满</button>
+            <button type="button" class="tml-mini" data-align-action="cancel">取消</button>
+            <button type="button" class="tml-mini tml-primary" data-align-action="done">完成</button>
+          </div>
+        </div>
         <div class="tml-map-status">
           <span id="tml-zoom">—</span>
           <span id="tml-scale">比例未校准</span>
@@ -115,52 +157,25 @@ const PANEL_HTML = `
     <span id="tml-attribution">本地地图包 · 数据不会上传</span>
     <span id="tml-context-status">AI 上下文：待机</span>
   </footer>
+  <div class="tml-resize" data-resize="n" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="s" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="e" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="w" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="nw" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="ne" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="sw" aria-hidden="true"></div>
+  <div class="tml-resize" data-resize="se" aria-hidden="true" title="拖动调整窗口大小"></div>
 </section>
-<div id="${IMPORT_ID}" class="tml-modal" role="dialog" aria-modal="true" aria-label="导入地图包" hidden>
-  <div class="tml-modal-card">
-    <header class="tml-modal-head">
-      <strong>导入地图包</strong>
-      <button type="button" class="tml-close" data-import-action="close">×</button>
-    </header>
-    <div class="tml-import-tabs" role="tablist">
-      <button type="button" class="active" data-import-tab="fandom">Fandom JSON + 图片</button>
-      <button type="button" data-import-tab="mapgenie">Map Genie JSON + 瓦片</button>
-    </div>
-    <div class="tml-import-body">
-      <div id="tml-import-fandom">
-        <label class="tml-field">JSON 文件
-          <input id="tml-fandom-json" type="file" accept=".json,application/json">
-        </label>
-        <label class="tml-field">底图图片
-          <input id="tml-fandom-image" type="file" accept="image/*">
-        </label>
-        <label class="tml-field">地图包名称
-          <input id="tml-fandom-name" type="text" placeholder="例如：深水城">
-        </label>
-        <p class="tml-hint">读取 Fandom 导出的 markers JSON 和一张本地底图。不会访问 Fandom 服务器。支持 PNG / JPG / WebP。</p>
-      </div>
-      <div id="tml-import-mapgenie" hidden>
-        <label class="tml-field">mapData JSON
-          <input id="tml-mapgenie-json" type="file" accept=".json,application/json">
-        </label>
-        <label class="tml-field">瓦片 URL 模板
-          <input id="tml-mapgenie-tiles" type="text" placeholder="http://127.0.0.1:8000/{z}/{y}/{x}.jpg">
-        </label>
-        <label class="tml-field">或选择瓦片文件夹
-          <input id="tml-mapgenie-folder" type="file" multiple webkitdirectory>
-        </label>
-        <label class="tml-field">地图包名称
-          <input id="tml-mapgenie-name" type="text" placeholder="例如：Leonida">
-        </label>
-        <p class="tml-hint">URL 模板必须包含 {z}、{y}、{x}；也可直接选择瓦片文件夹（结构 z/y/x.jpg）。不会请求 Map Genie 线上瓦片；所有选中的瓦片都会保留。</p>
-      </div>
-      <div id="tml-import-status" class="tml-import-status" role="status"></div>
-    </div>
-    <footer class="tml-modal-foot">
-      <button type="button" class="tml-btn" data-import-action="cancel">取消</button>
-      <button type="button" class="tml-btn tml-primary" data-import-action="run">导入并打开</button>
-    </footer>
+<div id="tml-image-panel" class="tml-image-panel" role="dialog" aria-modal="false" aria-label="底图" hidden>
+  <div class="tml-image-panel-head">
+    <strong>底图</strong>
+    <button type="button" class="tml-close" data-image-action="close" aria-label="关闭">×</button>
   </div>
+  <div id="tml-image-panel-body" class="tml-image-panel-body"></div>
+</div>
+<div id="tml-image-lightbox" class="tml-lightbox" role="dialog" aria-modal="true" aria-label="底图预览" hidden>
+  <button type="button" class="tml-lightbox-close" data-lightbox-action="close" aria-label="关闭">×</button>
+  <img id="tml-lightbox-image" alt="底图预览">
 </div>
 <div id="tml-context" class="tml-modal" role="dialog" aria-modal="true" aria-label="图层地图 AI 上下文" hidden>
   <div class="tml-modal-card tml-context-card">
@@ -210,9 +225,46 @@ export class LayerMapUI {
   private linkDraftTitle = ''
   private linkDraftUrl = ''
   private linkDraftKind: LayerLinkKind = 'custom'
-  private importTab: 'fandom' | 'mapgenie' = 'fandom'
-  private importing = false
   private emptyMessage = ''
+  private readonly windowController: LayerWindowController
+  private readonly importUI: LayerImportUI
+  private readonly packagesUI: LayerPackagesUI
+  private headerImageEl!: HTMLImageElement
+  private headerImageEmptyEl!: HTMLElement
+  private headerImageButtonEl!: HTMLButtonElement
+  private headerImageUrl: string | null = null
+  private imagePanelEl!: HTMLElement
+  private imagePanelBodyEl!: HTMLElement
+  private imagePanelOpen = false
+  private imageBusy = false
+  private imageRemovePending = false
+  private lightboxEl!: HTMLElement
+  private lightboxImageEl!: HTMLImageElement
+  private lightboxUrl: string | null = null
+  private alignBarEl!: HTMLElement
+  private aligning = false
+  private alignRect: LayerImageRect | null = null
+  private alignStartRect: LayerImageRect | null = null
+  private alignStartPointer: { x: number; y: number } | null = null
+  private alignDrag = false
+  private lastRemovedImage:
+    | {
+        pkgId: string
+        image: Blob
+        type?: string
+        name?: string
+        pageUrl?: string
+        width?: number
+        height?: number
+        bytes?: number
+        source?: LayerMapPackage['imageSource']
+        fit?: LayerImageFit
+        rect?: LayerImageRect
+        thumbnail?: Blob
+      }
+    | null = null
+  private imageInput!: HTMLInputElement
+  private tilesInput!: HTMLInputElement
 
   private panelEl!: HTMLElement
   private canvasEl!: HTMLCanvasElement
@@ -230,31 +282,29 @@ export class LayerMapUI {
   private packageInfoEl!: HTMLElement
   private attributionEl!: HTMLElement
   private contextStatusEl!: HTMLElement
-  private importEl!: HTMLElement
-  private importStatusEl!: HTMLElement
   private contextModalEl!: HTMLElement
   private contextTextEl!: HTMLElement
   private contextTokensEl!: HTMLElement
-  private fandomJsonEl!: HTMLInputElement
-  private fandomImageEl!: HTMLInputElement
-  private fandomNameEl!: HTMLInputElement
-  private mapgenieJsonEl!: HTMLInputElement
-  private mapgenieTilesEl!: HTMLInputElement
-  private mapgenieFolderEl!: HTMLInputElement
-  private mapgenieNameEl!: HTMLInputElement
-  private fandomPaneEl!: HTMLElement
-  private mapgeniePaneEl!: HTMLElement
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (this.importUI?.isOpen() || this.packagesUI?.isOpen()) return
     if (event.key !== 'Escape') return
     const target = event.target as HTMLElement | null
     if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
-    if (!this.contextModalEl.hidden) {
-      this.contextModalEl.hidden = true
+    if (!this.lightboxEl.hidden) {
+      this.closeLightbox()
       return
     }
-    if (!this.importEl.hidden) {
-      this.closeImport()
+    if (this.aligning) {
+      this.cancelAlign()
+      return
+    }
+    if (this.imagePanelOpen) {
+      this.closeImagePanel()
+      return
+    }
+    if (!this.contextModalEl.hidden) {
+      this.contextModalEl.hidden = true
       return
     }
     if (!this.searchResultsEl.hidden) {
@@ -265,9 +315,18 @@ export class LayerMapUI {
   }
 
   private readonly onDocumentClick = (event: MouseEvent): void => {
-    if (!this.searchResultsEl.contains(event.target as Node) && event.target !== this.searchEl) {
+    const target = event.target as Node
+    const path = event.composedPath()
+    if (!this.searchResultsEl.contains(target) && event.target !== this.searchEl) {
       this.hideSearch()
     }
+    if (!this.imagePanelOpen) return
+    const insideImagePanel = path.includes(this.imagePanelEl)
+    const onTrigger = path.some(
+      (node) =>
+        node instanceof HTMLElement && node.dataset?.action === 'image-panel',
+    )
+    if (!insideImagePanel && !onTrigger) this.closeImagePanel()
   }
 
   constructor(ctx: StContext, callbacks: LayerMapCallbacks) {
@@ -275,9 +334,67 @@ export class LayerMapUI {
     this.callbacks = callbacks
     this.state = loadLayerState(ctx)
     this.mount()
+    this.windowController = new LayerWindowController(
+      this.panelEl,
+      this.panelEl.querySelector('.tml-head') as HTMLElement,
+      { storageKey: 'tavern-map:layer-window:v1' },
+    )
+    this.importUI = new LayerImportUI({
+      onImported: async (pkg) => {
+        this.lastRemovedImage = null
+        this.panelEl.hidden = false
+        this.active = true
+        this.windowController.open()
+        await this.refreshPackages()
+        await this.loadPackage(pkg.id)
+        this.callbacks.onChange()
+      },
+      onToast: (message) => this.toast(message),
+    })
+    this.packagesUI = new LayerPackagesUI({
+      onOpen: async (id) => {
+        this.panelEl.hidden = false
+        this.active = true
+        this.windowController.open()
+        await this.refreshPackages()
+        await this.loadPackage(id)
+      },
+      onChanged: async (pkg) => {
+        this.lastRemovedImage = null
+        await this.refreshPackages()
+        if (this.pkg?.id === pkg.id) {
+          await this.loadPackage(pkg.id)
+          this.callbacks.onChange()
+        }
+      },
+      onDeleted: (id) => {
+        if (this.pkg?.id === id) {
+          this.closeImagePanel()
+          if (this.state.packageId === id) this.state.packageId = undefined
+          this.state.selectedMarkerId = undefined
+          this.state.currentMarkerId = undefined
+          this.state.selectedRegionId = undefined
+          this.state.currentRegionId = undefined
+          this.state.view = undefined
+          this.persist(true)
+          this.pkg = null
+          this.image = null
+          this.clearTileCaches()
+          this.syncHeaderImage()
+          this.renderEmpty('这个地图包已删除。可以重新导入，或选择另一个地图包。')
+          this.renderCategories()
+          this.renderDetail()
+          this.requestDraw()
+        }
+        void this.refreshPackages()
+      },
+      onImport: () => this.openImport(),
+      onToast: (message) => this.toast(message),
+    })
     this.bind()
     this.renderDetail()
     this.renderCategories()
+    this.syncHeaderImage()
   }
 
   contextText(): string {
@@ -291,6 +408,9 @@ export class LayerMapUI {
   async open(): Promise<void> {
     this.panelEl.hidden = false
     this.active = true
+    this.closeImagePanel()
+    this.closeLightbox()
+    this.windowController.open()
     this.ctx = this.liveContext()
     this.state = loadLayerState(this.ctx)
     this.panelEl.style.zIndex = '10000'
@@ -309,6 +429,7 @@ export class LayerMapUI {
         this.imageUrl = null
       }
       this.clearTileCaches()
+      this.syncHeaderImage()
       this.renderEmpty('还没有地图包。点右上角“导入”读取本地 Fandom 或 Map Genie 数据。')
       this.renderCategories()
       this.renderDetail()
@@ -322,6 +443,11 @@ export class LayerMapUI {
   }
 
   close(): void {
+    this.closeImagePanel()
+    this.closeLightbox()
+    if (this.aligning) this.cancelAlign()
+    this.importUI?.close()
+    this.packagesUI?.close()
     this.panelEl.hidden = true
     this.active = false
     if (this.drawFrame) {
@@ -333,6 +459,11 @@ export class LayerMapUI {
   }
 
   handleChatChanged(): void {
+    this.closeImagePanel()
+    this.closeLightbox()
+    if (this.aligning) this.cancelAlign()
+    this.importUI?.close()
+    this.packagesUI?.close()
     this.ctx = this.liveContext()
     this.state = loadLayerState(this.ctx)
     this.pkg = null
@@ -342,6 +473,7 @@ export class LayerMapUI {
       URL.revokeObjectURL(this.imageUrl)
       this.imageUrl = null
     }
+    this.syncHeaderImage()
     if (this.active) {
       void this.open()
     } else {
@@ -351,11 +483,17 @@ export class LayerMapUI {
   }
 
   clearChat(): void {
+    this.closeImagePanel()
+    this.closeLightbox()
+    if (this.aligning) this.cancelAlign()
+    this.importUI?.close()
+    this.packagesUI?.close()
     this.state = structuredClone(DEFAULT_LAYER_STATE)
     this.state.updatedAt = Date.now()
     this.pkg = null
     this.image = null
     this.imageUrl = null
+    this.syncHeaderImage()
     this.active = false
     this.panelEl.hidden = true
     this.saveNow()
@@ -395,20 +533,29 @@ export class LayerMapUI {
     this.packageInfoEl = document.getElementById('tml-package-info') as HTMLElement
     this.attributionEl = document.getElementById('tml-attribution') as HTMLElement
     this.contextStatusEl = document.getElementById('tml-context-status') as HTMLElement
-    this.importEl = document.getElementById(IMPORT_ID) as HTMLElement
-    this.importStatusEl = document.getElementById('tml-import-status') as HTMLElement
     this.contextModalEl = document.getElementById('tml-context') as HTMLElement
     this.contextTextEl = document.getElementById('tml-context-text') as HTMLElement
     this.contextTokensEl = document.getElementById('tml-context-tokens') as HTMLElement
-    this.fandomJsonEl = document.getElementById('tml-fandom-json') as HTMLInputElement
-    this.fandomImageEl = document.getElementById('tml-fandom-image') as HTMLInputElement
-    this.fandomNameEl = document.getElementById('tml-fandom-name') as HTMLInputElement
-    this.mapgenieJsonEl = document.getElementById('tml-mapgenie-json') as HTMLInputElement
-    this.mapgenieTilesEl = document.getElementById('tml-mapgenie-tiles') as HTMLInputElement
-    this.mapgenieFolderEl = document.getElementById('tml-mapgenie-folder') as HTMLInputElement
-    this.mapgenieNameEl = document.getElementById('tml-mapgenie-name') as HTMLInputElement
-    this.fandomPaneEl = document.getElementById('tml-import-fandom') as HTMLElement
-    this.mapgeniePaneEl = document.getElementById('tml-import-mapgenie') as HTMLElement
+    this.headerImageEl = document.getElementById('tml-header-image') as HTMLImageElement
+    this.headerImageEmptyEl = document.getElementById('tml-header-image-empty') as HTMLElement
+    this.headerImageButtonEl = this.panelEl.querySelector(
+      '[data-action="image-panel"]',
+    ) as HTMLButtonElement
+    this.imagePanelEl = document.getElementById('tml-image-panel') as HTMLElement
+    this.imagePanelBodyEl = document.getElementById('tml-image-panel-body') as HTMLElement
+    this.lightboxEl = document.getElementById('tml-image-lightbox') as HTMLElement
+    this.lightboxImageEl = document.getElementById('tml-lightbox-image') as HTMLImageElement
+    this.alignBarEl = document.getElementById('tml-align-bar') as HTMLElement
+    this.imageInput = document.createElement('input')
+    this.imageInput.type = 'file'
+    this.imageInput.accept = '.png,.jpg,.jpeg,.webp,.avif,.gif,image/*'
+    this.imageInput.hidden = true
+    this.tilesInput = document.createElement('input')
+    this.tilesInput.type = 'file'
+    this.tilesInput.multiple = true
+    this.tilesInput.setAttribute('webkitdirectory', '')
+    this.tilesInput.hidden = true
+    this.imagePanelEl.append(this.imageInput, this.tilesInput)
   }
 
   private bind(): void {
@@ -426,16 +573,47 @@ export class LayerMapUI {
       const id = this.packageSelectEl.value
       if (id) void this.loadPackage(id)
     })
-    this.importEl.addEventListener('click', (event) => this.onImportClick(event))
     this.contextModalEl.addEventListener('click', (event) => {
       const target = event.target as HTMLElement
       if (target.closest('[data-context-action="close"]') || target === this.contextModalEl) {
         this.contextModalEl.hidden = true
       }
     })
-    for (const input of [this.fandomJsonEl, this.fandomImageEl, this.mapgenieJsonEl]) {
-      input.addEventListener('change', () => this.updateImportNames())
+    this.imagePanelEl.addEventListener('click', (event) => this.onImagePanelClick(event))
+    this.imagePanelEl.addEventListener('change', (event) => this.onImagePanelChange(event))
+    this.lightboxEl.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement
+      if (target.closest('[data-lightbox-action="close"]') || target === this.lightboxEl) {
+        this.closeLightbox()
+      }
+    })
+    this.alignBarEl.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement
+      const action = target.closest<HTMLElement>('[data-align-action]')?.dataset.alignAction
+      if (action === 'reset') this.resetAlign()
+      else if (action === 'cancel') this.cancelAlign()
+      else if (action === 'done') void this.finishAlign()
+    })
+    this.imageInput.addEventListener('change', () => {
+      const file = this.imageInput.files?.[0]
+      this.imageInput.value = ''
+      if (file) void this.replaceImage(file)
+    })
+    this.tilesInput.addEventListener('change', () => {
+      const files = Array.from(this.tilesInput.files ?? [])
+      this.tilesInput.value = ''
+      if (files.length) void this.replaceTiles(files)
+    })
+    const onResize = (): void => {
+      if (this.imagePanelOpen) this.positionImagePanel()
     }
+    window.addEventListener('resize', onResize)
+    this.offs.push(() => window.removeEventListener('resize', onResize))
+    document.addEventListener('pointerup', onResize)
+    this.offs.push(() => document.removeEventListener('pointerup', onResize))
+    const panelObserver = new ResizeObserver(onResize)
+    panelObserver.observe(this.panelEl)
+    this.offs.push(() => panelObserver.disconnect())
     document.addEventListener('keydown', this.onKeyDown)
     document.addEventListener('click', this.onDocumentClick)
     this.offs.push(() => document.removeEventListener('keydown', this.onKeyDown))
@@ -458,6 +636,12 @@ export class LayerMapUI {
         break
       case 'import':
         this.openImport()
+        break
+      case 'manage':
+        this.openManage()
+        break
+      case 'image-panel':
+        this.toggleImagePanel()
         break
       case 'ai':
         this.showContextStatus()
@@ -534,7 +718,7 @@ export class LayerMapUI {
     this.packageSelectEl.disabled = false
     for (const meta of this.metas) {
       this.packageSelectEl.append(
-        new Option(`${meta.kind === 'tiles' ? '▦' : '▣'} ${meta.name}`, meta.id),
+        new Option(`${meta.kind === 'tiles' ? '瓦片' : '图片'} · ${meta.name}`, meta.id),
       )
     }
     if (this.state.packageId && this.metas.some((meta) => meta.id === this.state.packageId)) {
@@ -546,6 +730,13 @@ export class LayerMapUI {
     const pkg = await getLayerPackage(id)
     if (!pkg) {
       this.pkg = null
+      this.image = null
+      if (this.imageUrl) {
+        URL.revokeObjectURL(this.imageUrl)
+        this.imageUrl = null
+      }
+      this.clearTileCaches()
+      this.syncHeaderImage()
       this.renderEmpty('地图包读取失败或已不存在。')
       this.renderCategories()
       this.renderDetail()
@@ -562,8 +753,33 @@ export class LayerMapUI {
       this.state.view = undefined
       this.state.hiddenCategories = []
       this.linkDraftVisible = false
+      this.lastRemovedImage = null
     }
     this.pkg = pkg
+    if (
+      this.state.selectedMarkerId &&
+      !pkg.markers.some((marker) => marker.id === this.state.selectedMarkerId)
+    ) {
+      this.state.selectedMarkerId = undefined
+    }
+    if (
+      this.state.currentMarkerId &&
+      !pkg.markers.some((marker) => marker.id === this.state.currentMarkerId)
+    ) {
+      this.state.currentMarkerId = undefined
+    }
+    if (
+      this.state.selectedRegionId &&
+      !pkg.regions.some((region) => region.id === this.state.selectedRegionId)
+    ) {
+      this.state.selectedRegionId = undefined
+    }
+    if (
+      this.state.currentRegionId &&
+      !pkg.regions.some((region) => region.id === this.state.currentRegionId)
+    ) {
+      this.state.currentRegionId = undefined
+    }
     this.panelEl.classList.remove('filters-open')
     this.emptyMessage = ''
     this.emptyEl.hidden = true
@@ -577,15 +793,31 @@ export class LayerMapUI {
     this.renderCategories()
     this.renderDetail()
     this.syncToolButtons()
+    this.updatePackageInfo()
+    this.syncHeaderImage()
+    if (this.imagePanelOpen) this.renderImagePanel()
+    this.refreshContext()
+    this.requestDraw()
+  }
+
+  private updatePackageInfo(): void {
+    const pkg = this.pkg
+    if (!pkg) {
+      this.packageInfoEl.textContent = ''
+      return
+    }
     this.packageInfoEl.textContent = [
       pkg.kind === 'tiles' ? '瓦片地图' : '图片地图',
       `${pkg.markers.length} 个地点`,
       pkg.regions.length ? `${pkg.regions.length} 个区域` : '无区域面',
       pkg.source === 'mapgenie' ? 'Map Genie' : pkg.source === 'fandom' ? 'Fandom' : '本地',
+      pkg.kind === 'tiles'
+        ? `${Object.keys(pkg.tileFiles ?? {}).length} 张瓦片`
+        : pkg.image
+          ? '有底图'
+          : '缺底图',
     ].join(' · ')
     this.attributionEl.textContent = `${pkg.attribution ?? '本地地图包'} · 数据不会上传`
-    this.refreshContext()
-    this.requestDraw()
   }
 
   private resolveView(pkg: LayerMapPackage, previous: LayerView | undefined): LayerView {
@@ -596,8 +828,8 @@ export class LayerMapUI {
   private defaultView(pkg: LayerMapPackage): LayerView {
     if (pkg.kind === 'image') return { cx: 0.5, cy: 0.5, zoom: 1 }
     const tile = pkg.tile
-    const min = tile?.minZoom ?? 0
-    const max = tile?.maxZoom ?? min + 8
+    const min = tile?.coverageMinZoom ?? tile?.minZoom ?? 0
+    const max = tile?.coverageMaxZoom ?? tile?.maxZoom ?? min + 8
     const width = Math.max(240, this.viewportEl.clientWidth || 800)
     const height = Math.max(240, this.viewportEl.clientHeight || 600)
     if (tile?.projection === 'webmercator' && tile.worldBounds) {
@@ -622,6 +854,7 @@ export class LayerMapUI {
       this.imageUrl = null
     }
     this.image = null
+    this.syncHeaderImage()
     if (!pkg.image) {
       this.requestDraw()
       return
@@ -634,12 +867,16 @@ export class LayerMapUI {
       this.image = image
       this.emptyMessage = ''
       this.emptyEl.hidden = true
+      this.syncHeaderImage()
       this.requestDraw()
     }
     image.onerror = () => {
       if (this.imageUrl !== url) return
       this.image = null
-      this.renderEmpty('底图加载失败。可以重新导入图片。')
+      this.emptyMessage = ''
+      this.emptyEl.hidden = true
+      this.syncHeaderImage()
+      this.toast('底图加载失败，点顶栏“底图”可以更换图片')
       this.requestDraw()
     }
     image.src = url
@@ -702,20 +939,41 @@ export class LayerMapUI {
     if (!pkg) return
     const fit = Math.min(width / pkg.width, height / pkg.height) * IMAGE_FIT_MARGIN
     const scale = fit * this.view.zoom
-    const drawWidth = pkg.width * scale
-    const drawHeight = pkg.height * scale
-    const left = width / 2 - this.view.cx * drawWidth
-    const top = height / 2 - this.view.cy * drawHeight
+    const rect = this.aligning && this.alignRect ? this.alignRect : imageRectFor(pkg)
+    const drawWidth = rect.w * pkg.width * scale
+    const drawHeight = rect.h * pkg.height * scale
+    const left = width / 2 + (rect.x - this.view.cx) * pkg.width * scale
+    const top = height / 2 + (rect.y - this.view.cy) * pkg.height * scale
     if (this.image) {
+      context.save()
+      if (this.aligning) context.globalAlpha = 0.82
       context.drawImage(this.image, left, top, drawWidth, drawHeight)
-    } else {
-      context.fillStyle = '#101820'
-      context.fillRect(left, top, drawWidth, drawHeight)
-      context.fillStyle = '#95a3ae'
-      context.font = '12px system-ui, sans-serif'
-      context.textAlign = 'center'
-      context.fillText('底图加载中…', width / 2, height / 2)
+      context.restore()
+      if (this.aligning) {
+        context.save()
+        context.strokeStyle = 'rgba(230,181,106,0.85)'
+        context.setLineDash([7, 5])
+        context.lineWidth = 1.5
+        context.strokeRect(left, top, drawWidth, drawHeight)
+        context.restore()
+      }
+      return
     }
+    context.fillStyle = '#101820'
+    context.fillRect(left, top, drawWidth, drawHeight)
+    context.save()
+    context.strokeStyle = 'rgba(255,255,255,0.08)'
+    context.lineWidth = 1
+    context.strokeRect(left + 0.5, top + 0.5, drawWidth - 1, drawHeight - 1)
+    context.fillStyle = '#95a3ae'
+    context.font = '12px system-ui, sans-serif'
+    context.textAlign = 'center'
+    context.fillText(
+      pkg.image ? '底图加载中…' : '还没有底图 · 点顶栏“底图”补图',
+      width / 2,
+      height / 2,
+    )
+    context.restore()
   }
 
   private tileCountAt(zoom: number): number {
@@ -1013,15 +1271,29 @@ export class LayerMapUI {
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const visible = pkg.markers.filter((marker) => !hidden.has(marker.categoryId)).length
     this.visibleCountEl.textContent = `${visible}/${pkg.markers.length}`
-    this.zoomEl.textContent = pkg.kind === 'tiles' ? `Z ${this.view.zoom.toFixed(1)}` : `${this.view.zoom.toFixed(2)}×`
-    this.scaleEl.textContent =
-      pkg.kind === 'tiles' ? '地图单位未校准' : '图片像素 · 比例未校准'
+    if (this.aligning) {
+      this.zoomEl.textContent = '对齐图片'
+      this.scaleEl.textContent = '拖动移动 · 滚轮缩放'
+    } else {
+      this.zoomEl.textContent = pkg.kind === 'tiles' ? `Z ${this.view.zoom.toFixed(1)}` : `${this.view.zoom.toFixed(2)}×`
+      this.scaleEl.textContent =
+        pkg.kind === 'tiles' ? '地图单位未校准' : '图片像素 · 比例未校准'
+    }
     this.emptyEl.hidden = !this.emptyMessage
     this.contextStatusEl.textContent = this.state.context ? '图层上下文：已生成' : '图层上下文：待机'
   }
 
   private onPointerDown(event: PointerEvent): void {
     if (event.button !== 0) return
+    if (this.aligning) {
+      if (!this.alignRect) return
+      this.alignDrag = true
+      this.alignStartPointer = { x: event.clientX, y: event.clientY }
+      this.alignStartRect = { ...this.alignRect }
+      this.canvasEl.setPointerCapture(event.pointerId)
+      this.canvasEl.style.cursor = 'move'
+      return
+    }
     this.dragging = true
     this.moved = false
     this.dragX = event.clientX
@@ -1031,6 +1303,31 @@ export class LayerMapUI {
   }
 
   private onPointerMove(event: PointerEvent): void {
+    if (this.aligning) {
+      if (
+        !this.alignDrag ||
+        !this.alignStartPointer ||
+        !this.alignStartRect ||
+        !this.alignRect ||
+        !this.pkg
+      ) {
+        return
+      }
+      event.preventDefault()
+      const dx = event.clientX - this.alignStartPointer.x
+      const dy = event.clientY - this.alignStartPointer.y
+      const width = this.canvasEl.clientWidth || 1
+      const height = this.canvasEl.clientHeight || 1
+      const fit = Math.min(width / this.pkg.width, height / this.pkg.height) * IMAGE_FIT_MARGIN
+      const scale = fit * this.view.zoom
+      this.alignRect = sanitizeRect({
+        ...this.alignStartRect,
+        x: this.alignStartRect.x + dx / (this.pkg.width * scale),
+        y: this.alignStartRect.y + dy / (this.pkg.height * scale),
+      })
+      this.requestDraw()
+      return
+    }
     if (!this.dragging) return
     const dx = event.clientX - this.dragX
     const dy = event.clientY - this.dragY
@@ -1056,6 +1353,17 @@ export class LayerMapUI {
   }
 
   private onPointerUp(event: PointerEvent): void {
+    if (this.aligning) {
+      if (!this.alignDrag) return
+      this.alignDrag = false
+      this.alignStartPointer = null
+      this.alignStartRect = null
+      if (this.canvasEl.hasPointerCapture(event.pointerId)) {
+        this.canvasEl.releasePointerCapture(event.pointerId)
+      }
+      this.canvasEl.style.cursor = 'grab'
+      return
+    }
     if (!this.dragging) return
     this.dragging = false
     if (this.canvasEl.hasPointerCapture(event.pointerId)) {
@@ -1073,18 +1381,24 @@ export class LayerMapUI {
   private onWheel(event: WheelEvent): void {
     if (!this.pkg) return
     event.preventDefault()
+    if (this.aligning) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      this.zoomAlign(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * 0.0015))
+      return
+    }
     const rect = this.canvasEl.getBoundingClientRect()
     const factor = Math.exp(-event.deltaY * 0.0015)
     this.zoomAt(event.clientX - rect.left, event.clientY - rect.top, factor)
   }
 
   private onDoubleClick(event: MouseEvent): void {
+    if (this.aligning) return
     const rect = this.canvasEl.getBoundingClientRect()
     this.zoomAt(event.clientX - rect.left, event.clientY - rect.top, 1.6)
   }
 
   private zoomAt(sx: number, sy: number, factor: number): void {
-    if (!this.pkg) return
+    if (!this.pkg || this.aligning) return
     const width = this.canvasEl.clientWidth || 1
     const height = this.canvasEl.clientHeight || 1
     const before = this.unproject(sx, sy, width, height)
@@ -1111,7 +1425,7 @@ export class LayerMapUI {
   }
 
   private fitView(): void {
-    if (!this.pkg) return
+    if (!this.pkg || this.aligning) return
     this.view = this.defaultView(this.pkg)
     this.state.view = this.view
     this.persist()
@@ -1542,8 +1856,16 @@ export class LayerMapUI {
         : []
     )
     const userLinks = this.state.links?.[marker.id] ?? []
-    if (imported.length === 0 && userLinks.length === 0) {
-      section.append(textElement('div', 'tml-empty-small', '还没有链接。可以添加 Wikipedia、官网、点评页或自定义链接。'))
+    if (imported.length === 0) {
+      section.append(
+        textElement(
+          'div',
+          'tml-link-source-empty',
+          userLinks.length === 0
+            ? '源数据没有链接。可以添加 Wikipedia、官网、点评页或自定义链接。'
+            : '源数据没有链接。下面是你在本机添加的链接。',
+        ),
+      )
     }
     for (const link of imported) {
       const key = `${marker.id}:${link.id}`
@@ -1602,6 +1924,7 @@ export class LayerMapUI {
     body.append(title, status)
     const actions = document.createElement('div')
     actions.className = 'tml-link-actions'
+    let textBody: HTMLPreElement | undefined
     const open = document.createElement('a')
     open.className = 'tml-mini'
     open.href = link.url
@@ -1610,16 +1933,20 @@ export class LayerMapUI {
     open.textContent = '打开'
     actions.append(open)
     if (text) {
+      textBody = document.createElement('pre')
+      textBody.className = 'tml-link-text'
+      textBody.textContent = text
+      textBody.hidden = true
       const read = document.createElement('button')
       read.type = 'button'
       read.className = 'tml-mini'
       read.textContent = '正文'
+      read.setAttribute('aria-expanded', 'false')
       read.addEventListener('click', () => {
-        const details = document.createElement('pre')
-        details.className = 'tml-link-text'
-        details.textContent = text
-        row.append(details)
-        read.remove()
+        if (!textBody) return
+        textBody.hidden = !textBody.hidden
+        read.textContent = textBody.hidden ? '正文' : '收起正文'
+        read.setAttribute('aria-expanded', String(!textBody.hidden))
       })
       actions.append(read)
     } else if (/^https?:\/\//i.test(link.url)) {
@@ -1657,6 +1984,7 @@ export class LayerMapUI {
       actions.append(remove)
     }
     row.append(icon, body, actions)
+    if (textBody) row.append(textBody)
     return row
   }
 
@@ -1780,13 +2108,8 @@ export class LayerMapUI {
   }
 
   private async loadLinkText(url: string): Promise<string> {
-    try {
-      const response = await fetch(url, { mode: 'cors' })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      return this.htmlText(await response.text())
-    } catch (directError) {
-      const apiUrl = this.mediaWikiApiUrl(url)
-      if (!apiUrl) throw directError
+    const apiUrl = this.mediaWikiApiUrl(url)
+    if (apiUrl) {
       const response = await fetch(apiUrl, { mode: 'cors' })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const payload = (await response.json()) as {
@@ -1798,6 +2121,9 @@ export class LayerMapUI {
       if (!html) throw new Error('API 没有返回正文')
       return this.htmlText(html)
     }
+    const response = await fetch(url, { mode: 'cors' })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return this.htmlText(await response.text())
   }
 
   private mediaWikiApiUrl(raw: string): string | undefined {
@@ -1823,8 +2149,15 @@ export class LayerMapUI {
 
   private htmlText(html: string): string {
     const doc = new DOMParser().parseFromString(html, 'text/html')
-    doc.querySelectorAll('script, style, nav, footer, header, aside, noscript, .navbox, .toc').forEach((node) => node.remove())
-    return (doc.querySelector('article, main, body')?.textContent ?? '')
+    doc
+      .querySelectorAll(
+        'script, style, nav, footer, header, aside, noscript, .navbox, .toc, .mw-editsection, sup.reference, .reference, .mw-jump-link',
+      )
+      .forEach((node) => node.remove())
+    return (
+      doc.querySelector('.mw-parser-output, #mw-content-text, article, main, body')
+        ?.textContent ?? ''
+    )
       .replace(/\s+/g, ' ')
       .trim()
   }
@@ -2088,136 +2421,694 @@ export class LayerMapUI {
   }
 
   private openImport(): void {
-    this.importEl.hidden = false
-    this.importing = false
-    this.importStatusEl.textContent = ''
-    this.setImportTab(this.importTab)
-    this.updateImportNames()
+    this.closeImagePanel()
+    this.closeLightbox()
+    if (this.aligning) this.cancelAlign()
+    this.importUI?.open()
   }
 
-  private closeImport(): void {
-    if (this.importing) return
-    this.importEl.hidden = true
+  private openManage(): void {
+    this.closeImagePanel()
+    this.closeLightbox()
+    if (this.aligning) this.cancelAlign()
+    void this.packagesUI?.open()
   }
 
-  private setImportTab(tab: 'fandom' | 'mapgenie'): void {
-    this.importTab = tab
-    this.fandomPaneEl.hidden = tab !== 'fandom'
-    this.mapgeniePaneEl.hidden = tab !== 'mapgenie'
-    for (const button of this.importEl.querySelectorAll<HTMLElement>('[data-import-tab]')) {
-      button.classList.toggle('active', button.dataset.importTab === tab)
+  private toggleImagePanel(): void {
+    if (this.imagePanelOpen) this.closeImagePanel()
+    else this.openImagePanel()
+  }
+
+  private openImagePanel(): void {
+    if (!this.pkg) {
+      this.toast('先导入一个地图包，再设置底图')
+      return
+    }
+    if (this.aligning) this.cancelAlign()
+    this.imageRemovePending = false
+    this.imagePanelOpen = true
+    this.imagePanelEl.hidden = false
+    this.headerImageButtonEl.setAttribute('aria-expanded', 'true')
+    this.renderImagePanel()
+    this.positionImagePanel()
+    this.imagePanelEl.querySelector<HTMLElement>('[data-image-action="close"]')?.focus()
+  }
+
+  private closeImagePanel(): void {
+    if (!this.imagePanelOpen) return
+    this.imagePanelOpen = false
+    this.imagePanelEl.hidden = true
+    this.imageRemovePending = false
+    this.headerImageButtonEl?.setAttribute('aria-expanded', 'false')
+    if (this.imagePanelEl.contains(document.activeElement)) {
+      this.headerImageButtonEl.focus()
     }
   }
 
-  private updateImportNames(): void {
-    if (!this.fandomNameEl.value && this.fandomJsonEl.files?.[0]) {
-      this.fandomNameEl.value = fallbackPackageName(this.fandomJsonEl.files[0].name)
+  private positionImagePanel(): void {
+    if (!this.imagePanelOpen) return
+    const compact = this.windowController.isCompact()
+    this.imagePanelEl.classList.toggle('is-compact', compact)
+    if (compact) {
+      const panelRect = this.panelEl.getBoundingClientRect()
+      const left = Math.max(8, panelRect.left + 8)
+      const width = Math.max(240, panelRect.width - 16)
+      const maxHeight = Math.round(Math.min(panelRect.height * 0.7, 560))
+      this.imagePanelEl.style.left = `${Math.round(left)}px`
+      this.imagePanelEl.style.top = '0px'
+      this.imagePanelEl.style.width = `${Math.round(width)}px`
+      this.imagePanelEl.style.right = 'auto'
+      this.imagePanelEl.style.bottom = 'auto'
+      this.imagePanelEl.style.maxHeight = `${maxHeight}px`
+      const height = Math.min(this.imagePanelEl.offsetHeight || maxHeight, maxHeight)
+      const top = Math.max(panelRect.top + 8, panelRect.bottom - 8 - height)
+      this.imagePanelEl.style.top = `${Math.round(top)}px`
+      return
     }
-    if (!this.mapgenieNameEl.value && this.mapgenieJsonEl.files?.[0]) {
-      this.mapgenieNameEl.value = fallbackPackageName(this.mapgenieJsonEl.files[0].name)
+    const trigger = this.headerImageButtonEl.getBoundingClientRect()
+    const width = Math.min(IMAGE_PANEL_WIDTH, window.innerWidth - 16)
+    const height = Math.min(this.imagePanelEl.offsetHeight || 440, window.innerHeight - 16)
+    const left = Math.min(
+      window.innerWidth - width - 8,
+      Math.max(8, trigger.right - width),
+    )
+    let top = trigger.bottom + 6
+    if (top + height > window.innerHeight - 8) {
+      top = Math.max(8, trigger.top - height - 6)
     }
+    this.imagePanelEl.style.left = `${Math.round(left)}px`
+    this.imagePanelEl.style.top = `${Math.round(top)}px`
+    this.imagePanelEl.style.width = `${Math.round(width)}px`
+    this.imagePanelEl.style.right = 'auto'
+    this.imagePanelEl.style.bottom = 'auto'
+    this.imagePanelEl.style.maxHeight = 'min(72vh, 620px)'
   }
 
-  private onImportClick(event: MouseEvent): void {
+  private onImagePanelClick(event: MouseEvent): void {
     const target = event.target as HTMLElement
-    const action = target.closest<HTMLElement>('[data-import-action]')?.dataset.importAction
-    if (action === 'close' || action === 'cancel') {
-      this.closeImport()
-      return
+    const action = target.closest<HTMLElement>('[data-image-action]')?.dataset.imageAction
+    if (!action) return
+    switch (action) {
+      case 'close':
+        this.closeImagePanel()
+        break
+      case 'replace':
+        this.imageInput.click()
+        break
+      case 'remove':
+        this.imageRemovePending = true
+        this.renderImagePanel()
+        break
+      case 'remove-cancel':
+        this.imageRemovePending = false
+        this.renderImagePanel()
+        break
+      case 'remove-confirm':
+        void this.removeImage()
+        break
+      case 'align':
+        this.startAlign()
+        break
+      case 'view':
+        this.openLightbox()
+        break
+      case 'replace-tiles':
+        this.tilesInput.click()
+        break
+      case 'open-source': {
+        const url = this.pkg ? this.imagePageUrl(this.pkg) : undefined
+        if (url) window.open(url, '_blank', 'noreferrer')
+        break
+      }
+      default:
+        break
     }
-    if (action === 'run') {
-      void this.runImport()
-      return
-    }
-    const tab = target.closest<HTMLElement>('[data-import-tab]')?.dataset.importTab
-    if (tab === 'fandom' || tab === 'mapgenie') this.setImportTab(tab)
   }
 
-  private async runImport(): Promise<void> {
-    if (this.importing) return
-    this.importing = true
-    this.importStatusEl.textContent = '正在读取本地文件…'
+  private onImagePanelChange(event: Event): void {
+    const target = event.target as HTMLElement
+    const action = target.closest<HTMLElement>('[data-image-action]')?.dataset.imageAction
+    if (action === 'fit') {
+      const fit = (target as HTMLSelectElement).value as LayerImageFit
+      void this.setImageFit(fit)
+      return
+    }
+    if (action === 'tile-template') {
+      const value = (target as HTMLInputElement).value.trim()
+      void this.saveTileTemplate(value)
+    }
+  }
+
+  private imagePageUrl(pkg: LayerMapPackage): string | undefined {
+    return pkg.imagePageUrl
+  }
+
+  private renderImagePanel(): void {
+    const pkg = this.pkg
+    this.imagePanelBodyEl.replaceChildren()
+    if (!pkg) return
+    if (this.imageBusy) {
+      this.imagePanelBodyEl.append(
+        element('p', 'tml-empty-small', '正在读取图片，请稍候…'),
+      )
+      return
+    }
+    if (pkg.kind === 'tiles') {
+      this.renderTilePanel(pkg)
+      return
+    }
+    if (pkg.image) {
+      const preview = element('div', 'tml-image-panel-preview')
+      if (this.imageUrl) {
+        const img = document.createElement('img')
+        img.src = this.imageUrl
+        img.alt = pkg.imageName || '当前底图'
+        preview.append(img)
+      }
+      const view = document.createElement('button')
+      view.type = 'button'
+      view.className = 'tml-mini tml-image-view'
+      view.dataset.imageAction = 'view'
+      view.textContent = '查看大图'
+      preview.append(view)
+      this.imagePanelBodyEl.append(preview)
+      const name = element('strong', 'tml-image-panel-name', pkg.imageName || '当前底图')
+      name.title = pkg.imageName || ''
+      this.imagePanelBodyEl.append(name)
+      const details = [
+        pkg.imageWidth && pkg.imageHeight
+          ? `${formatCount(pkg.imageWidth)}×${formatCount(pkg.imageHeight)}`
+          : '',
+        formatBytes(pkg.image.size),
+        imageSourceLabel(pkg.imageSource),
+        imageFitLabel(pkg.imageFit),
+      ].filter(Boolean)
+      this.imagePanelBodyEl.append(element('span', 'tml-image-meta', details.join(' · ')))
+      const aspect = imageAspectNote(pkg)
+      if (aspect) this.imagePanelBodyEl.append(element('p', 'tml-hint', aspect))
+      const fitRow = element('label', 'tml-image-fit-row')
+      fitRow.append(element('span', undefined, '显示'))
+      const fit = document.createElement('select')
+      fit.dataset.imageAction = 'fit'
+      fit.className = 'tml-select'
+      fit.append(new Option('铺满地图', 'stretch'), new Option('保持比例', 'contain'))
+      if (pkg.imageFit === 'custom') fit.append(new Option('手动对齐', 'custom'))
+      fit.value = pkg.imageFit ?? 'stretch'
+      fitRow.append(fit)
+      this.imagePanelBodyEl.append(fitRow)
+      const actions = element('div', 'tml-image-panel-actions')
+      const replace = element('button', 'tml-btn', '更换底图')
+      replace.type = 'button'
+      replace.dataset.imageAction = 'replace'
+      const remove = element('button', 'tml-btn tml-danger-text', '移除底图')
+      remove.type = 'button'
+      remove.dataset.imageAction = 'remove'
+      actions.append(replace, remove)
+      if (pkg.markers.length > 0) {
+        const align = element('button', 'tml-btn', '对齐底图')
+        align.type = 'button'
+        align.dataset.imageAction = 'align'
+        actions.append(align)
+      }
+      this.imagePanelBodyEl.append(actions)
+      if (this.imageRemovePending) {
+        const confirm = element('div', 'tml-image-confirm')
+        confirm.append(
+          element('span', undefined, '移除底图后，地点、链接和笔记都会保留，之后可以再补。'),
+        )
+        const confirmActions = element('div', 'tml-image-panel-actions')
+        const yes = element('button', 'tml-mini tml-danger-text', '确认移除')
+        yes.type = 'button'
+        yes.dataset.imageAction = 'remove-confirm'
+        const no = element('button', 'tml-mini', '取消')
+        no.type = 'button'
+        no.dataset.imageAction = 'remove-cancel'
+        confirmActions.append(yes, no)
+        confirm.append(confirmActions)
+        this.imagePanelBodyEl.append(confirm)
+      }
+      const source = this.imagePageUrl(pkg)
+      if (source) {
+        const link = element(
+        'button',
+        'tml-link-inline',
+        pkg.imageSource === 'fandom-url' || pkg.attribution?.includes('Fandom 页面')
+          ? '打开 Fandom 图片页'
+          : '打开源数据图片页',
+      )
+        link.type = 'button'
+        link.dataset.imageAction = 'open-source'
+        this.imagePanelBodyEl.append(link)
+      }
+      this.imagePanelBodyEl.append(
+        element('p', 'tml-hint', '底图只保存在本机，不会上传；换图不会改动地点、笔记或链接。'),
+      )
+      return
+    }
+    const empty = element('div', 'tml-image-panel-empty')
+    empty.append(
+      element('strong', undefined, '这张地图还没有底图'),
+      element('p', undefined, '选一张本地图片，或继续只用点位浏览。'),
+    )
+    const actions = element('div', 'tml-image-panel-actions')
+    const pick = element('button', 'tml-btn tml-primary', '选择底图')
+    pick.type = 'button'
+    pick.dataset.imageAction = 'replace'
+    actions.append(pick)
+    empty.append(actions)
+    this.imagePanelBodyEl.append(empty)
+    const source = this.imagePageUrl(pkg)
+    if (source) {
+      const link = element(
+        'button',
+        'tml-link-inline',
+        pkg.imageSource === 'fandom-url' || pkg.attribution?.includes('Fandom 页面')
+          ? '打开 Fandom 图片页'
+          : '打开源数据图片页',
+      )
+      link.type = 'button'
+      link.dataset.imageAction = 'open-source'
+      this.imagePanelBodyEl.append(link)
+    }
+  }
+
+  private renderTilePanel(pkg: LayerMapPackage): void {
+    const tile = pkg.tile
+    const count = Object.keys(pkg.tileFiles ?? {}).length
+    const preview = element('div', 'tml-image-panel-tiles')
+    preview.append(
+      element('strong', undefined, tile?.setName || '瓦片底图'),
+      element(
+        'span',
+        'tml-image-meta',
+        count > 0
+          ? `${formatCount(count)} 张瓦片 · 层级 ${tile?.coverageMinZoom ?? tile?.minZoom ?? '—'}–${tile?.coverageMaxZoom ?? tile?.maxZoom ?? '—'}${tile?.missingCount ? ` · 缺 ${formatCount(tile.missingCount)} 张` : ''}`
+          : '还没有关联瓦片',
+      ),
+    )
+    this.imagePanelBodyEl.append(preview)
+    const actions = element('div', 'tml-image-panel-actions')
+    const replace = element('button', 'tml-btn tml-primary', '重新选择瓦片文件夹')
+    replace.type = 'button'
+    replace.dataset.imageAction = 'replace-tiles'
+    actions.append(replace)
+    this.imagePanelBodyEl.append(actions)
+    if (tile) {
+      const field = element('label', 'tml-field')
+      field.append(element('span', undefined, '瓦片 URL 模板（本地瓦片可留空）'))
+      const input = document.createElement('input')
+      input.type = 'text'
+      input.value = tile.template
+      input.placeholder = 'http://127.0.0.1:8000/{z}/{y}/{x}.jpg'
+      input.dataset.imageAction = 'tile-template'
+      field.append(input)
+      this.imagePanelBodyEl.append(field)
+      if (tile.setCount && tile.setCount > 1) {
+        this.imagePanelBodyEl.append(
+          element(
+            'p',
+            'tml-hint',
+            `这个地图包有 ${tile.setCount} 个瓦片组，当前使用「${tile.setName || '默认'}」。需要其他组时重新导入并在高级选项里选择。`,
+          ),
+        )
+      }
+    }
+    this.imagePanelBodyEl.append(
+      element('p', 'tml-hint', '瓦片只保存在本机，不会请求 Map Genie 线上数据。'),
+    )
+  }
+
+  private async replaceImage(file: File): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg || this.imageBusy) return
+    this.imageBusy = true
+    this.renderImagePanel()
     try {
-      const pkg =
-        this.importTab === 'fandom' ? await this.importFandom() : await this.importMapGenie()
-      this.importStatusEl.textContent = `正在保存地图包：${pkg.markers.length} 个地点${pkg.tileFiles ? ` · ${Object.keys(pkg.tileFiles).length} 张瓦片` : ''}…`
-      await putLayerPackage(pkg)
-      this.importing = false
-      this.importEl.hidden = true
-      this.importStatusEl.textContent = ''
-      this.state.packageId = pkg.id
-      this.state.view = undefined
-      this.state.selectedMarkerId = undefined
-      this.state.currentMarkerId = undefined
-      this.state.selectedRegionId = undefined
-      this.state.currentRegionId = undefined
-      this.state.hiddenCategories = []
-      await this.refreshPackages()
-      await this.loadPackage(pkg.id)
-      this.toast(`已导入 ${pkg.name}`)
+      const info = await readLayerImage(file, file.name)
+      const thumbnail = await makeLayerThumbnail(file)
+      const imageOnly =
+        pkg.kind === 'image' && pkg.markers.length === 0 && pkg.source === 'manual'
+      const updated = await setLayerImage(pkg.id, {
+        image: file,
+        imageType: file.type,
+        imageName: file.name,
+        imagePageUrl: undefined,
+        imageWidth: info.width,
+        imageHeight: info.height,
+        imageBytes: file.size,
+        imageSource: 'local',
+        imageFit: 'stretch',
+        thumbnail,
+        imageLocked: true,
+        width: imageOnly ? info.width : pkg.width,
+        height: imageOnly ? info.height : pkg.height,
+      })
+      if (updated) {
+        this.pkg = updated
+        this.imageBusy = false
+        this.updatePackageInfo()
+        this.loadImage(updated)
+        this.syncHeaderImage()
+        this.renderImagePanel()
+        await this.refreshPackages()
+        this.toast('底图已更换，地点和笔记没有变化')
+      }
     } catch (error) {
-      this.importing = false
-      this.importStatusEl.textContent = `导入失败：${errorMessage(error)}`
+      this.imageBusy = false
+      this.renderImagePanel()
+      this.toast(`更换底图失败：${errorMessage(error)}`)
     }
   }
 
-  private async importFandom(): Promise<LayerMapPackage> {
-    const jsonFile = this.fandomJsonEl.files?.[0]
-    const imageFile = this.fandomImageEl.files?.[0]
-    if (!jsonFile) throw new Error('请选择 Fandom JSON 文件')
-    if (!imageFile) throw new Error('请选择底图图片')
-    const raw = JSON.parse(await jsonFile.text()) as unknown
-    return parseFandomPackage(raw, {
-      name: this.fandomNameEl.value.trim() || fallbackPackageName(jsonFile.name),
-      image: imageFile,
-      imageType: imageFile.type,
-    })
-  }
-
-  private async importMapGenie(): Promise<LayerMapPackage> {
-    const jsonFile = this.mapgenieJsonEl.files?.[0]
-    if (!jsonFile) throw new Error('请选择 mapData JSON 文件')
-    const jsonText = await jsonFile.text()
-    const raw = JSON.parse(jsonText) as unknown
-    const tileTemplate = this.mapgenieTilesEl.value.trim()
-    // Some Map Genie maps use {z}/{x}/{y}; the folder follows the same order.
-    const tileFiles = await this.readTileFolder(/\{z\}\/\{x\}\/\{y\}/.test(jsonText))
-    if (tileFiles) {
-      this.importStatusEl.textContent = `已读取 ${Object.keys(tileFiles).length} 张瓦片，正在写入地图包…`
+  private async removeImage(): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg || this.imageBusy) return
+    const old = {
+      image: pkg.image,
+      type: pkg.imageType,
+      name: pkg.imageName,
+      pageUrl: pkg.imagePageUrl,
+      width: pkg.imageWidth,
+      height: pkg.imageHeight,
+      bytes: pkg.imageBytes,
+      source: pkg.imageSource,
+      fit: pkg.imageFit,
+      rect: pkg.imageRect,
+      thumbnail: pkg.thumbnail,
     }
-    return parseMapGeniePackage(raw, {
-      name: this.mapgenieNameEl.value.trim() || fallbackPackageName(jsonFile.name),
-      tileTemplate,
-      tileFiles,
-    })
-  }
-
-  private async readTileFolder(xyOrder = false): Promise<Record<string, Blob> | undefined> {
-    const input = this.mapgenieFolderEl.files
-    if (!input || input.length === 0) return undefined
-    const allFiles = Array.from(input)
-    this.importStatusEl.textContent = `正在读取 ${allFiles.length} 个文件…`
-    const files: Record<string, Blob> = {}
-    let scanned = 0
-    for (const file of allFiles) {
-      const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
-      const match = relative.match(/(?:^|\/)(\d+)\/(\d+)\/(\d+)\.(?:jpe?g|png|webp)$/i)
-      if (match) {
-        const first = match[2]
-        const second = match[3]
-        // Internally keyed z/y/x; Map Genie folders may be z/x/y.
-        files[`${match[1]}/${xyOrder ? second : first}/${xyOrder ? first : second}`] = file
+    if (!old.image) return
+    this.imageBusy = true
+    this.renderImagePanel()
+    try {
+      const updated = await removeLayerImage(pkg.id)
+      if (updated) {
+        this.lastRemovedImage = {
+          pkgId: pkg.id,
+          image: old.image,
+          type: old.type,
+          name: old.name,
+          pageUrl: old.pageUrl,
+          width: old.width,
+          height: old.height,
+          bytes: old.bytes,
+          source: old.source,
+          fit: old.fit,
+          rect: old.rect,
+          thumbnail: old.thumbnail,
+        }
+        this.pkg = updated
+        this.imageBusy = false
+        this.imageRemovePending = false
+        this.updatePackageInfo()
+        this.loadImage(updated)
+        this.syncHeaderImage()
+        this.renderImagePanel()
+        await this.refreshPackages()
+        this.toast('已移除底图，地点和笔记都还在', {
+          label: '撤销',
+          onClick: () => void this.undoRemoveImage(),
+        })
       }
-      scanned += 1
-      if (scanned % 2000 === 0) {
-        this.importStatusEl.textContent = `已扫描 ${scanned}/${allFiles.length} 个文件 · 找到 ${Object.keys(files).length} 张瓦片…`
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+    } catch (error) {
+      this.imageBusy = false
+      this.renderImagePanel()
+      this.toast(`移除底图失败：${errorMessage(error)}`)
+    }
+  }
+
+  private async undoRemoveImage(): Promise<void> {
+    const pkg = this.pkg
+    const old = this.lastRemovedImage
+    if (!pkg || !old) return
+    if (old.pkgId !== pkg.id) {
+      this.lastRemovedImage = null
+      this.toast('已经切换到另一个地图包，不能撤销上一次移除')
+      return
+    }
+    const updated = await setLayerImage(pkg.id, {
+      image: old.image,
+      imageType: old.type,
+      imageName: old.name,
+      imagePageUrl: old.pageUrl,
+      imageWidth: old.width,
+      imageHeight: old.height,
+      imageBytes: old.bytes,
+      imageSource: old.source ?? 'local',
+      imageFit: old.fit ?? 'stretch',
+      imageRect: old.rect,
+      thumbnail: old.thumbnail,
+      imageLocked: true,
+    }).catch((error) => {
+      this.toast(`撤销失败：${errorMessage(error)}`)
+      return undefined
+    })
+    if (updated) {
+      this.lastRemovedImage = null
+      this.pkg = updated
+      this.updatePackageInfo()
+      this.loadImage(updated)
+      this.syncHeaderImage()
+      this.renderImagePanel()
+      await this.refreshPackages()
+      this.toast('底图已恢复')
+    }
+  }
+
+  private async setImageFit(fit: LayerImageFit): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg) return
+    if (fit === 'custom') {
+      this.startAlign()
+      return
+    }
+    const updated = await setLayerImageFit(pkg.id, fit).catch((error) => {
+      this.toast(`保存显示方式失败：${errorMessage(error)}`)
+      return undefined
+    })
+    if (updated) {
+      this.pkg = updated
+      this.renderImagePanel()
+      this.requestDraw()
+    }
+  }
+
+  private startAlign(): void {
+    const pkg = this.pkg
+    if (!pkg?.image || pkg.kind !== 'image') {
+      this.toast('这张地图没有图片底图，无法对齐')
+      return
+    }
+    if (!this.image) {
+      this.toast('底图还在加载，请稍候再对齐')
+      return
+    }
+    if (pkg.markers.length === 0) {
+      this.toast('这张底图还没有地点数据；先关联 JSON 再对齐')
+      return
+    }
+    this.closeImagePanel()
+    this.imageRemovePending = false
+    this.alignRect = { ...imageRectFor(pkg) }
+    this.alignStartRect = null
+    this.alignStartPointer = null
+    this.alignDrag = false
+    this.aligning = true
+    this.alignBarEl.hidden = false
+    this.panelEl.classList.add('tml-aligning')
+    this.canvasEl.style.cursor = 'move'
+    this.requestDraw()
+  }
+
+  private resetAlign(): void {
+    if (!this.aligning) return
+    this.alignRect = { x: 0, y: 0, w: 1, h: 1 }
+    this.requestDraw()
+  }
+
+  private cancelAlign(): void {
+    if (!this.aligning) return
+    this.aligning = false
+    this.alignDrag = false
+    this.alignStartPointer = null
+    this.alignStartRect = null
+    this.alignRect = null
+    this.alignBarEl.hidden = true
+    this.panelEl.classList.remove('tml-aligning')
+    this.canvasEl.style.cursor = 'grab'
+    this.requestDraw()
+  }
+
+  private async finishAlign(): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg || !this.alignRect) return
+    const rect = sanitizeRect(this.alignRect)
+    const updated = await setLayerImageFit(pkg.id, 'custom', rect).catch((error) => {
+      this.toast(`保存对齐失败：${errorMessage(error)}`)
+      return undefined
+    })
+    if (!updated) return
+    this.pkg = updated
+    this.aligning = false
+    this.alignDrag = false
+    this.alignStartPointer = null
+    this.alignStartRect = null
+    this.alignRect = null
+    this.alignBarEl.hidden = true
+    this.panelEl.classList.remove('tml-aligning')
+    this.canvasEl.style.cursor = 'grab'
+    this.syncHeaderImage()
+    this.requestDraw()
+    this.toast('底图对齐已保存')
+  }
+
+  private zoomAlign(sx: number, sy: number, factor: number): void {
+    const pkg = this.pkg
+    if (!pkg || !this.alignRect) return
+    const width = this.canvasEl.clientWidth || 1
+    const height = this.canvasEl.clientHeight || 1
+    const fit = Math.min(width / pkg.width, height / pkg.height) * IMAGE_FIT_MARGIN
+    const scale = fit * this.view.zoom
+    const mapX = this.view.cx + (sx - width / 2) / (pkg.width * scale)
+    const mapY = this.view.cy + (sy - height / 2) / (pkg.height * scale)
+    const rect = this.alignRect
+    const relativeX = (mapX - rect.x) / rect.w
+    const relativeY = (mapY - rect.y) / rect.h
+    const nextWidth = Math.min(6, Math.max(0.05, rect.w * factor))
+    const nextHeight = Math.min(6, Math.max(0.05, rect.h * (nextWidth / rect.w)))
+    this.alignRect = sanitizeRect({
+      x: mapX - relativeX * nextWidth,
+      y: mapY - relativeY * nextHeight,
+      w: nextWidth,
+      h: nextHeight,
+    })
+    this.requestDraw()
+  }
+
+  private openLightbox(): void {
+    const pkg = this.pkg
+    if (!pkg?.image) return
+    this.closeLightbox()
+    this.lightboxUrl = URL.createObjectURL(pkg.image)
+    this.lightboxImageEl.src = this.lightboxUrl
+    this.lightboxImageEl.alt = pkg.imageName || '底图预览'
+    this.lightboxEl.hidden = false
+    this.lightboxEl.querySelector<HTMLElement>('[data-lightbox-action="close"]')?.focus()
+  }
+
+  private closeLightbox(): void {
+    if (this.lightboxEl.hidden) return
+    this.lightboxEl.hidden = true
+    this.lightboxImageEl.removeAttribute('src')
+    if (this.lightboxUrl) {
+      URL.revokeObjectURL(this.lightboxUrl)
+      this.lightboxUrl = null
+    }
+  }
+
+  private syncHeaderImage(): void {
+    if (this.headerImageUrl) {
+      URL.revokeObjectURL(this.headerImageUrl)
+      this.headerImageUrl = null
+    }
+    const pkg = this.pkg
+    if (pkg?.image) {
+      this.headerImageUrl = URL.createObjectURL(pkg.image)
+      this.headerImageEl.src = this.headerImageUrl
+      this.headerImageEl.alt = pkg.imageName || '当前底图'
+      this.headerImageEl.hidden = false
+      this.headerImageEmptyEl.hidden = true
+      this.headerImageButtonEl.title = `底图：${pkg.imageName || '已设置'}`
+    } else {
+      this.headerImageEl.removeAttribute('src')
+      this.headerImageEl.hidden = true
+      this.headerImageEmptyEl.hidden = false
+      this.headerImageButtonEl.title =
+        pkg?.kind === 'tiles' ? '瓦片底图 · 点开设置' : '底图 · 点开设置'
+    }
+    this.headerImageButtonEl.setAttribute('aria-expanded', String(this.imagePanelOpen))
+  }
+
+  private tileSetFor(pkg: LayerMapPackage): MapGenieTileSetInfo | undefined {
+    if (!pkg.tile) return undefined
+    return {
+      index: pkg.tile.setIndex ?? 0,
+      id: '',
+      name: pkg.tile.setName || '当前瓦片组',
+      pattern: '',
+      minZoom: pkg.tile.minZoom,
+      maxZoom: pkg.tile.maxZoom,
+      order: pkg.tile.order ?? 'unknown',
+      prefix: '',
+      boundsByZoom: pkg.tile.boundsByZoom ?? {},
+    }
+  }
+
+  private async replaceTiles(files: File[]): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg || pkg.kind !== 'tiles' || this.imageBusy) return
+    const tileSet = this.tileSetFor(pkg)
+    if (!tileSet) {
+      this.toast('这个地图包缺少瓦片配置，无法重新关联')
+      return
+    }
+    this.imageBusy = true
+    this.renderImagePanel()
+    try {
+      const bundle = filesToBundle(files, pkg.name)
+      const scan = scanTileFiles(bundle.files, tileSet, pkg.tile?.setCount ?? 1)
+      if (!scan.tileFiles || Object.keys(scan.tileFiles).length === 0) {
+        throw new Error('这个文件夹里没有找到 z/x/y 结构的瓦片')
       }
+      const tile = {
+        ...(pkg.tile as NonNullable<LayerMapPackage['tile']>),
+        order: scan.order,
+        coverageMinZoom: scan.stats?.minZoom,
+        coverageMaxZoom: scan.stats?.maxZoom,
+        expectedCount: scan.stats?.expected,
+        missingCount: scan.stats?.missing,
+      }
+      const updated = await setLayerTiles(pkg.id, scan.tileFiles, tile)
+      if (updated) {
+        this.pkg = updated
+        this.imageBusy = false
+        this.updatePackageInfo()
+        this.clearTileCaches()
+        this.renderImagePanel()
+        this.syncHeaderImage()
+        await this.refreshPackages()
+        this.requestDraw()
+        this.toast(`已关联 ${Object.keys(scan.tileFiles).length.toLocaleString('zh-CN')} 张瓦片`)
+      }
+    } catch (error) {
+      this.imageBusy = false
+      this.renderImagePanel()
+      this.toast(`关联瓦片失败：${errorMessage(error)}`)
     }
-    if (Object.keys(files).length === 0) {
-      throw new Error('文件夹里没有找到 z/y/x.jpg 结构的瓦片')
+  }
+
+  private async saveTileTemplate(value: string): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg?.tile) return
+    if (
+      value &&
+      (!/\{z\}/.test(value) || !/\{x\}/.test(value) || !/\{y\}/.test(value))
+    ) {
+      this.toast('瓦片模板必须同时包含 {z}、{x}、{y}')
+      this.renderImagePanel()
+      return
     }
-    return files
+    const updated = await updateLayerPackage(pkg.id, {
+      tile: { ...pkg.tile, template: value },
+    }).catch((error) => {
+      this.toast(`保存瓦片模板失败：${errorMessage(error)}`)
+      return undefined
+    })
+    if (updated) {
+      this.pkg = updated
+      this.updatePackageInfo()
+      this.requestDraw()
+      this.toast('瓦片 URL 模板已保存')
+    }
   }
 
   private renderEmpty(message: string): void {
@@ -2226,27 +3117,61 @@ export class LayerMapUI {
     this.emptyEl.textContent = message
   }
 
-  private toast(message: string): void {
-    const element = document.createElement('div')
-    element.className = 'tm-toast'
-    element.setAttribute('role', 'status')
-    element.textContent = message
-    document.body.append(element)
-    window.setTimeout(() => element.remove(), 2600)
+  private toast(
+    message: string,
+    action?: { label: string; onClick: () => void },
+  ): void {
+    const node = document.createElement('div')
+    node.className = 'tm-toast'
+    node.setAttribute('role', 'status')
+    const text = document.createElement('span')
+    text.textContent = message
+    node.append(text)
+    if (action) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'tm-toast-action'
+      button.textContent = action.label
+      button.addEventListener('click', () => {
+        action.onClick()
+        node.remove()
+      })
+      node.append(button)
+    }
+    document.querySelectorAll('.tm-toast').forEach((toast) => toast.remove())
+    document.body.append(node)
+    window.setTimeout(() => node.remove(), action ? 6000 : 2600)
   }
 
   dispose(): void {
+    this.windowController?.dispose()
+    this.importUI?.dispose()
+    this.packagesUI?.dispose()
     this.offs.forEach((remove) => remove())
     this.offs.length = 0
     if (this.saveTimer !== undefined) window.clearTimeout(this.saveTimer)
     if (this.resizeObserver) this.resizeObserver.disconnect()
     if (this.drawFrame) window.cancelAnimationFrame(this.drawFrame)
     if (this.imageUrl) URL.revokeObjectURL(this.imageUrl)
+    if (this.headerImageUrl) URL.revokeObjectURL(this.headerImageUrl)
+    if (this.lightboxUrl) URL.revokeObjectURL(this.lightboxUrl)
     this.clearTileCaches()
     this.panelEl?.remove()
-    this.importEl?.remove()
+    this.imagePanelEl?.remove()
+    this.lightboxEl?.remove()
     this.contextModalEl?.remove()
   }
+}
+
+function element<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag)
+  if (className) node.className = className
+  if (text != null) node.textContent = text
+  return node
 }
 
 function textElement<K extends keyof HTMLElementTagNameMap>(

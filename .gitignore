@@ -5,3 +5,13 @@ node_modules/
 # dist/ is intentionally committed: SillyTavern installs the extension from
 # the repository root and needs manifest.json + dist/index.js + dist/style.css
 # + dist/maplibre-gl-worker.js at that path.
+
+# Local AI design/agent tooling installed by the project owner.
+.agents/
+.claude/
+.codex/
+.cursor/
+.dsh/
+.hermes/
+.opencode/
+.pi/

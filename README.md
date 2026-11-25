@@ -8,7 +8,9 @@
 
 - MapLibre GL JS 地图，默认 OpenFreeMap `liberty` 样式（不需要 API key）
 - **图层地图模式**：把地图切换为本地图片底图或本地瓦片地图，支持地点、分类过滤、区域面、搜索、地点详情、笔记和多来源链接；不放在 iframe，也不混入 OSM 坐标
-- **本地地图包导入**：Fandom `markers` JSON + 图片；Map Genie `mapData` JSON + 本地瓦片 URL 或瓦片文件夹。导入只读取本地文件，不抓取 Map Genie 线上数据；重新导入按 sourceId 去重
+- **本地地图包导入（0.4.1）**：一个 `.zip` / 文件夹 / 单独 JSON+图片一次导入；自动识别 Fandom `markers` 与 Map Genie `mapData`，自动找 `mapImage`、瓦片和 `map.title`，自动判断 `{z}/{y}/{x}` 与 `{z}/{x}/{y}`；导入前显示预览、进度、瓦片覆盖/缺失，支持取消。重新导入按稳定 `sourceKey` 更新，不重复建地点，并保留本地笔记、链接和手动换过的底图。
+- **底图生命周期**：导入预览可换图、移除、从包内多图里选择；地图顶栏的“底图”浮层随时更换/移除（可撤销）/查看大图；换图保留地点、笔记和链接；可用“对齐底图”拖动、缩放图片来对齐点位。也支持只导入底图、只导入点位，之后再关联 JSON。
+- **窗口与移动端**：标题栏可拖动、八向缩放、双击复位，位置和大小保存；窗口宽度小于 820px 自动切紧凑布局，手机视口全屏；导入弹窗自身滚动。移动端 FAB 在 SillyTavern 的 fixed body 布局下也能保持可见。
 - **图层地图性能**：瓦片并发加载 + 解码缓存 LRU；marker 空间索引与视口裁剪；标签按屏幕空间避让；渲染合并到 `requestAnimationFrame`。不限制瓦片数量、文件大小或地点数量，也不截断导入描述/笔记/搜索/分类；只回收已解码的内存缓存，源文件与地图包数据完整保留
 - **AI 上下文模式隔离**：扩展设置里分别勾选“现实地图上下文 / 图层地图上下文”；二选一或都不选，避免两个场景块混在一起
 - 顶部搜索框：Photon forward geocoding；按“文本匹配 + 离当前地点距离”排序，并同时查询附近偏置与中性索引，避免附近同名地点压掉真正匹配的著名地点；结果显示距离
@@ -285,9 +287,14 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 - 收藏 Wiki 的“前往”依赖 geosearch 返回的坐标；从旧版本迁移来的收藏可能没有坐标，因此不显示“前往”。
 - Overpass 公共实例经常超时或 406；现在 1.2 秒后并行启动 OSM API 回退，谁先返回用谁。地点、周边、Wiki、POI 图层分别到达并刷新 UI。
 - OSM API 回退会下载整个 bbox 的 XML（含建筑节点），密集城区可能 1–2 MB。
-- 桌面面板可拖动；<=640px 时面板固定全屏，FAB 仍可拖动。
+- 桌面面板可拖动；<=640px 时真实地图面板和图层地图面板固定全屏，FAB 仍可拖动。
+- Fandom 底图直链可能被 Cloudflare/CORS 拦截。0.4.1 会先读取 JSON/说明/链接，再尝试图片；失败时明确提示“JSON 已读取，底图需要本地选择”，不会把数据导入判为失败。
+- Map Genie 的网页 URL 不直接解析；请使用本地 `mapdata.json` 或包含它的地图包。
+- ZIP 读取支持 store/deflate 和基础 ZIP64；加密包或不支持的压缩算法会给出具体错误，不会静默导入一半。
+- 地图包的真实上限是浏览器 IndexedDB 配额和内存；导入前会预检配额，不足时明确提示。
+- 本地 Fandom 包没有记录 Wiki 域名；0.4.1 按 manifest、绝对链接、包名关键词、默认 Forgotten Realms 的顺序推断，可在导入预览的高级选项里修正。
 - 重新打开时恢复最后 Wiki 的前提是关闭面板时 Wiki 抽屉仍然开着；主动关闭 Wiki 后不会强制恢复。
-- 0.1.0 已在真实 SillyTavern 实机运行；0.3.10–0.3.11 的 POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、取消收藏后笔记保留、搜索排序、全文注入、Wiki 星标增删、单文章多语言去重、AI 语言单一化、路线、拖动和恢复状态仍需要在真实 ST 里做一轮回归。桌面和 390×844 布局已在本地浏览器检查。
+- 0.1.0 已在真实 SillyTavern 实机运行；0.4.1 已在真实 SillyTavern 1.19.1 干净安装中验证导入按钮、实际文件选择器、8 套样本、Fandom 页面 URL、窗口拖动/缩放/复位、刷新恢复和 390×844 布局。外部 Overpass/Wikia 请求仍可能产生网络 502/CORS 日志。
 - `maplibre-gl` 被打进 `dist/index.js`，产物较大；如果后续在意加载体积，可以改成 CDN/ESM external。
 - 地图状态没有迁移器；`MapState.version` 目前固定为 1。
 
@@ -297,6 +304,16 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 src/
   index.ts       启动、等待 ST context、挂载 MapUI
   ui.ts          面板、地图生命周期、搜索、半径、POI 图层、下方地点卡、收藏/笔记、Wiki 抽屉、设置、预览
+  layer-map.ts   图层地图 Canvas、地点详情、搜索、分类、AI 上下文、底图浮层、对齐模式、窗口集成
+  layer-import.ts Fandom/Map Genie JSON 解析、坐标/分类/链接/瓦片层级/统计
+  layer-source.ts 压缩包/文件夹扫描、自动识别、图片候选、Fandom 页面 API、瓦片顺序
+  layer-import-ui.ts 一个包一次导入的弹窗、预览、进度、取消、错误
+  layer-packages-ui.ts 地图包列表、重命名、删除、换底图/瓦片、关联数据
+  layer-window.ts 图层地图窗口拖动/缩放/紧凑/移动端几何
+  layer-image.ts 图片探测、缩略图、比例、显示矩形
+  layer-zip.ts   自包含 ZIP 读取器（store/deflate/ZIP64）
+  layer-store.ts IndexedDB 地图包、稳定 sourceKey、配额、图片/瓦片更新
+  layer-types.ts 图层地图状态与地图包类型
   search.ts      Photon forward geocoding（国家/城市/地点搜索）
   poi.ts         Overpass/OSM POI 图层数据、分类、营业时间/网站/菜系、OSM API 回退
   types.ts       共享类型与最小 StContext
@@ -329,11 +346,12 @@ manifest.json    ST 扩展清单
 
 - [Toril 适配模式构建文档](docs/toril-mode-build.md)：2D 平面地图、本地点库、区域路径、FR Wiki、中文副名、Huiji 译名导入与路线能力边界。该文档是规划草案，尚未实现。
 - [2D 自制地图模式构建文档](docs/custom-2d-map-mode-build.md)：高清图片底图、点/线/面编辑、悬浮编辑器、网格/比例尺、街道图 A* 与局部网格寻路。该文档是设计方案，尚未实现。
+- [图层地图 0.4.1 导入与底图生命周期](docs/layer-map-import-0.4.1.md)：一个包一次导入、Fandom 页面 URL、图片替换/移除/撤销、对齐、窗口和包管理。
 - [图层地图模式 ASCII 界面与交互预览](docs/layer-map-ui-preview.md)：Map Genie 瓦片地图与 Fandom 图片地图的双样本界面、导入向导、分类过滤、地点笔记、多来源链接与 AI 上下文交互稿。该文档的界面与核心交互已落地（图片/瓦片底图、导入、分类、搜索、地点详情、笔记、多来源链接、AI 上下文）；绘制/网格/路线仍属后续。
 
 ## 下一步
 
-1. 在真实 SillyTavern 实例里回归 0.3.11（含 0.3.10 遗留项）：POI 图层、下方地点卡、全部 POI briefs（含菜系/营业时间）、步行/驾车/公共交通、道路名/换乘/按步骤 POI、POI 范围与开关、未收藏地点笔记、搜索排序、全文注入、Wiki 星标增删、同一文章多语言去重、AI 语言单一化、星标收藏、语言切换、FAB 遮挡、移动端底栏。
+1. 继续在真实 SillyTavern 里回归 0.4.1 的边界情况：超大瓦片包、超长链接正文、多个底图候选、低配额设备、不同主题下的按钮对比度。
 2. 视需要把自绘搜索框换成 `@maplibre/maplibre-gl-geocoder` 或其它现成 map UI kit；当前自绘是为了绕开 Nominatim 的浏览器 CORS 限制并直接接 Photon。
 3. 评估把地图状态、收藏和笔记移植到 TRPG assistant 的哪一层。
 4. 如确实需要 Google 数据，单独做 Google adapter，不和 OSM 混图。
