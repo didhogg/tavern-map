@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showPois: true,
   showRoutePois: true,
   routePoiRadiusM: 100,
+  realMapContext: true,
+  layerMapContext: false,
 }
 
 export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> }): Settings {
@@ -40,6 +42,14 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     ),
   ).slice(0, 5)
 
+  const realMapContext =
+    typeof value.realMapContext === 'boolean'
+      ? value.realMapContext
+      : DEFAULT_SETTINGS.realMapContext
+  const layerMapContext =
+    typeof value.layerMapContext === 'boolean'
+      ? value.layerMapContext
+      : DEFAULT_SETTINGS.layerMapContext
   return {
     enabled: typeof value.enabled === 'boolean' ? value.enabled : DEFAULT_SETTINGS.enabled,
     provider: 'osm',
@@ -55,6 +65,8 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     routePoiRadiusM: Math.round(
       number(value.routePoiRadiusM, DEFAULT_SETTINGS.routePoiRadiusM, 25, 500),
     ),
+    realMapContext: layerMapContext ? false : realMapContext,
+    layerMapContext,
   }
 }
 

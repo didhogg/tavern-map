@@ -1,12 +1,16 @@
 # Tavern Map
 
-一个独立的 SillyTavern 前端扩展原型：真实世界地图选址 → 周边地点 → Wikipedia（英文默认）→ 星标 → 注入 AI 上下文。
+一个独立的 SillyTavern 前端扩展原型：真实世界地图选址，或导入 Fandom / Map Genie 本地图层地图 → 地点、分类、区域、笔记 → 注入 AI 上下文。
 
 这个仓库先验证可行性，不直接改 TRPG assistant。验证稳定后，地图、缓存和 prompt 注入可以按模块移植过去。
 
 ## 已实现
 
 - MapLibre GL JS 地图，默认 OpenFreeMap `liberty` 样式（不需要 API key）
+- **图层地图模式**：把地图切换为本地图片底图或本地瓦片地图，支持地点、分类过滤、区域面、搜索、地点详情、笔记和多来源链接；不放在 iframe，也不混入 OSM 坐标
+- **本地地图包导入**：Fandom `markers` JSON + 图片；Map Genie `mapData` JSON + 本地瓦片 URL 或瓦片文件夹。导入只读取本地文件，不抓取 Map Genie 线上数据；重新导入按 sourceId 去重
+- **图层地图性能**：瓦片并发加载 + 解码缓存 LRU；marker 空间索引与视口裁剪；标签按屏幕空间避让；渲染合并到 `requestAnimationFrame`。不限制瓦片数量、文件大小或地点数量，也不截断导入描述/笔记/搜索/分类；只回收已解码的内存缓存，源文件与地图包数据完整保留
+- **AI 上下文模式隔离**：扩展设置里分别勾选“现实地图上下文 / 图层地图上下文”；二选一或都不选，避免两个场景块混在一起
 - 顶部搜索框：Photon forward geocoding；按“文本匹配 + 离当前地点距离”排序，并同时查询附近偏置与中性索引，避免附近同名地点压掉真正匹配的著名地点；结果显示距离
 - 点击地图或拖动人物标记选择位置；面板内半径滑块（25–1000m，默认 250m）+ 地图上的虚线圆圈，范围一眼可见
 - **POI 图层**：当前半径内的 OSM 可互动点（餐饮/购物/景点/交通/自然/服务）以分类色点、聚合和名称标注显示；可一键关闭图层
@@ -130,6 +134,7 @@ ln -s /Users/xxx/tavern-map /path/to/SillyTavern/data/<user-handle>/extensions/t
 - 0.3.6 实测未收藏地点笔记：详情 textarea 可编辑，`placeNotes` 保存；关闭再打开仍在，不需要先收藏。
 - 0.3.10 实测收藏地点笔记后取消收藏：`placeNotes` 仍保留，地点详情 textarea、重新打开和 prompt 里的当前地点笔记都还在；旧版本只有 `savedPlaces[].note` 的笔记会在启动时迁移到 `placeNotes`。
 - 0.3.11 将地图“范围”滑块和设置项的最小值从 50m 降到 **25m**，滑块步进改为 5m；Overpass 周边查询、OSM 回退、地图虚线圆圈的半径下限同步为 25m。`dev.html` 已验证滑块 `min=25`、拖到 25 时显示 `25m` 且设置项同步为 25；`npm run check` / `npm run build` 通过，尚未做真实 SillyTavern 回归。
+- **0.4.0（当前）** 新增图层地图工作台：Fandom 图片地图 / Map Genie 瓦片地图导入、分类过滤、搜索、区域面、地点卡、笔记、多来源链接与 AI 上下文；扩展设置新增互斥的“现实地图上下文 / 图层地图上下文”；不限制瓦片数量、文件大小和地点数量。已实测 Fandom 深水城/Cyberpunk 2045/2077/2020 与 MapGenie Leonida/Cyberpunk Night City/AC Unity France/RDR2 数据导入；地点说明、markdown 链接和 Fandom 链接均可提取。
 - 0.3.7 实测短路线（约 300m）先用当前地图 POI 立即填充步骤 POI，再后台补充路线走廊；范围滑块与地图半径独立；B2F/B3F 或“未命名步道”会优先回退到当前街道，不再全段显示无名。
 - 0.3.9 实测巴尔的摩 Ivy Hotel → Belvedere Hotel 的步行步骤逐段反查到 East Biddle Street / North Calvert Street / East Chase Street 等不同街道，不再把整段都写成 East Biddle Street；到达步骤优先用目的地街道。Photon 反查改为串行、小批量，避免一次并发触发失败。
 - 0.3.0 实测 POI 图层：Overpass 失败时 OSM API 回退返回 500 个 POI，地图上出现分类色点/聚合/标签，下方“周边”列表同步显示 500 个；地点详情在下方列表内展开，不遮挡地图。
@@ -324,6 +329,7 @@ manifest.json    ST 扩展清单
 
 - [Toril 适配模式构建文档](docs/toril-mode-build.md)：2D 平面地图、本地点库、区域路径、FR Wiki、中文副名、Huiji 译名导入与路线能力边界。该文档是规划草案，尚未实现。
 - [2D 自制地图模式构建文档](docs/custom-2d-map-mode-build.md)：高清图片底图、点/线/面编辑、悬浮编辑器、网格/比例尺、街道图 A* 与局部网格寻路。该文档是设计方案，尚未实现。
+- [图层地图模式 ASCII 界面与交互预览](docs/layer-map-ui-preview.md)：Map Genie 瓦片地图与 Fandom 图片地图的双样本界面、导入向导、分类过滤、地点笔记、多来源链接与 AI 上下文交互稿。该文档的界面与核心交互已落地（图片/瓦片底图、导入、分类、搜索、地点详情、笔记、多来源链接、AI 上下文）；绘制/网格/路线仍属后续。
 
 ## 下一步
 

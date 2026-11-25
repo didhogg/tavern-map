@@ -167,6 +167,10 @@ export type Settings = {
   showRoutePois: boolean
   /** Corridor width for route POIs, in metres. */
   routePoiRadiusM: number
+  /** Include the real-world OSM map scene block in AI context. */
+  realMapContext: boolean
+  /** Include the imported layer-map scene block in AI context. */
+  layerMapContext: boolean
 }
 
 /** A minimal subset of the SillyTavern context used by this extension. */

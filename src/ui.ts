@@ -8,6 +8,9 @@ import {
 } from 'maplibre-gl'
 import { cacheGet, cachePut, wikiCacheKey, wikiFullCacheKey } from './cache'
 import { buildContext, estimateTokens } from './context'
+import { buildLayerContext, buildMapContexts } from './layer-context'
+import { LayerMapUI } from './layer-map'
+import { LAYER_STATE_KEY, loadLayerState } from './layer-types'
 import { formatDistance, haversine, placeKey } from './geo'
 import { errorMessage } from './http'
 import {
@@ -126,6 +129,7 @@ const PANEL_HTML = `
   <header class="tm-head">
     <strong>Tavern Map</strong>
     <div class="tm-head-actions">
+      <button type="button" data-action="layer-map" title="打开图层地图">图层地图</button>
       <button type="button" data-action="preview" title="预览 AI 上下文">AI 预览</button>
       <button type="button" data-action="refresh" title="刷新地点数据">刷新</button>
       <button type="button" data-action="close" title="关闭">×</button>
@@ -276,6 +280,12 @@ const SETTINGS_HTML = `
     </div>
     <div class="inline-drawer-content">
       <label class="checkbox_label"><input type="checkbox" id="tm-set-enabled"> 启用 AI 注入（地图仍可查看）</label>
+      <div class="tm-row tm-row-stack">地图上下文（二选一，可都不选）
+        <div class="tm-context-options">
+          <label><input type="checkbox" id="tm-set-real-context"> 现实地图上下文</label>
+          <label><input type="checkbox" id="tm-set-layer-context"> 图层地图上下文</label>
+        </div>
+      </div>
       <div class="tm-row tm-row-stack">Wiki 搜索语言（可多选）
         <div class="tm-lang-options">
           <label><input type="checkbox" data-tm-lang value="en"> English</label>
@@ -339,6 +349,7 @@ export class MapUI {
   private poiSeq = 0
   private suppressFabClick = false
   private readonly offs: Array<() => void> = []
+  private layerUI: LayerMapUI | null = null
 
   private panelEl!: HTMLElement
   private canvasEl!: HTMLElement
@@ -390,6 +401,8 @@ export class MapUI {
   private placeRouteStepsEl!: HTMLElement
 
   private enabledEl!: HTMLInputElement
+  private realContextEl!: HTMLInputElement
+  private layerContextEl!: HTMLInputElement
   private langEls: HTMLInputElement[] = []
   private radiusEl!: HTMLInputElement
   private nearbyEl!: HTMLInputElement
@@ -399,6 +412,7 @@ export class MapUI {
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
+    if (this.layerUI?.isOpen()) return
     const target = event.target as HTMLElement | null
     if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
     if (!this.previewEl.hidden) {
@@ -512,6 +526,8 @@ export class MapUI {
       host.append(template.content)
     }
     this.enabledEl = document.getElementById('tm-set-enabled') as HTMLInputElement
+    this.realContextEl = document.getElementById('tm-set-real-context') as HTMLInputElement
+    this.layerContextEl = document.getElementById('tm-set-layer-context') as HTMLInputElement
     this.langEls = Array.from(document.querySelectorAll<HTMLInputElement>('#tm-settings [data-tm-lang]'))
     this.radiusEl = document.getElementById('tm-set-radius') as HTMLInputElement
     this.nearbyEl = document.getElementById('tm-set-nearby') as HTMLInputElement
@@ -569,6 +585,14 @@ export class MapUI {
     this.settingsBound = true
 
     this.enabledEl.addEventListener('change', () => this.readSettings())
+    this.realContextEl.addEventListener('change', () => {
+      if (this.realContextEl.checked) this.layerContextEl.checked = false
+      this.readSettings()
+    })
+    this.layerContextEl.addEventListener('change', () => {
+      if (this.layerContextEl.checked) this.realContextEl.checked = false
+      this.readSettings()
+    })
     const onLanguagesChanged = (): void => {
       const previous = [...this.settings.wikiLangs].sort().join(',')
       this.readSettings()
@@ -624,6 +648,10 @@ export class MapUI {
     const action = target.closest<HTMLElement>('[data-action]')?.dataset.action
     if (action === 'close') {
       this.closePanel()
+      return
+    }
+    if (action === 'layer-map') {
+      this.openLayerMap()
       return
     }
     if (action === 'refresh') {
@@ -795,6 +823,7 @@ export class MapUI {
   }
 
   private openPanel(): void {
+    this.layerUI?.close()
     this.panelEl.hidden = false
     this.tab = this.state.lastTab ?? 'nearby'
     this.applyPanelGeometry()
@@ -820,6 +849,17 @@ export class MapUI {
         if (!this.panelEl.hidden) void this.refresh()
       }, 150)
     }
+  }
+
+  private openLayerMap(): void {
+    this.panelEl.hidden = true
+    if (!this.layerUI) {
+      this.layerUI = new LayerMapUI(this.liveContext(), {
+        onChange: () => this.sync(),
+        onRealMap: () => this.openPanel(),
+      })
+    }
+    void this.layerUI.open()
   }
 
   private closePanel(): void {
@@ -1268,9 +1308,17 @@ export class MapUI {
     this.render()
   }
 
+  private activeContextText(): string {
+    const real = this.settings.realMapContext ? buildContext(this.state, this.settings) : ''
+    const layer = this.settings.layerMapContext
+      ? this.layerUI?.contextText() ?? buildLayerContext(loadLayerState(this.liveContext()))
+      : ''
+    return buildMapContexts(real, layer, this.settings)
+  }
+
   private sync(): void {
     this.state.enabled = this.settings.enabled
-    const text = buildContext(this.state, this.settings)
+    const text = this.activeContextText()
     if (!this.settings.enabled || !text) {
       clearPrompt(this.ctx)
     } else {
@@ -3250,9 +3298,9 @@ export class MapUI {
   }
 
   private preview(): void {
-    const text = buildContext(this.state, this.settings)
+    const text = this.activeContextText()
     this.previewTextEl.textContent =
-      text || '（尚未选择地点，也没有收藏条目；当前不会注入场景块。）'
+      text || '（当前没有启用地图上下文，或没有可用内容；不会注入场景块。）'
     this.tokenEstimateEl.textContent = text
       ? `≈ ${estimateTokens(text)} tokens · 不裁剪`
       : '当前不会注入'
@@ -3278,6 +3326,8 @@ export class MapUI {
     this.settings = {
       ...this.settings,
       enabled: this.enabledEl.checked,
+      realMapContext: this.realContextEl.checked,
+      layerMapContext: this.layerContextEl.checked,
       wikiLangs: selectedLangs.length > 0 ? selectedLangs : ['en'],
       radiusM: numberValue(this.radiusEl, this.settings.radiusM, 25, 1000),
       maxNearby: Math.round(numberValue(this.nearbyEl, this.settings.maxNearby, 0, 12)),
@@ -3292,6 +3342,8 @@ export class MapUI {
   private writeSettingsToForm(): void {
     if (!this.enabledEl) return
     this.enabledEl.checked = this.settings.enabled
+    this.realContextEl.checked = this.settings.realMapContext
+    this.layerContextEl.checked = this.settings.layerMapContext
     for (const input of this.langEls) input.checked = this.settings.wikiLangs.includes(input.value)
     this.radiusEl.value = String(this.settings.radiusM)
     this.nearbyEl.value = String(this.settings.maxNearby)
@@ -3336,6 +3388,8 @@ export class MapUI {
     this.hideSearchResults()
     this.updatePoiSource()
     this.syncPoiUi()
+    this.layerUI?.clearChat()
+    delete this.liveContext().chatMetadata?.[LAYER_STATE_KEY]
     this.commit()
     this.toast('已清空本聊天地的地点与收藏')
   }
@@ -3353,6 +3407,7 @@ export class MapUI {
     this.settings = loadSettings(this.ctx)
     this.state = loadState(this.ctx)
     this.state.enabled = this.settings.enabled
+    this.layerUI?.handleChatChanged()
     this.pois = []
     this.poisById.clear()
     this.poiSeq += 1
@@ -3628,6 +3683,8 @@ export class MapUI {
     this.moving = false
     this.clearRouteLine()
     this.resizeObserver?.disconnect()
+    this.layerUI?.dispose()
+    this.layerUI = null
     this.map?.remove()
     this.map = null
     this.marker = null
