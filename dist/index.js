@@ -40384,6 +40384,8 @@ var uV = `
 	tileFileUrls = /* @__PURE__ */ new Map();
 	markerRegionCache = /* @__PURE__ */ new Map();
 	regionLabelCache = /* @__PURE__ */ new Map();
+	streetLabelCache = /* @__PURE__ */ new Map();
+	tileMoving = !1;
 	markerIndex = /* @__PURE__ */ new Map();
 	labelCells = /* @__PURE__ */ new Set();
 	clusterHitAreas = [];
@@ -40708,7 +40710,9 @@ var uV = `
 			return;
 		}
 		let n = this.state.packageId !== t.id;
-		n && (this.tileViewPackageId = "", this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.state.atPlaceId && !t.markers.some((e) => e.id === this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.pkg && this.pkg.id !== t.id && iV.delete(this.pkg.id), this.pkg = t, this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.selectedMarkerId && !t.markers.some((e) => e.id === this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !t.markers.some((e) => e.id === this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.buildMarkerIndex(), this.clearTileCaches(), this.packageSelectEl.value = t.id, t.kind === "tiles" ? (this.clearImageResources(), await this.loadTileMap(t)) : (this.setTileMapVisible(!1), this.view = this.resolveView(t, this.state.view), this.state.view = this.view, this.loadImage(t)), this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.requestDraw();
+		n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.state.atPlaceId && !t.markers.some((e) => e.id === this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.pkg && this.pkg.id !== t.id && iV.delete(this.pkg.id), this.pkg = t, this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.selectedMarkerId && !t.markers.some((e) => e.id === this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !t.markers.some((e) => e.id === this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.buildMarkerIndex(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.requestDraw(), t.kind === "tiles" ? (this.clearImageResources(), this.loadTileMap(t).catch((e) => {
+			console.warn("[tavern-map] tile map initialization failed", e), this.toast("底图初始化失败；地点和标签仍可查看。"), this.requestDraw();
+		})) : (this.setTileMapVisible(!1), this.view = this.resolveView(t, this.state.view), this.state.view = this.view, this.loadImage(t));
 	}
 	updatePackageInfo() {
 		let e = this.pkg;
@@ -40962,10 +40966,10 @@ var uV = `
 		}, this.state.view = this.view, this.updateStatus(), this.requestDraw();
 	}
 	onTileMapMove() {
-		this.maplibreMap && this.pkg?.kind === "tiles" && this.tileViewPackageId === this.pkg.id && this.syncViewFromMap();
+		this.maplibreMap && this.pkg?.kind === "tiles" && this.tileViewPackageId === this.pkg.id && (this.tileMoving = !0, this.syncViewFromMap());
 	}
 	onTileMapMoveEnd() {
-		this.maplibreMap && this.pkg?.kind === "tiles" && this.tileViewPackageId === this.pkg.id && (this.syncViewFromMap(), this.persist(), this.refreshContext());
+		this.maplibreMap && this.pkg?.kind === "tiles" && this.tileViewPackageId === this.pkg.id && (this.tileMoving = !1, this.syncViewFromMap(), this.persist(), this.refreshContext());
 	}
 	onTileMapClick(e) {
 		if (!this.pkg || this.pkg.kind !== "tiles") return;
@@ -41231,37 +41235,50 @@ var uV = `
 		let t = (e.type ?? "").toLowerCase();
 		return t === "main" ? 0 : t === "major" ? 1 : 2;
 	}
+	streetLabelAnchor(e) {
+		let t = this.streetLabelCache.get(e.id);
+		if (t) return t;
+		let n = e.points;
+		if (n.length < 2) return;
+		let r = 0;
+		for (let e = 1; e < n.length; e += 1) r += Math.hypot(n[e][0] - n[e - 1][0], n[e][1] - n[e - 1][1]);
+		if (!Number.isFinite(r) || r < 1e-9) return;
+		let i = r / 2;
+		for (let t = 1; t < n.length; t += 1) {
+			let [r, a] = n[t - 1], [o, s] = n[t], c = Math.hypot(o - r, s - a);
+			if (i <= c || t === n.length - 1) {
+				let t = c > 0 ? Math.min(1, Math.max(0, i / c)) : .5, n = Math.atan2(s - a, o - r);
+				n > Math.PI / 2 && (n -= Math.PI), n < -Math.PI / 2 && (n += Math.PI);
+				let l = {
+					x: r + (o - r) * t,
+					y: a + (s - a) * t,
+					angle: n
+				};
+				return this.streetLabelCache.set(e.id, l), l;
+			}
+			i -= c;
+		}
+	}
 	drawStreetLabels(e, t, n) {
 		let r = this.pkg;
-		if (!r?.streets?.length || this.state.showLabels === !1) return;
-		let i = this.view.zoom, a = /* @__PURE__ */ new Set(), o = [...r.streets].sort((e, t) => this.streetRank(e) - this.streetRank(t) || e.name.localeCompare(t.name));
+		if (!r?.streets?.length || this.state.showLabels === !1 || this.tileMoving) return;
+		let i = this.view.zoom, a = /* @__PURE__ */ new Set(), o = [...r.streets].sort((e, t) => this.streetRank(e) - this.streetRank(t) || e.name.localeCompare(t.name)), s = 0;
 		for (let r of o) {
 			let o = this.streetRank(r);
 			if (i < (o === 0 ? 13 : o === 1 ? 14 : 15)) continue;
-			let s = r.name.toLocaleLowerCase();
-			if (a.has(s)) continue;
-			let c;
-			for (let e = 1; e < r.points.length; e += 1) {
-				let [i, a] = this.project(r.points[e - 1][0], r.points[e - 1][1], t, n), [o, s] = this.project(r.points[e][0], r.points[e][1], t, n), l = Math.hypot(o - i, s - a);
-				if (l < 2) continue;
-				let u = (i + o) / 2, d = (a + s) / 2;
-				u < -60 || d < -30 || u > t + 60 || d > n + 30 || (!c || l > c.length) && (c = {
-					x: u,
-					y: d,
-					angle: Math.atan2(s - a, o - i),
-					length: l
-				});
-			}
-			if (!c) continue;
-			let l = c.angle;
-			l > Math.PI / 2 && (l -= Math.PI), l < -Math.PI / 2 && (l += Math.PI);
-			let u = o === 0 ? 13 : o === 1 ? 12 : 11;
-			e.save(), e.font = `${o === 2 ? "" : "600 "}${u}px Georgia, "Times New Roman", serif`, e.textAlign = "center", e.textBaseline = "middle";
-			let d = e.measureText(r.name), f = Math.min(150, Math.max(18, d.width / 2 + 3)), p = u / 2 + 3, m = this.labelCellKeys(c.x - f, c.y - p, f * 2, p * 2);
-			if (m.some((e) => this.labelCells.has(e))) e.restore();
+			let c = r.name.toLocaleLowerCase();
+			if (a.has(c)) continue;
+			let l = this.streetLabelAnchor(r);
+			if (!l) continue;
+			let [u, d] = this.project(l.x, l.y, t, n);
+			if (!Number.isFinite(u) || !Number.isFinite(d) || u < -60 || d < -30 || u > t + 60 || d > n + 30) continue;
+			let f = o === 0 ? 13 : o === 1 ? 12 : 11;
+			e.save(), e.font = `${o === 2 ? "" : "600 "}${f}px Georgia, "Times New Roman", serif`, e.textAlign = "center", e.textBaseline = "middle";
+			let p = e.measureText(r.name), m = Math.min(150, Math.max(18, p.width / 2 + 3)), h = f / 2 + 3, g = this.labelCellKeys(u - m, d - h, m * 2, h * 2);
+			if (g.some((e) => this.labelCells.has(e))) e.restore();
 			else {
-				for (let e of m) this.labelCells.add(e);
-				a.add(s), e.translate(c.x, c.y), e.rotate(l), e.lineJoin = "round", e.lineWidth = 3, e.strokeStyle = "rgba(31,20,29,0.9)", e.strokeText(r.name, 0, 0), e.fillStyle = o === 0 ? "#eadfc6" : "#d8cfb8", e.fillText(r.name, 0, 0), e.restore();
+				for (let e of g) this.labelCells.add(e);
+				if (a.add(c), e.translate(u, d), e.rotate(l.angle), e.lineJoin = "round", e.lineWidth = 3, e.strokeStyle = "rgba(31,20,29,0.9)", e.strokeText(r.name, 0, 0), e.fillStyle = o === 0 ? "#eadfc6" : "#d8cfb8", e.fillText(r.name, 0, 0), e.restore(), s += 1, s >= 120) break;
 			}
 		}
 	}
@@ -41292,7 +41309,10 @@ var uV = `
 		}
 	}
 	labelCellKeys(e, t, n, r) {
-		let i = Math.floor(e / GB), a = Math.floor((e + n) / GB), o = Math.floor(t / GB), s = Math.floor((t + r) / GB), c = [];
+		if (!Number.isFinite(e) || !Number.isFinite(t) || !Number.isFinite(n) || !Number.isFinite(r) || n <= 0 || r <= 0) return [];
+		let i = Math.floor(e / GB), a = Math.floor((e + n) / GB), o = Math.floor(t / GB), s = Math.floor((t + r) / GB);
+		if (!Number.isFinite(i) || !Number.isFinite(a) || !Number.isFinite(o) || !Number.isFinite(s) || (a - i + 1) * (s - o + 1) > 512) return [];
+		let c = [];
 		for (let e = i; e <= a; e += 1) for (let t = o; t <= s; t += 1) c.push(`${e}:${t}`);
 		return c;
 	}
@@ -41446,7 +41466,11 @@ var uV = `
 	}
 	markersInView(e, t) {
 		if (!this.pkg) return [];
-		let [n, r] = this.unproject(-24, -24, e, t), [i, a] = this.unproject(e + 24, t + 24, e, t), o = Math.min(n, i), s = Math.max(n, i), c = Math.min(r, a), l = Math.max(r, a), u = Math.floor(o / WB), d = Math.floor(s / WB), f = Math.floor(c / WB), p = Math.floor(l / WB), m = [];
+		let [n, r] = this.unproject(-24, -24, e, t), [i, a] = this.unproject(e + 24, t + 24, e, t), o = Math.min(n, i), s = Math.max(n, i), c = Math.min(r, a), l = Math.max(r, a);
+		if (!Number.isFinite(o) || !Number.isFinite(s) || !Number.isFinite(c) || !Number.isFinite(l)) return [];
+		let u = Math.floor(o / WB), d = Math.floor(s / WB), f = Math.floor(c / WB), p = Math.floor(l / WB);
+		if (!Number.isFinite(u) || !Number.isFinite(d) || !Number.isFinite(f) || !Number.isFinite(p) || (d - u + 1) * (p - f + 1) > 8192) return [];
+		let m = [];
 		for (let e = u; e <= d; e += 1) for (let t = f; t <= p; t += 1) {
 			let n = this.markerIndex.get(`${e}:${t}`);
 			if (n) for (let e of n) e.x < o || e.x > s || e.y < c || e.y > l || m.push(e);

@@ -478,6 +478,8 @@ export class LayerMapUI {
   private readonly tileFileUrls = new Map<string, string>()
   private readonly markerRegionCache = new Map<string, LayerRegion | undefined>()
   private readonly regionLabelCache = new Map<string, { x: number; y: number; area: number }>()
+  private readonly streetLabelCache = new Map<string, { x: number; y: number; angle: number }>()
+  private tileMoving = false
   private readonly markerIndex = new Map<string, LayerMarker[]>()
   private readonly labelCells = new Set<string>()
   private clusterHitAreas: Array<{ x: number; y: number; radius: number; nx: number; ny: number }> = []
@@ -1208,6 +1210,7 @@ export class LayerMapUI {
     const changed = this.state.packageId !== pkg.id
     if (changed) {
       this.tileViewPackageId = ''
+      this.tileMoving = false
       if (this.saveTimer !== undefined) {
         window.clearTimeout(this.saveTimer)
         this.saveTimer = undefined
@@ -1270,18 +1273,12 @@ export class LayerMapUI {
     this.emptyEl.hidden = true
     this.markerRegionCache.clear()
     this.regionLabelCache.clear()
+    this.streetLabelCache.clear()
     this.buildMarkerIndex()
     this.clearTileCaches()
     this.packageSelectEl.value = pkg.id
-    if (pkg.kind === 'tiles') {
-      this.clearImageResources()
-      await this.loadTileMap(pkg)
-    } else {
-      this.setTileMapVisible(false)
-      this.view = this.resolveView(pkg, this.state.view)
-      this.state.view = this.view
-      this.loadImage(pkg)
-    }
+    // Render the panel chrome and data before waiting for MapLibre. A slow or
+    // blocked tile connection must not leave the whole map panel as a black box.
     this.renderCategories()
     this.refreshFavoriteMarkerIds()
     this.renderFavorites()
@@ -1292,6 +1289,19 @@ export class LayerMapUI {
     if (this.imagePanelOpen) this.renderImagePanel()
     this.refreshContext()
     this.requestDraw()
+    if (pkg.kind === 'tiles') {
+      this.clearImageResources()
+      void this.loadTileMap(pkg).catch((error) => {
+        console.warn('[tavern-map] tile map initialization failed', error)
+        this.toast('底图初始化失败；地点和标签仍可查看。')
+        this.requestDraw()
+      })
+    } else {
+      this.setTileMapVisible(false)
+      this.view = this.resolveView(pkg, this.state.view)
+      this.state.view = this.view
+      this.loadImage(pkg)
+    }
   }
 
   private updatePackageInfo(): void {
@@ -1706,11 +1716,13 @@ export class LayerMapUI {
 
   private onTileMapMove(): void {
     if (!this.maplibreMap || this.pkg?.kind !== 'tiles' || this.tileViewPackageId !== this.pkg.id) return
+    this.tileMoving = true
     this.syncViewFromMap()
   }
 
   private onTileMapMoveEnd(): void {
     if (!this.maplibreMap || this.pkg?.kind !== 'tiles' || this.tileViewPackageId !== this.pkg.id) return
+    this.tileMoving = false
     this.syncViewFromMap()
     this.persist()
     this.refreshContext()
@@ -2355,41 +2367,68 @@ export class LayerMapUI {
     return 2
   }
 
+  private streetLabelAnchor(
+    street: LayerStreet,
+  ): { x: number; y: number; angle: number } | undefined {
+    const cached = this.streetLabelCache.get(street.id)
+    if (cached) return cached
+    const points = street.points
+    if (points.length < 2) return undefined
+    let total = 0
+    for (let index = 1; index < points.length; index += 1) {
+      total += Math.hypot(
+        points[index][0] - points[index - 1][0],
+        points[index][1] - points[index - 1][1],
+      )
+    }
+    if (!Number.isFinite(total) || total < 1e-9) return undefined
+    let target = total / 2
+    for (let index = 1; index < points.length; index += 1) {
+      const [x1, y1] = points[index - 1]
+      const [x2, y2] = points[index]
+      const length = Math.hypot(x2 - x1, y2 - y1)
+      if (target <= length || index === points.length - 1) {
+        const ratio = length > 0 ? Math.min(1, Math.max(0, target / length)) : 0.5
+        let angle = Math.atan2(y2 - y1, x2 - x1)
+        if (angle > Math.PI / 2) angle -= Math.PI
+        if (angle < -Math.PI / 2) angle += Math.PI
+        const anchor = {
+          x: x1 + (x2 - x1) * ratio,
+          y: y1 + (y2 - y1) * ratio,
+          angle,
+        }
+        this.streetLabelCache.set(street.id, anchor)
+        return anchor
+      }
+      target -= length
+    }
+    return undefined
+  }
+
   private drawStreetLabels(
     context: CanvasRenderingContext2D,
     width: number,
     height: number,
   ): void {
     const pkg = this.pkg
-    if (!pkg?.streets?.length || this.state.showLabels === false) return
+    if (!pkg?.streets?.length || this.state.showLabels === false || this.tileMoving) return
     const zoom = this.view.zoom
     const seen = new Set<string>()
     const ordered = [...pkg.streets].sort(
       (a, b) => this.streetRank(a) - this.streetRank(b) || a.name.localeCompare(b.name),
     )
+    let drawn = 0
     for (const street of ordered) {
       const rank = this.streetRank(street)
       const minZoom = rank === 0 ? 13 : rank === 1 ? 14 : 15
       if (zoom < minZoom) continue
       const nameKey = street.name.toLocaleLowerCase()
       if (seen.has(nameKey)) continue
-      let best: { x: number; y: number; angle: number; length: number } | undefined
-      for (let index = 1; index < street.points.length; index += 1) {
-        const [x1, y1] = this.project(street.points[index - 1][0], street.points[index - 1][1], width, height)
-        const [x2, y2] = this.project(street.points[index][0], street.points[index][1], width, height)
-        const length = Math.hypot(x2 - x1, y2 - y1)
-        if (length < 2) continue
-        const x = (x1 + x2) / 2
-        const y = (y1 + y2) / 2
-        if (x < -60 || y < -30 || x > width + 60 || y > height + 30) continue
-        if (!best || length > best.length) {
-          best = { x, y, angle: Math.atan2(y2 - y1, x2 - x1), length }
-        }
-      }
-      if (!best) continue
-      let angle = best.angle
-      if (angle > Math.PI / 2) angle -= Math.PI
-      if (angle < -Math.PI / 2) angle += Math.PI
+      const anchor = this.streetLabelAnchor(street)
+      if (!anchor) continue
+      const [x, y] = this.project(anchor.x, anchor.y, width, height)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+      if (x < -60 || y < -30 || x > width + 60 || y > height + 30) continue
       const size = rank === 0 ? 13 : rank === 1 ? 12 : 11
       context.save()
       context.font = `${rank === 2 ? '' : '600 '}${size}px Georgia, "Times New Roman", serif`
@@ -2398,15 +2437,15 @@ export class LayerMapUI {
       const metrics = context.measureText(street.name)
       const halfWidth = Math.min(150, Math.max(18, metrics.width / 2 + 3))
       const halfHeight = size / 2 + 3
-      const cells = this.labelCellKeys(best.x - halfWidth, best.y - halfHeight, halfWidth * 2, halfHeight * 2)
+      const cells = this.labelCellKeys(x - halfWidth, y - halfHeight, halfWidth * 2, halfHeight * 2)
       if (cells.some((cell) => this.labelCells.has(cell))) {
         context.restore()
         continue
       }
       for (const cell of cells) this.labelCells.add(cell)
       seen.add(nameKey)
-      context.translate(best.x, best.y)
-      context.rotate(angle)
+      context.translate(x, y)
+      context.rotate(anchor.angle)
       context.lineJoin = 'round'
       context.lineWidth = 3
       context.strokeStyle = 'rgba(31,20,29,0.9)'
@@ -2414,6 +2453,8 @@ export class LayerMapUI {
       context.fillStyle = rank === 0 ? '#eadfc6' : '#d8cfb8'
       context.fillText(street.name, 0, 0)
       context.restore()
+      drawn += 1
+      if (drawn >= 120) break
     }
   }
 
@@ -2526,10 +2567,24 @@ export class LayerMapUI {
   }
 
   private labelCellKeys(x: number, y: number, width: number, height: number): string[] {
+    if (
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      return []
+    }
     const x0 = Math.floor(x / LABEL_CELL_PX)
     const x1 = Math.floor((x + width) / LABEL_CELL_PX)
     const y0 = Math.floor(y / LABEL_CELL_PX)
     const y1 = Math.floor((y + height) / LABEL_CELL_PX)
+    if (!Number.isFinite(x0) || !Number.isFinite(x1) || !Number.isFinite(y0) || !Number.isFinite(y1)) {
+      return []
+    }
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 512) return []
     const keys: string[] = []
     for (let cx = x0; cx <= x1; cx += 1) {
       for (let cy = y0; cy <= y1; cy += 1) keys.push(`${cx}:${cy}`)
@@ -2844,10 +2899,22 @@ export class LayerMapUI {
     const maxX = Math.max(west, east)
     const minY = Math.min(north, south)
     const maxY = Math.max(north, south)
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(maxY)
+    ) {
+      return []
+    }
     const x0 = Math.floor(minX / MARKER_INDEX_CELL)
     const x1 = Math.floor(maxX / MARKER_INDEX_CELL)
     const y0 = Math.floor(minY / MARKER_INDEX_CELL)
     const y1 = Math.floor(maxY / MARKER_INDEX_CELL)
+    if (!Number.isFinite(x0) || !Number.isFinite(x1) || !Number.isFinite(y0) || !Number.isFinite(y1)) {
+      return []
+    }
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 8192) return []
     const result: LayerMarker[] = []
     for (let cx = x0; cx <= x1; cx += 1) {
       for (let cy = y0; cy <= y1; cy += 1) {
