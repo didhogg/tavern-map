@@ -276,6 +276,10 @@ export function loadState(ctx: StContext): MapState {
             zoom: value.view.zoom,
           }
         : undefined,
+    lastMapMode:
+      value.lastMapMode === 'layer' || value.lastMapMode === 'real'
+        ? value.lastMapMode
+        : undefined,
     lastTab:
       value.lastTab === 'nearby' ||
       value.lastTab === 'wiki' ||

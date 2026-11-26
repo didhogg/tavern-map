@@ -152,6 +152,8 @@ export type MapState = {
   poiBriefs: PoiBrief[]
   poiAllToAI: boolean
   lastTab?: 'nearby' | 'wiki' | 'saved' | 'route'
+  /** Last top-level map mode, preserved across closing/reopening the panel. */
+  lastMapMode?: 'real' | 'layer'
   lastWiki?: WikiRef
   lastWikiMode?: 'intro' | 'full'
   wikiOpen?: boolean

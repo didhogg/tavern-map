@@ -676,7 +676,7 @@ export class MapUI {
       input.addEventListener('change', () => this.readSettings())
     }
 
-    document.getElementById('tm-open')?.addEventListener('click', () => this.openPanel())
+    document.getElementById('tm-open')?.addEventListener('click', () => this.openLastMode())
     document.getElementById('tm-clear')?.addEventListener('click', () => this.clearChat())
     document.getElementById('tm-preview-settings')?.addEventListener('click', () => this.preview())
   }
@@ -879,8 +879,17 @@ export class MapUI {
   }
 
   private togglePanel(): void {
-    if (this.panelEl.hidden) this.openPanel()
+    if (this.layerUI?.isOpen()) {
+      this.layerUI.close()
+      return
+    }
+    if (this.panelEl.hidden) this.openLastMode()
     else this.closePanel()
+  }
+
+  private openLastMode(): void {
+    if (this.state.lastMapMode === 'layer') this.openLayerMap()
+    else this.openPanel()
   }
 
   private restoreStoredRealPosition(): void {
@@ -899,6 +908,8 @@ export class MapUI {
   private openPanel(): void {
     this.layerUI?.close()
     this.ctx = this.liveContext()
+    this.state.lastMapMode = 'real'
+    saveState(this.ctx, this.state)
     this.restoreStoredRealPosition()
     this.panelEl.hidden = false
     this.tab = this.state.lastTab ?? 'nearby'
@@ -929,10 +940,18 @@ export class MapUI {
 
   private openLayerMap(): void {
     this.panelEl.hidden = true
+    this.ctx = this.liveContext()
+    this.state.lastMapMode = 'layer'
+    saveState(this.ctx, this.state)
     if (!this.layerUI) {
       this.layerUI = new LayerMapUI(this.liveContext(), {
         onChange: () => this.sync(),
         onRealMap: () => this.openPanel(),
+        onClosed: () => {
+          this.state.lastMapMode = 'layer'
+          this.ctx = this.liveContext()
+          saveState(this.ctx, this.state)
+        },
         onSettingsChanged: () => {
           this.settings = loadSettings(this.ctx)
           this.writeSettingsToForm()
@@ -945,6 +964,7 @@ export class MapUI {
 
   private closePanel(): void {
     this.panelEl.hidden = true
+    this.state.lastMapMode = 'real'
     this.state.wikiOpen = !this.wikiEl.hidden
     saveState(this.ctx, this.state)
   }

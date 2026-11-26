@@ -71,6 +71,15 @@ export function buildLayerContext(state: LayerChatState): string {
         ? ` · Area: ${clean(snapshot.region)}`
         : ''
     lines.push(`Current place: ${clean(snapshot.currentPlace)}${category}${coords}${area}`)
+    if (snapshot.note) lines.push(`Current place note: ${clean(snapshot.note)}`)
+    if (snapshot.sourceMaterial) {
+      lines.push(`Current place source: ${clean(snapshot.sourceMaterial)}`)
+    }
+    if (snapshot.wikiTexts?.length) {
+      for (const item of snapshot.wikiTexts) {
+        lines.push(`Current place wiki (${clean(item.title)}): ${clean(item.text)}`)
+      }
+    }
   } else if (snapshot.region && !snapshot.position?.region) {
     lines.push(`Area: ${clean(snapshot.region)}`)
   }
@@ -103,15 +112,6 @@ export function buildLayerContext(state: LayerChatState): string {
       for (const wiki of favorite.wikiTexts ?? []) {
         lines.push(`  Wiki text (${clean(wiki.title)}): ${clean(wiki.text)}`)
       }
-    }
-  }
-  if (snapshot.note) lines.push(`Place note: ${clean(snapshot.note)}`)
-  if (snapshot.sourceMaterial) {
-    lines.push(`Source material: ${clean(snapshot.sourceMaterial)}`)
-  }
-  if (snapshot.wikiTexts?.length) {
-    for (const item of snapshot.wikiTexts) {
-      lines.push(`Wiki text (${clean(item.title)}): ${clean(item.text)}`)
     }
   }
   lines.push('[/SCENE MAP]')

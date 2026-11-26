@@ -209,6 +209,7 @@ type TavernWindow = Window & {
 type LayerMapCallbacks = {
   onChange: () => void
   onRealMap: () => void
+  onClosed?: () => void
   onSettingsChanged?: () => void
 }
 
@@ -443,6 +444,7 @@ export class LayerMapUI {
   private maplibreMap: MapLibreMap | null = null
   private maplibreReady: Promise<void> | null = null
   private tileViewPackageId = ''
+  private packageLoadToken = 0
   private placingUser = false
   private gridPanelOpen = false
   private gridSaveTimer: number | undefined
@@ -708,6 +710,7 @@ export class LayerMapUI {
   }
 
   handleSettingsChanged(): void {
+    this.ctx = this.liveContext()
     if (!this.pkg) return
     this.renderDetail()
     this.refreshContext()
@@ -767,6 +770,7 @@ export class LayerMapUI {
     }
     this.persist(true)
     this.hideSearch()
+    this.callbacks.onClosed?.()
   }
 
   handleChatChanged(): void {
@@ -1227,6 +1231,7 @@ export class LayerMapUI {
       this.state.hiddenCategories = []
       this.linkDraftVisible = false
       this.lastRemovedImage = null
+      this.packageLoadToken += 1
     }
     if (changed || !this.state.userPosition) this.restoreUserPosition(pkg.id)
     if (!this.state.view && pkg.defaultView) {
@@ -1291,7 +1296,8 @@ export class LayerMapUI {
     this.requestDraw()
     if (pkg.kind === 'tiles') {
       this.clearImageResources()
-      void this.loadTileMap(pkg).catch((error) => {
+      const loadToken = this.packageLoadToken
+      void this.loadTileMap(pkg, loadToken).catch((error) => {
         console.warn('[tavern-map] tile map initialization failed', error)
         this.toast('底图初始化失败；地点和标签仍可查看。')
         this.requestDraw()
@@ -1540,7 +1546,10 @@ export class LayerMapUI {
     this.maplibreEl.hidden = !visible
     this.canvasEl.classList.toggle('tml-tile-overlay', visible)
     this.canvasEl.style.pointerEvents = visible ? 'none' : ''
-    if (visible) this.maplibreMap?.resize()
+    if (visible) {
+      this.maplibreMap?.resize()
+      this.maplibreMap?.triggerRepaint()
+    }
   }
 
   private tileBoundsNormalized(pkg: LayerMapPackage): {
@@ -1643,11 +1652,17 @@ export class LayerMapUI {
     map.setMinZoom(min)
     map.setMaxZoom(25)
     map.setPaintProperty('tml-bg', 'background-color', tile.backgroundColor ?? '#0a0f14')
+    map.resize()
+    map.triggerRepaint()
   }
 
-  private async loadTileMap(pkg: LayerMapPackage): Promise<void> {
+  private async loadTileMap(pkg: LayerMapPackage, loadToken: number): Promise<void> {
+    if (loadToken !== this.packageLoadToken || this.pkg?.id !== pkg.id) return
     this.setTileMapVisible(true)
+    await this.ensureTileMap()
+    if (loadToken !== this.packageLoadToken || this.pkg?.id !== pkg.id) return
     await this.applyTileSource(pkg)
+    if (loadToken !== this.packageLoadToken || this.pkg?.id !== pkg.id) return
     this.tileViewPackageId = pkg.id
     if (!this.state.view || !this.canRestoreTileView(pkg)) {
       await this.fitTileMap(pkg)
@@ -1676,6 +1691,8 @@ export class LayerMapUI {
     if (!map || !view) return
     const [lng, lat] = this.normalizedToLngLat(view.cx, view.cy)
     map.jumpTo({ center: [lng, lat], zoom: view.zoom })
+    map.resize()
+    map.triggerRepaint()
     this.syncViewFromMap()
   }
 
@@ -1695,8 +1712,14 @@ export class LayerMapUI {
       const [lng, lat] = this.normalizedToLngLat(view.cx, view.cy)
       map.jumpTo({ center: [lng, lat], zoom: view.zoom })
     }
+    map.resize()
+    map.triggerRepaint()
     this.syncViewFromMap()
-    window.requestAnimationFrame(() => this.syncViewFromMap())
+    window.requestAnimationFrame(() => {
+      map.resize()
+      map.triggerRepaint()
+      this.syncViewFromMap()
+    })
   }
 
   private syncViewFromMap(): void {
@@ -3726,7 +3749,7 @@ export class LayerMapUI {
 
   private setMarkerSource(marker: LayerMarker, value: string): void {
     setGlobalNote(this.markerSourceKey(marker), value)
-    if (loadSettings(this.ctx).layerSourceAI) this.refreshContext()
+    if (loadSettings(this.liveContext()).layerSourceAI) this.refreshContext()
   }
 
   private sourceSection(marker: LayerMarker): HTMLElement {
@@ -4084,7 +4107,7 @@ export class LayerMapUI {
       this.callbacks.onChange()
       return
     }
-    const settings = loadSettings(this.ctx)
+    const settings = loadSettings(this.liveContext())
     const marker = this.state.atPlaceId
       ? pkg.markers.find((item) => item.id === this.state.atPlaceId)
       : undefined

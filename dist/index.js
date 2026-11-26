@@ -36404,7 +36404,7 @@ function II(e) {
 			x: t.currentX,
 			y: t.currentY
 		})}` : "", i = t.region && t.position?.region !== t.region ? ` · Area: ${jI(t.region)}` : "";
-		n.push(`Current place: ${jI(t.currentPlace)}${e}${r}${i}`);
+		if (n.push(`Current place: ${jI(t.currentPlace)}${e}${r}${i}`), t.note && n.push(`Current place note: ${jI(t.note)}`), t.sourceMaterial && n.push(`Current place source: ${jI(t.sourceMaterial)}`), t.wikiTexts?.length) for (let e of t.wikiTexts) n.push(`Current place wiki (${jI(e.title)}): ${jI(e.text)}`);
 	} else t.region && !t.position?.region && n.push(`Area: ${jI(t.region)}`);
 	if (t.nearby?.length) {
 		let e = t.nearbyScope === "map" ? "whole map" : t.nearbyScope === "radius" ? "within radius" : "current view";
@@ -36422,7 +36422,6 @@ function II(e) {
 			for (let t of e.wikiTexts ?? []) n.push(`  Wiki text (${jI(t.title)}): ${jI(t.text)}`);
 		}
 	}
-	if (t.note && n.push(`Place note: ${jI(t.note)}`), t.sourceMaterial && n.push(`Source material: ${jI(t.sourceMaterial)}`), t.wikiTexts?.length) for (let e of t.wikiTexts) n.push(`Wiki text (${jI(e.title)}): ${jI(e.text)}`);
 	return n.push("[/SCENE MAP]"), n.join("\n");
 }
 function LI(e, t, n) {
@@ -40359,6 +40358,7 @@ var uV = `
 	maplibreMap = null;
 	maplibreReady = null;
 	tileViewPackageId = "";
+	packageLoadToken = 0;
 	placingUser = !1;
 	gridPanelOpen = !1;
 	gridSaveTimer;
@@ -40513,7 +40513,7 @@ var uV = `
 		return !this.panelEl.hidden;
 	}
 	handleSettingsChanged() {
-		this.pkg && (this.renderDetail(), this.refreshContext());
+		this.ctx = this.liveContext(), this.pkg && (this.renderDetail(), this.refreshContext());
 	}
 	async open() {
 		this.panelEl.hidden = !1, this.active = !0, this.closeImagePanel(), this.closeLightbox(), this.windowController.open(), this.ctx = this.liveContext(), this.state = nB(this.ctx), this.panelEl.style.zIndex = "10000", await this.refreshPackages();
@@ -40523,7 +40523,7 @@ var uV = `
 		});
 	}
 	close() {
-		this.closeImagePanel(), this.closeLightbox(), this.cancelUserPlacement(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.panelEl.hidden = !0, this.active = !1, this.drawFrame &&= (window.cancelAnimationFrame(this.drawFrame), 0), this.persist(!0), this.hideSearch();
+		this.closeImagePanel(), this.closeLightbox(), this.cancelUserPlacement(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.panelEl.hidden = !0, this.active = !1, this.drawFrame &&= (window.cancelAnimationFrame(this.drawFrame), 0), this.persist(!0), this.hideSearch(), this.callbacks.onClosed?.();
 	}
 	handleChatChanged() {
 		uI(), this.closeImagePanel(), this.closeLightbox(), this.cancelUserPlacement(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.ctx = this.liveContext(), this.state = nB(this.ctx), this.pkg = null, this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.active ? this.open() : (this.renderDetail(), this.renderCategories());
@@ -40710,9 +40710,13 @@ var uV = `
 			return;
 		}
 		let n = this.state.packageId !== t.id;
-		n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.state.atPlaceId && !t.markers.some((e) => e.id === this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.pkg && this.pkg.id !== t.id && iV.delete(this.pkg.id), this.pkg = t, this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.selectedMarkerId && !t.markers.some((e) => e.id === this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !t.markers.some((e) => e.id === this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.buildMarkerIndex(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.requestDraw(), t.kind === "tiles" ? (this.clearImageResources(), this.loadTileMap(t).catch((e) => {
-			console.warn("[tavern-map] tile map initialization failed", e), this.toast("底图初始化失败；地点和标签仍可查看。"), this.requestDraw();
-		})) : (this.setTileMapVisible(!1), this.view = this.resolveView(t, this.state.view), this.state.view = this.view, this.loadImage(t));
+		if (n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null, this.packageLoadToken += 1), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.state.atPlaceId && !t.markers.some((e) => e.id === this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.pkg && this.pkg.id !== t.id && iV.delete(this.pkg.id), this.pkg = t, this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.selectedMarkerId && !t.markers.some((e) => e.id === this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !t.markers.some((e) => e.id === this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.buildMarkerIndex(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.requestDraw(), t.kind === "tiles") {
+			this.clearImageResources();
+			let e = this.packageLoadToken;
+			this.loadTileMap(t, e).catch((e) => {
+				console.warn("[tavern-map] tile map initialization failed", e), this.toast("底图初始化失败；地点和标签仍可查看。"), this.requestDraw();
+			});
+		} else this.setTileMapVisible(!1), this.view = this.resolveView(t, this.state.view), this.state.view = this.view, this.loadImage(t);
 	}
 	updatePackageInfo() {
 		let e = this.pkg;
@@ -40851,7 +40855,7 @@ var uV = `
 		}), await this.maplibreReady, e;
 	}
 	setTileMapVisible(e) {
-		this.maplibreEl.hidden = !e, this.canvasEl.classList.toggle("tml-tile-overlay", e), this.canvasEl.style.pointerEvents = e ? "none" : "", e && this.maplibreMap?.resize();
+		this.maplibreEl.hidden = !e, this.canvasEl.classList.toggle("tml-tile-overlay", e), this.canvasEl.style.pointerEvents = e ? "none" : "", e && (this.maplibreMap?.resize(), this.maplibreMap?.triggerRepaint());
 	}
 	tileBoundsNormalized(e) {
 		let t = e.tile, n = t?.coverageMaxZoom, r = n == null ? void 0 : t?.boundsByZoom?.[String(n)];
@@ -40917,10 +40921,10 @@ var uV = `
 				}
 			});
 		}
-		t.setMinZoom(a), t.setMaxZoom(25), t.setPaintProperty("tml-bg", "background-color", n.backgroundColor ?? "#0a0f14");
+		t.setMinZoom(a), t.setMaxZoom(25), t.setPaintProperty("tml-bg", "background-color", n.backgroundColor ?? "#0a0f14"), t.resize(), t.triggerRepaint();
 	}
-	async loadTileMap(e) {
-		this.setTileMapVisible(!0), await this.applyTileSource(e), this.tileViewPackageId = e.id, !this.state.view || !this.canRestoreTileView(e) ? await this.fitTileMap(e) : this.applyStoredTileView();
+	async loadTileMap(e, t) {
+		t === this.packageLoadToken && this.pkg?.id === e.id && (this.setTileMapVisible(!0), await this.ensureTileMap(), t === this.packageLoadToken && this.pkg?.id === e.id && (await this.applyTileSource(e), t === this.packageLoadToken && this.pkg?.id === e.id && (this.tileViewPackageId = e.id, !this.state.view || !this.canRestoreTileView(e) ? await this.fitTileMap(e) : this.applyStoredTileView())));
 	}
 	canRestoreTileView(e) {
 		let t = this.tileBoundsNormalized(e), n = this.state.view;
@@ -40935,7 +40939,7 @@ var uV = `
 		e.jumpTo({
 			center: [n, r],
 			zoom: t.zoom
-		}), this.syncViewFromMap();
+		}), e.resize(), e.triggerRepaint(), this.syncViewFromMap();
 	}
 	async fitTileMap(e) {
 		let t = await this.ensureTileMap(), n = this.tileBoundsLngLat(e);
@@ -40953,7 +40957,9 @@ var uV = `
 				zoom: n.zoom
 			});
 		}
-		this.syncViewFromMap(), window.requestAnimationFrame(() => this.syncViewFromMap());
+		t.resize(), t.triggerRepaint(), this.syncViewFromMap(), window.requestAnimationFrame(() => {
+			t.resize(), t.triggerRepaint(), this.syncViewFromMap();
+		});
 	}
 	syncViewFromMap() {
 		let e = this.maplibreMap;
@@ -41904,7 +41910,7 @@ var uV = `
 		return t === void 0 ? e.description ?? "" : t;
 	}
 	setMarkerSource(e, t) {
-		cI(this.markerSourceKey(e), t), cB(this.ctx).layerSourceAI && this.refreshContext();
+		cI(this.markerSourceKey(e), t), cB(this.liveContext()).layerSourceAI && this.refreshContext();
 	}
 	sourceSection(e) {
 		let t = document.createElement("details");
@@ -42107,7 +42113,7 @@ var uV = `
 			this.state.context = void 0, this.persist(), this.renderPositionCard(), this.renderNearby(), this.callbacks.onChange();
 			return;
 		}
-		let n = cB(this.ctx), r = this.state.atPlaceId ? t.markers.find((e) => e.id === this.state.atPlaceId) : void 0, i = r ? this.regionForMarker(r) : void 0, a = r ? t.categories.find((e) => e.id === r.categoryId) : void 0, o = this.state.userPosition, s = o ? this.regionForPoint(o.x, o.y) : void 0, c = o ? this.buildNearby(o, n, this.state.atPlaceId) : [], l = n.layerNoteAI && r ? this.markerNoteValue(r) : void 0, u = this.favoriteContext(n), d = {
+		let n = cB(this.liveContext()), r = this.state.atPlaceId ? t.markers.find((e) => e.id === this.state.atPlaceId) : void 0, i = r ? this.regionForMarker(r) : void 0, a = r ? t.categories.find((e) => e.id === r.categoryId) : void 0, o = this.state.userPosition, s = o ? this.regionForPoint(o.x, o.y) : void 0, c = o ? this.buildNearby(o, n, this.state.atPlaceId) : [], l = n.layerNoteAI && r ? this.markerNoteValue(r) : void 0, u = this.favoriteContext(n), d = {
 			mapName: t.name,
 			position: o ? {
 				x: o.x,
@@ -43949,6 +43955,7 @@ function wH(e) {
 			},
 			zoom: i.view.zoom
 		} : void 0,
+		lastMapMode: i.lastMapMode === "layer" || i.lastMapMode === "real" ? i.lastMapMode : void 0,
 		lastTab: i.lastTab === "nearby" || i.lastTab === "wiki" || i.lastTab === "saved" || i.lastTab === "route" ? i.lastTab : void 0,
 		lastWiki: i.lastWiki && typeof i.lastWiki.lang == "string" && typeof i.lastWiki.title == "string" && Number.isFinite(i.lastWiki.pageId) ? {
 			lang: i.lastWiki.lang,
@@ -44467,7 +44474,7 @@ var qH = `
 			this.readSettings(), this.syncRadiusUi(), this.drawRadius(), this.scheduleRefresh(0);
 		}), this.nearbyEl.addEventListener("change", () => this.readSettings()), this.depthEl.addEventListener("change", () => this.readSettings());
 		for (let e of document.querySelectorAll("#tm-settings [data-layer-setting], #tm-settings [data-real-setting]")) e.addEventListener("change", () => this.readSettings());
-		document.getElementById("tm-open")?.addEventListener("click", () => this.openPanel()), document.getElementById("tm-clear")?.addEventListener("click", () => this.clearChat()), document.getElementById("tm-preview-settings")?.addEventListener("click", () => this.preview());
+		document.getElementById("tm-open")?.addEventListener("click", () => this.openLastMode()), document.getElementById("tm-clear")?.addEventListener("click", () => this.clearChat()), document.getElementById("tm-preview-settings")?.addEventListener("click", () => this.preview());
 	}
 	on(e, t) {
 		let n = this.ctx.eventSource;
@@ -44594,7 +44601,10 @@ var qH = `
 		t === "close-preview" ? this.previewEl.hidden = !0 : t === "copy" && this.copyPreview();
 	}
 	togglePanel() {
-		this.panelEl.hidden ? this.openPanel() : this.closePanel();
+		this.layerUI?.isOpen() ? this.layerUI.close() : this.panelEl.hidden ? this.openLastMode() : this.closePanel();
+	}
+	openLastMode() {
+		this.state.lastMapMode === "layer" ? this.openLayerMap() : this.openPanel();
 	}
 	restoreStoredRealPosition() {
 		let e = FB(this.ctx);
@@ -44610,7 +44620,7 @@ var qH = `
 		}, this.marker?.setLngLat([e.lng, e.lat]));
 	}
 	openPanel() {
-		this.layerUI?.close(), this.ctx = this.liveContext(), this.restoreStoredRealPosition(), this.panelEl.hidden = !1, this.tab = this.state.lastTab ?? "nearby", this.applyPanelGeometry(), this.ensureMap(), window.requestAnimationFrame(() => {
+		this.layerUI?.close(), this.ctx = this.liveContext(), this.state.lastMapMode = "real", TH(this.ctx, this.state), this.restoreStoredRealPosition(), this.panelEl.hidden = !1, this.tab = this.state.lastTab ?? "nearby", this.applyPanelGeometry(), this.ensureMap(), window.requestAnimationFrame(() => {
 			this.map?.resize();
 			let e = this.state.view;
 			this.map?.flyTo({
@@ -44624,16 +44634,19 @@ var qH = `
 		}, 150);
 	}
 	openLayerMap() {
-		this.panelEl.hidden = !0, this.layerUI ||= new dV(this.liveContext(), {
+		this.panelEl.hidden = !0, this.ctx = this.liveContext(), this.state.lastMapMode = "layer", TH(this.ctx, this.state), this.layerUI ||= new dV(this.liveContext(), {
 			onChange: () => this.sync(),
 			onRealMap: () => this.openPanel(),
+			onClosed: () => {
+				this.state.lastMapMode = "layer", this.ctx = this.liveContext(), TH(this.ctx, this.state);
+			},
 			onSettingsChanged: () => {
 				this.settings = cB(this.ctx), this.writeSettingsToForm(), this.sync();
 			}
 		}), this.layerUI.open();
 	}
 	closePanel() {
-		this.panelEl.hidden = !0, this.state.wikiOpen = !this.wikiEl.hidden, TH(this.ctx, this.state);
+		this.panelEl.hidden = !0, this.state.lastMapMode = "real", this.state.wikiOpen = !this.wikiEl.hidden, TH(this.ctx, this.state);
 	}
 	personMarkerElement() {
 		let e = document.createElement("div");
