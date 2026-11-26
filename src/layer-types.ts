@@ -82,6 +82,8 @@ export type LayerLink = {
 
 export type LayerTileConfig = {
   template: string
+  /** Optional remote tile URL template for Map Genie high-resolution fallback. */
+  remoteTemplate?: string
   minZoom: number
   maxZoom: number
   /** Tile index at minZoom for the top-left corner of the map. */

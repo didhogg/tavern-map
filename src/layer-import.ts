@@ -431,6 +431,13 @@ function tilePrefixFromPattern(pattern: string): string {
   return index > 0 ? pattern.slice(0, index).replace(/^\/+/, '') : ''
 }
 
+function mapGenieRemoteTemplate(pattern: string): string | undefined {
+  const value = pattern.trim()
+  if (!value) return undefined
+  if (/^https?:\/\//i.test(value)) return value
+  return `https://tiles.mapgenie.io/games/${value.replace(/^\/+/, '')}`
+}
+
 function boundsForTileSet(value: RawRecord | undefined): Record<string, MapGenieTileBounds> {
   const result: Record<string, MapGenieTileBounds> = {}
   const bounds = record(value?.bounds)
@@ -582,6 +589,7 @@ export function parseMapGeniePackage(
   }
   const tile: LayerTileConfig = {
     template: options.tileTemplate?.trim() ?? '',
+    remoteTemplate: mapGenieRemoteTemplate(text(tileSetValue?.pattern)),
     minZoom,
     maxZoom,
     xMin,

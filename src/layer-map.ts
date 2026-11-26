@@ -232,6 +232,8 @@ function removeReferenceSections(doc: Document): void {
 const TILE_PROTOCOL = 'tavern-tile'
 const TILE_SOURCE_ID = 'tml-layer-tiles'
 const TILE_LAYER_ID = 'tml-layer-tiles'
+const REMOTE_TILE_SOURCE_ID = 'tml-layer-remote-tiles'
+const REMOTE_TILE_LAYER_ID = 'tml-layer-remote-tiles'
 const tileProtocolPackages = new Map<string, LayerMapPackage>()
 let tileProtocolRegistered = false
 
@@ -358,7 +360,8 @@ const PANEL_HTML = `
       <div id="tml-viewport" class="tml-viewport">
         <div id="tml-maplibre" class="tml-maplibre" hidden></div>
         <canvas id="tml-canvas"></canvas>
-        <div id="tml-grid-drag" class="tml-grid-drag" hidden></div>
+        <button type="button" id="tml-grid-origin" class="tml-grid-handle tml-grid-origin" hidden aria-label="拖动网格原点">0,0</button>
+        <button type="button" id="tml-grid-scale" class="tml-grid-handle tml-grid-scale" hidden aria-label="拖动缩放网格">↘</button>
         <div id="tml-place-bar" class="tml-place-bar" hidden>
           <span>点击地图放置“我的位置” · Esc 取消</span>
           <button type="button" data-user-action="cancel">取消</button>
@@ -366,7 +369,10 @@ const PANEL_HTML = `
         <div id="tml-grid-panel" class="tml-grid-panel" hidden>
           <header class="tml-grid-head">
             <strong>网格校准</strong>
-            <button type="button" class="tml-close" data-grid-action="close" aria-label="关闭网格">×</button>
+            <div class="tml-grid-head-actions">
+              <button type="button" class="tml-mini tml-grid-collapse" data-grid-action="collapse">收起</button>
+              <button type="button" class="tml-close" data-grid-action="close" aria-label="关闭网格">×</button>
+            </div>
           </header>
           <div class="tml-grid-row">
             <label>1 格 =
@@ -379,16 +385,21 @@ const PANEL_HTML = `
             <option value="米"></option><option value="公里"></option><option value="英里"></option>
             <option value="英尺"></option><option value="里"></option><option value="格"></option>
           </datalist>
+          <div class="tml-grid-row tml-grid-scale-row">
+            <span>格宽</span>
+            <button type="button" class="tml-mini tml-grid-step" data-grid-action="scale-out" aria-label="缩小网格">−</button>
+            <input id="tml-grid-cell" type="number" min="0.001" max="200" step="0.01" value="10" aria-label="格宽百分比">%
+            <button type="button" class="tml-mini tml-grid-step" data-grid-action="scale-in" aria-label="放大网格">＋</button>
+            <input id="tml-grid-range" type="range" min="0.01" max="100" step="0.01" value="10" aria-label="拖动调整格宽">
+          </div>
           <div class="tml-grid-row">
-            <label>格宽 <input id="tml-grid-cell" type="number" min="0.01" max="200" step="0.01" value="10">%</label>
             <label>X 偏移 <input id="tml-grid-x" type="number" step="0.1" value="0">%</label>
             <label>Y 偏移 <input id="tml-grid-y" type="number" step="0.1" value="0">%</label>
           </div>
           <div class="tml-grid-row tml-grid-hint">
-            <span>原点在图左上 · X→右 · Y↓下 · 网格属于这张地图</span>
+            <span>拖 0,0 移动 · 拖右下角缩放点缩放 · Alt+滚轮缩放网格 · 普通滚轮缩放地图</span>
           </div>
           <div class="tml-grid-actions">
-            <button type="button" class="tml-mini" data-grid-action="drag">拖动对齐</button>
             <button type="button" class="tml-mini" data-grid-action="reset">重置</button>
             <button type="button" class="tml-mini tml-primary" data-grid-action="done">完成并关闭</button>
           </div>
@@ -516,9 +527,18 @@ export class LayerMapUI {
   private maplibreReady: Promise<void> | null = null
   private placingUser = false
   private gridPanelOpen = false
-  private gridDragMode = false
-  private gridDragStart: { x: number; y: number; originX: number; originY: number } | null = null
   private gridSaveTimer: number | undefined
+  private gridHandleDrag: {
+    mode: 'origin' | 'scale'
+    startX: number
+    startY: number
+    startNormX: number
+    startNormY: number
+    originX: number
+    originY: number
+    cellW: number
+    cellH: number
+  } | null = null
   private image: HTMLImageElement | null = null
   private imageUrl: string | null = null
   private imagePreview: HTMLImageElement | null = null
@@ -613,7 +633,9 @@ export class LayerMapUI {
   private nearbyEl!: HTMLElement
   private placeBarEl!: HTMLElement
   private gridPanelEl!: HTMLElement
-  private gridDragEl!: HTMLElement
+  private gridOriginHandleEl!: HTMLButtonElement
+  private gridScaleHandleEl!: HTMLButtonElement
+  private gridRangeEl!: HTMLInputElement
   private gridValueEl!: HTMLInputElement
   private gridUnitEl!: HTMLInputElement
   private gridShowEl!: HTMLInputElement
@@ -891,11 +913,13 @@ export class LayerMapUI {
     this.nearbyEl = document.getElementById('tml-nearby') as HTMLElement
     this.placeBarEl = document.getElementById('tml-place-bar') as HTMLElement
     this.gridPanelEl = document.getElementById('tml-grid-panel') as HTMLElement
-    this.gridDragEl = document.getElementById('tml-grid-drag') as HTMLElement
+    this.gridOriginHandleEl = document.getElementById('tml-grid-origin') as HTMLButtonElement
+    this.gridScaleHandleEl = document.getElementById('tml-grid-scale') as HTMLButtonElement
     this.gridValueEl = document.getElementById('tml-grid-value') as HTMLInputElement
     this.gridUnitEl = document.getElementById('tml-grid-unit') as HTMLInputElement
     this.gridShowEl = document.getElementById('tml-grid-show') as HTMLInputElement
     this.gridCellEl = document.getElementById('tml-grid-cell') as HTMLInputElement
+    this.gridRangeEl = document.getElementById('tml-grid-range') as HTMLInputElement
     this.gridXEl = document.getElementById('tml-grid-x') as HTMLInputElement
     this.gridYEl = document.getElementById('tml-grid-y') as HTMLInputElement
     this.contextPositionEl = document.getElementById('tml-context-position') as HTMLElement
@@ -907,6 +931,8 @@ export class LayerMapUI {
     this.contextCurrentNoteEl = document.getElementById('tml-context-current-note') as HTMLInputElement
     this.contextInjectEl = document.getElementById('tml-context-inject') as HTMLInputElement
     this.contextGridEl = document.getElementById('tml-context-grid') as HTMLElement
+    const inspector = this.positionEl.parentElement
+    if (inspector) inspector.insertBefore(this.gridPanelEl, this.positionEl)
     this.headerImageEl = document.getElementById('tml-header-image') as HTMLImageElement
     this.headerImageEmptyEl = document.getElementById('tml-header-image-empty') as HTMLElement
     this.headerImageButtonEl = this.panelEl.querySelector(
@@ -1037,16 +1063,27 @@ export class LayerMapUI {
       const action = target.closest<HTMLElement>('[data-grid-action]')?.dataset.gridAction
       if (action === 'close' || action === 'done') this.closeGridPanel()
       else if (action === 'reset') this.resetGrid()
-      else if (action === 'drag') this.toggleGridDrag()
+      else if (action === 'collapse') this.toggleGridCollapsed()
+      else if (action === 'scale-in') this.scaleGrid(1.15)
+      else if (action === 'scale-out') this.scaleGrid(1 / 1.15)
     })
     for (const input of [this.gridValueEl, this.gridUnitEl, this.gridCellEl, this.gridXEl, this.gridYEl, this.gridShowEl]) {
       input.addEventListener('input', () => this.applyGridInputs())
       input.addEventListener('change', () => this.applyGridInputs())
     }
-    this.gridDragEl.addEventListener('pointerdown', (event) => this.onGridDragStart(event))
-    this.gridDragEl.addEventListener('pointermove', (event) => this.onGridDragMove(event))
-    this.gridDragEl.addEventListener('pointerup', (event) => this.onGridDragEnd(event))
-    this.gridDragEl.addEventListener('pointercancel', (event) => this.onGridDragEnd(event))
+    this.gridRangeEl.addEventListener('input', () => {
+      this.gridCellEl.value = this.gridRangeEl.value
+      this.applyGridInputs()
+    })
+    this.gridOriginHandleEl.addEventListener('pointerdown', this.onGridHandleDown)
+    this.gridOriginHandleEl.addEventListener('pointermove', this.onGridHandleMove)
+    this.gridOriginHandleEl.addEventListener('pointerup', this.onGridHandleUp)
+    this.gridOriginHandleEl.addEventListener('pointercancel', this.onGridHandleUp)
+    this.gridScaleHandleEl.addEventListener('pointerdown', this.onGridHandleDown)
+    this.gridScaleHandleEl.addEventListener('pointermove', this.onGridHandleMove)
+    this.gridScaleHandleEl.addEventListener('pointerup', this.onGridHandleUp)
+    this.gridScaleHandleEl.addEventListener('pointercancel', this.onGridHandleUp)
+    this.viewportEl.addEventListener('wheel', this.onGridWheel, { passive: false, capture: true })
     this.placeBarEl.addEventListener('click', (event) => {
       const target = event.target as HTMLElement
       if (target.closest('[data-user-action="cancel"]')) this.cancelUserPlacement()
@@ -1065,6 +1102,9 @@ export class LayerMapUI {
     document.addEventListener('click', this.onDocumentClick)
     this.offs.push(() => document.removeEventListener('keydown', this.onKeyDown))
     this.offs.push(() => document.removeEventListener('click', this.onDocumentClick))
+    this.offs.push(() =>
+      this.viewportEl.removeEventListener('wheel', this.onGridWheel, { capture: true }),
+    )
   }
 
   private readonly offs: Array<() => void> = []
@@ -1577,6 +1617,8 @@ export class LayerMapUI {
     const min = coverageMin
     const max = coverageMax
     tileProtocolPackages.set(pkg.id, pkg)
+    if (map.getLayer(REMOTE_TILE_LAYER_ID)) map.removeLayer(REMOTE_TILE_LAYER_ID)
+    if (map.getSource(REMOTE_TILE_SOURCE_ID)) map.removeSource(REMOTE_TILE_SOURCE_ID)
     if (map.getLayer(TILE_LAYER_ID)) map.removeLayer(TILE_LAYER_ID)
     if (map.getSource(TILE_SOURCE_ID)) map.removeSource(TILE_SOURCE_ID)
     const bounds = this.tileBoundsLngLat(pkg)
@@ -1605,6 +1647,35 @@ export class LayerMapUI {
         'raster-fade-duration': 0,
       },
     })
+    const remoteMax = tile.maxZoom ?? 0
+    const remoteTemplate = tile.remoteTemplate?.trim()
+    if (remoteTemplate && remoteMax > coverageMax) {
+      const remoteSource: {
+        type: 'raster'
+        tiles: string[]
+        tileSize: number
+        minzoom: number
+        maxzoom: number
+        bounds?: [number, number, number, number]
+      } = {
+        type: 'raster',
+        tiles: [remoteTemplate],
+        tileSize: 256,
+        minzoom: coverageMax + 1,
+        maxzoom: remoteMax,
+      }
+      if (bounds) remoteSource.bounds = bounds
+      map.addSource(REMOTE_TILE_SOURCE_ID, remoteSource)
+      map.addLayer({
+        id: REMOTE_TILE_LAYER_ID,
+        type: 'raster',
+        source: REMOTE_TILE_SOURCE_ID,
+        paint: {
+          'raster-opacity': 1,
+          'raster-fade-duration': 0,
+        },
+      })
+    }
     map.setMinZoom(min)
     map.setMaxZoom(25)
     map.setPaintProperty('tml-bg', 'background-color', tile.backgroundColor ?? '#0a0f14')
@@ -1691,7 +1762,7 @@ export class LayerMapUI {
   }
 
   private onTileMapClick(event: { point: { x: number; y: number }; lngLat: { lng: number; lat: number } }): void {
-    if (!this.pkg || this.gridDragMode) return
+    if (!this.pkg) return
     if (this.placingUser) {
       const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
       this.setUserPosition(point.x, point.y)
@@ -1760,6 +1831,7 @@ export class LayerMapUI {
     this.drawRegions(context, width, height)
     this.drawMarkers(context, width, height)
     this.drawUserPosition(context, width, height)
+    this.updateGridHandles()
     this.updateStatus()
   }
 
@@ -1806,6 +1878,21 @@ export class LayerMapUI {
     context.fillText('0,0', ox + 5, oy - 5)
     context.fillText('X', width - 16, Math.max(12, oy - 6))
     context.fillText('Y', ox + 5, height - 8)
+    const [bx, by] = this.project(
+      grid.originX + grid.cellW * 3,
+      grid.originY + grid.cellH * 3,
+      width,
+      height,
+    )
+    context.save()
+    context.strokeStyle = 'rgba(243, 200, 127, 0.72)'
+    context.setLineDash([5, 4])
+    context.lineWidth = 1.25
+    context.strokeRect(ox, oy, bx - ox, by - oy)
+    context.fillStyle = 'rgba(243, 200, 127, 0.95)'
+    context.font = '600 9px system-ui, sans-serif'
+    context.fillText('3×3 样本', ox + 5, by + 12)
+    context.restore()
     context.restore()
   }
 
@@ -2201,7 +2288,9 @@ export class LayerMapUI {
       const max = pkg.tile?.coverageMaxZoom ?? pkg.tile?.maxZoom ?? min
       const over = this.view.zoom > max + 0.05
       this.zoomEl.textContent = `Z ${this.view.zoom.toFixed(1)}`
-      this.scaleEl.textContent = `本地瓦片 z${min}–${max}${over ? ' · 最高层放大' : ''}`
+      const remoteMax = pkg.tile?.maxZoom ?? 0
+      const hasRemote = Boolean(pkg.tile?.remoteTemplate?.trim()) && remoteMax > max
+      this.scaleEl.textContent = `本地瓦片 z${min}–${max}${hasRemote ? ` · 在线高清 z${max + 1}–${remoteMax}` : ''}${over ? ' · 最高层放大' : ''}`
     } else {
       this.zoomEl.textContent = `${this.view.zoom.toFixed(2)}×`
       this.scaleEl.textContent =
@@ -3706,7 +3795,6 @@ export class LayerMapUI {
   private startUserPlacement(): void {
     if (!this.pkg) return
     this.placingUser = true
-    this.gridDragMode = false
     if (this.placeBarEl) this.placeBarEl.hidden = false
     this.syncToolButtons()
   }
@@ -3871,6 +3959,146 @@ export class LayerMapUI {
     return { x: 0, y: 0, w: 1, h: 1 }
   }
 
+  private positionGridHandle(
+    element: HTMLElement,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ): void {
+    const visible = x > -24 && y > -24 && x < width + 24 && y < height + 24
+    element.hidden = !visible
+    if (!visible) return
+    element.style.left = `${Math.min(width - 14, Math.max(14, x))}px`
+    element.style.top = `${Math.min(height - 14, Math.max(14, y))}px`
+  }
+
+  private updateGridHandles(): void {
+    if (!this.gridPanelOpen || !this.pkg?.grid) {
+      this.gridOriginHandleEl.hidden = true
+      this.gridScaleHandleEl.hidden = true
+      return
+    }
+    const grid = this.pkg.grid
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const [ox, oy] = this.project(grid.originX, grid.originY, width, height)
+    const [sx, sy] = this.project(
+      grid.originX + grid.cellW * 3,
+      grid.originY + grid.cellH * 3,
+      width,
+      height,
+    )
+    this.positionGridHandle(this.gridOriginHandleEl, ox, oy, width, height)
+    this.positionGridHandle(this.gridScaleHandleEl, sx, sy, width, height)
+  }
+
+  private scaleGrid(factor: number): void {
+    const grid = this.pkg?.grid
+    if (!grid) return
+    const span = this.mapSpan()
+    grid.cellW = Math.min(
+      span.w * 2,
+      Math.max(span.w * 0.0001, grid.cellW * factor),
+    )
+    grid.cellH =
+      this.pkg?.kind === 'image' && this.pkg.width > 0 && this.pkg.height > 0
+        ? grid.cellW * (this.pkg.width / this.pkg.height)
+        : grid.cellW
+    this.syncGridInputs()
+    this.refreshContext()
+    this.requestDraw()
+    this.scheduleGridSave()
+  }
+
+  private onGridWheel = (event: WheelEvent): void => {
+    if (!this.gridPanelOpen || !event.altKey) return
+    if ((event.target as HTMLElement)?.closest?.('#tml-grid-panel')) return
+    event.preventDefault()
+    event.stopPropagation()
+    this.scaleGrid(Math.exp(-event.deltaY * 0.0015))
+  }
+
+  private onGridHandleDown = (event: PointerEvent): void => {
+    const grid = this.pkg?.grid
+    if (!grid || !this.gridPanelOpen) return
+    const element = event.currentTarget as HTMLElement
+    const mode = element.id === 'tml-grid-scale' ? 'scale' : 'origin'
+    const rect = this.viewportEl.getBoundingClientRect()
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const [nx, ny] = this.unproject(event.clientX - rect.left, event.clientY - rect.top, width, height)
+    event.preventDefault()
+    event.stopPropagation()
+    this.gridHandleDrag = {
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      startNormX: nx,
+      startNormY: ny,
+      originX: grid.originX,
+      originY: grid.originY,
+      cellW: grid.cellW,
+      cellH: grid.cellH,
+    }
+    element.setPointerCapture(event.pointerId)
+    element.classList.add('dragging')
+  }
+
+  private onGridHandleMove = (event: PointerEvent): void => {
+    const drag = this.gridHandleDrag
+    const grid = this.pkg?.grid
+    if (!drag || !grid) return
+    event.preventDefault()
+    const rect = this.viewportEl.getBoundingClientRect()
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const [nx, ny] = this.unproject(event.clientX - rect.left, event.clientY - rect.top, width, height)
+    if (drag.mode === 'origin') {
+      grid.originX = Math.min(2, Math.max(-1, drag.originX + nx - drag.startNormX))
+      grid.originY = Math.min(2, Math.max(-1, drag.originY + ny - drag.startNormY))
+    } else {
+      const startDistance = Math.hypot(
+        drag.startNormX - drag.originX,
+        drag.startNormY - drag.originY,
+      )
+      const distance = Math.hypot(nx - drag.originX, ny - drag.originY)
+      if (startDistance > 1e-9) {
+        const factor = Math.min(20, Math.max(0.05, distance / startDistance))
+        const span = this.mapSpan()
+        const nextW = Math.min(span.w * 2, Math.max(span.w * 0.0001, drag.cellW * factor))
+        grid.cellW = nextW
+        grid.cellH =
+          this.pkg?.kind === 'image' && this.pkg.width > 0 && this.pkg.height > 0
+            ? nextW * (this.pkg.width / this.pkg.height)
+            : nextW
+      }
+    }
+    this.syncGridInputs()
+    this.refreshContext()
+    this.requestDraw()
+  }
+
+  private onGridHandleUp = (event: PointerEvent): void => {
+    const element = event.currentTarget as HTMLElement
+    if (this.gridHandleDrag) {
+      this.gridHandleDrag = null
+      element.classList.remove('dragging')
+      if (element.hasPointerCapture(event.pointerId)) {
+        element.releasePointerCapture(event.pointerId)
+      }
+      this.scheduleGridSave()
+    }
+  }
+
+  private toggleGridCollapsed(): void {
+    if (!this.gridPanelOpen) return
+    const collapsed = this.panelEl.classList.toggle('tml-grid-collapsed')
+    const button = this.gridPanelEl.querySelector<HTMLElement>('[data-grid-action="collapse"]')
+    if (button) button.textContent = collapsed ? '展开' : '收起'
+    this.updateGridHandles()
+  }
+
   private defaultGrid(pkg: LayerMapPackage): LayerGridConfig {
     const span = this.mapSpan(pkg)
     const cellW = span.w / 10
@@ -3904,7 +4132,9 @@ export class LayerMapUI {
       (value / total * 100).toFixed(3).replace(/\.?0+$/, '')
     this.gridValueEl.value = String(grid.unitValue)
     this.gridUnitEl.value = grid.unitLabel
-    this.gridCellEl.value = percent(grid.cellW, span.w)
+    const cellPercent = percent(grid.cellW, span.w)
+    this.gridCellEl.value = cellPercent
+    this.gridRangeEl.value = String(Math.min(100, Math.max(0.01, Number(cellPercent) || 0.01)))
     this.gridXEl.value = percent(grid.originX - span.x, span.w)
     this.gridYEl.value = percent(grid.originY - span.y, span.h)
     this.gridShowEl.checked = grid.visible === true
@@ -3959,14 +4189,18 @@ export class LayerMapUI {
     if (!this.pkg) return
     this.ensureGrid()
     this.gridPanelOpen = true
-    this.gridDragMode = false
-    this.gridDragEl.hidden = true
+    this.panelEl.classList.add('tml-grid-mode')
+    const compact = this.panelEl.classList.contains('tml-compact') || this.panelEl.classList.contains('tml-mobile')
+    this.panelEl.classList.toggle('tml-grid-collapsed', compact)
+    const collapse = this.gridPanelEl.querySelector<HTMLElement>('[data-grid-action="collapse"]')
+    if (collapse) collapse.textContent = compact ? '展开' : '收起'
     this.gridPanelEl.hidden = false
     this.gridPanelEl.classList.remove('dragging')
     this.syncGridInputs()
     this.refreshContext()
     this.requestDraw()
     this.syncToolButtons()
+    this.updateGridHandles()
   }
 
   private closeGridPanel(): void {
@@ -3974,11 +4208,14 @@ export class LayerMapUI {
       window.clearTimeout(this.gridSaveTimer)
       this.gridSaveTimer = undefined
     }
-    this.gridDragMode = false
-    this.gridDragEl.hidden = true
     this.gridPanelOpen = false
     this.readGridInputs()
     this.gridPanelEl.hidden = true
+    this.panelEl.classList.remove('tml-grid-mode', 'tml-grid-collapsed')
+    const collapse = this.gridPanelEl.querySelector<HTMLElement>('[data-grid-action="collapse"]')
+    if (collapse) collapse.textContent = '收起'
+    this.gridOriginHandleEl.hidden = true
+    this.gridScaleHandleEl.hidden = true
     void this.saveGridNow()
     this.refreshContext()
     this.requestDraw()
@@ -3995,63 +4232,6 @@ export class LayerMapUI {
     this.scheduleGridSave()
   }
 
-  private toggleGridDrag(): void {
-    if (!this.pkg?.grid) return
-    this.gridDragMode = !this.gridDragMode
-    this.gridDragEl.hidden = !this.gridDragMode
-    this.gridPanelEl.classList.toggle('dragging', this.gridDragMode)
-    if (this.gridDragMode) this.cancelUserPlacement()
-    this.requestDraw()
-  }
-
-  private onGridDragStart(event: PointerEvent): void {
-    if (!this.gridDragMode || !this.pkg?.grid) return
-    event.preventDefault()
-    this.gridDragStart = {
-      x: event.clientX,
-      y: event.clientY,
-      originX: this.pkg.grid.originX,
-      originY: this.pkg.grid.originY,
-    }
-    this.gridDragEl.setPointerCapture(event.pointerId)
-    this.gridDragEl.classList.add('active')
-  }
-
-  private onGridDragMove(event: PointerEvent): void {
-    if (!this.gridDragStart || !this.pkg?.grid) return
-    event.preventDefault()
-    const rect = this.viewportEl.getBoundingClientRect()
-    const width = this.viewportEl.clientWidth || 1
-    const height = this.viewportEl.clientHeight || 1
-    const start = this.unproject(
-      this.gridDragStart.x - rect.left,
-      this.gridDragStart.y - rect.top,
-      width,
-      height,
-    )
-    const current = this.unproject(event.clientX - rect.left, event.clientY - rect.top, width, height)
-    this.pkg.grid.originX = Math.min(
-      2,
-      Math.max(-1, this.gridDragStart.originX + current[0] - start[0]),
-    )
-    this.pkg.grid.originY = Math.min(
-      2,
-      Math.max(-1, this.gridDragStart.originY + current[1] - start[1]),
-    )
-    this.syncGridInputs()
-    this.refreshContext()
-    this.requestDraw()
-  }
-
-  private onGridDragEnd(event: PointerEvent): void {
-    if (!this.gridDragStart) return
-    this.gridDragStart = null
-    this.gridDragEl.classList.remove('active')
-    if (this.gridDragEl.hasPointerCapture(event.pointerId)) {
-      this.gridDragEl.releasePointerCapture(event.pointerId)
-    }
-    this.scheduleGridSave()
-  }
 
   private openImport(): void {
     this.closeImagePanel()
