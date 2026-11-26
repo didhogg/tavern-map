@@ -859,6 +859,11 @@ export class MapUI {
       this.layerUI = new LayerMapUI(this.liveContext(), {
         onChange: () => this.sync(),
         onRealMap: () => this.openPanel(),
+        onSettingsChanged: () => {
+          this.settings = loadSettings(this.ctx)
+          this.writeSettingsToForm()
+          this.sync()
+        },
       })
     }
     void this.layerUI.open()

@@ -1,3 +1,4 @@
+import { addProtocol, Map as MapLibreMap } from 'maplibre-gl'
 import { buildLayerContext } from './layer-context'
 import { estimateTokens } from './context'
 import { errorMessage } from './http'
@@ -36,10 +37,12 @@ import {
   type LayerContextSnapshot,
   type LayerImageFit,
   type LayerImageRect,
+  type LayerGridConfig,
   type LayerLink,
   type LayerLinkKind,
   type LayerMapPackage,
   type LayerMarker,
+  type LayerNearbyPlace,
   type LayerPackageMeta,
   type LayerRegion,
   type LayerView,
@@ -50,6 +53,7 @@ import {
   globalNotesSnapshot,
   setGlobalNote,
 } from './notes-store'
+import { loadSettings, saveSettings } from './settings'
 import { LayerWindowController } from './layer-window'
 import type { StContext } from './types'
 
@@ -65,6 +69,99 @@ const IMAGE_PANEL_WIDTH = 340
 /** Decoded-tile cache only; imported tile files and map data are never discarded. */
 const DECODED_TILE_MEMORY_BUDGET = 256 * 1024 * 1024
 const TILE_LOAD_CONCURRENCY = 8
+const LAYER_PREFS_KEY = 'tavern-map:layer-context-prefs:v1'
+
+type LayerPrefs = {
+  nearbyCount: number
+  nearbyScope: 'view' | 'map'
+  nearbyNotes: boolean
+  currentNote: boolean
+}
+
+const DEFAULT_LAYER_PREFS: LayerPrefs = {
+  nearbyCount: 8,
+  nearbyScope: 'view',
+  nearbyNotes: false,
+  currentNote: true,
+}
+
+function loadLayerPrefs(): LayerPrefs {
+  try {
+    const raw = localStorage.getItem(LAYER_PREFS_KEY)
+    if (!raw) return { ...DEFAULT_LAYER_PREFS }
+    const value = JSON.parse(raw) as Partial<LayerPrefs>
+    return {
+      nearbyCount: Math.min(
+        20,
+        Math.max(0, Math.round(Number(value.nearbyCount ?? DEFAULT_LAYER_PREFS.nearbyCount) || 0)),
+      ),
+      nearbyScope: value.nearbyScope === 'map' ? 'map' : 'view',
+      nearbyNotes: value.nearbyNotes === true,
+      currentNote: value.currentNote !== false,
+    }
+  } catch {
+    return { ...DEFAULT_LAYER_PREFS }
+  }
+}
+
+function saveLayerPrefs(prefs: LayerPrefs): void {
+  try {
+    localStorage.setItem(LAYER_PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    // Preferences are non-critical; keep the in-memory copy.
+  }
+}
+
+const TILE_PROTOCOL = 'tavern-tile'
+const TILE_SOURCE_ID = 'tml-layer-tiles'
+const TILE_LAYER_ID = 'tml-layer-tiles'
+const tileProtocolPackages = new Map<string, LayerMapPackage>()
+let tileProtocolRegistered = false
+
+function lngLatFromNormalized(x: number, y: number): [number, number] {
+  const lng = x * 360 - 180
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI
+  return [lng, lat]
+}
+
+function normalizedFromLngLat(lng: number, lat: number): { x: number; y: number } {
+  const x = (lng + 180) / 360
+  const sin = Math.sin((lat * Math.PI) / 180)
+  const y = 0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)
+  return { x, y }
+}
+
+function remoteTileUrl(template: string, z: number, x: number, y: number): string {
+  return template
+    .replace(/\{z\}/g, String(z))
+    .replace(/\{x\}/g, String(x))
+    .replace(/\{y\}/g, String(y))
+}
+
+function registerTileProtocol(): void {
+  if (tileProtocolRegistered) return
+  tileProtocolRegistered = true
+  addProtocol(TILE_PROTOCOL, async (params) => {
+    const url = new URL(params.url)
+    const packageId = decodeURIComponent(url.hostname)
+    const [z, x, y] = url.pathname
+      .replace(/^\/+/, '')
+      .split('/')
+      .map((part) => Number(part))
+    const pkg = tileProtocolPackages.get(packageId)
+    if (!pkg || !Number.isFinite(z) || !Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error('Local tile is unavailable')
+    }
+    const blob = pkg.tileFiles?.[`${z}/${y}/${x}`]
+    if (blob) return { data: await blob.arrayBuffer() }
+    const template = pkg.tile?.template?.trim()
+    if (template) {
+      const response = await fetch(remoteTileUrl(template, z, x, y))
+      if (response.ok) return { data: await response.arrayBuffer() }
+    }
+    throw new Error(`Local tile ${z}/${x}/${y} is missing`)
+  })
+}
 
 type TavernWindow = Window & {
   SillyTavern?: { getContext?: () => StContext }
@@ -73,6 +170,7 @@ type TavernWindow = Window & {
 type LayerMapCallbacks = {
   onChange: () => void
   onRealMap: () => void
+  onSettingsChanged?: () => void
 }
 
 const PANEL_HTML = `
@@ -132,6 +230,8 @@ const PANEL_HTML = `
         <div class="tml-toolbar-actions">
           <button type="button" class="tml-tool active" data-action="labels" aria-pressed="true">标签</button>
           <button type="button" class="tml-tool active" data-action="regions" aria-pressed="true">区域</button>
+          <button type="button" class="tml-tool" data-action="locate" title="放置或定位我的位置" aria-label="我的位置">◎ 位置</button>
+          <button type="button" class="tml-tool" data-action="grid" title="校准地图网格" aria-label="网格校准"># 网格</button>
           <button type="button" class="tml-tool tml-mobile-only" data-action="filters">图层</button>
           <button type="button" class="tml-tool" data-action="zoom-out" aria-label="缩小">−</button>
           <button type="button" class="tml-tool" data-action="zoom-in" aria-label="放大">+</button>
@@ -139,7 +239,43 @@ const PANEL_HTML = `
         </div>
       </div>
       <div id="tml-viewport" class="tml-viewport">
+        <div id="tml-maplibre" class="tml-maplibre" hidden></div>
         <canvas id="tml-canvas"></canvas>
+        <div id="tml-grid-drag" class="tml-grid-drag" hidden></div>
+        <div id="tml-place-bar" class="tml-place-bar" hidden>
+          <span>点击地图放置“我的位置” · Esc 取消</span>
+          <button type="button" data-user-action="cancel">取消</button>
+        </div>
+        <div id="tml-grid-panel" class="tml-grid-panel" hidden>
+          <header class="tml-grid-head">
+            <strong>网格校准</strong>
+            <button type="button" class="tml-close" data-grid-action="close" aria-label="关闭网格">×</button>
+          </header>
+          <div class="tml-grid-row">
+            <label>1 格 =
+              <input id="tml-grid-value" type="number" min="0" step="any" value="1">
+              <input id="tml-grid-unit" type="text" list="tml-grid-units" value="格" aria-label="每格单位">
+            </label>
+            <label class="tml-grid-check"><input id="tml-grid-show" type="checkbox"> 关闭后仍显示</label>
+          </div>
+          <datalist id="tml-grid-units">
+            <option value="米"></option><option value="公里"></option><option value="英里"></option>
+            <option value="英尺"></option><option value="里"></option><option value="格"></option>
+          </datalist>
+          <div class="tml-grid-row">
+            <label>格宽 <input id="tml-grid-cell" type="number" min="0.01" max="200" step="0.01" value="10">%</label>
+            <label>X 偏移 <input id="tml-grid-x" type="number" step="0.1" value="0">%</label>
+            <label>Y 偏移 <input id="tml-grid-y" type="number" step="0.1" value="0">%</label>
+          </div>
+          <div class="tml-grid-row tml-grid-hint">
+            <span>原点在图左上 · X→右 · Y↓下 · 网格属于这张地图</span>
+          </div>
+          <div class="tml-grid-actions">
+            <button type="button" class="tml-mini" data-grid-action="drag">拖动对齐</button>
+            <button type="button" class="tml-mini" data-grid-action="reset">重置</button>
+            <button type="button" class="tml-mini tml-primary" data-grid-action="done">完成并关闭</button>
+          </div>
+        </div>
         <div id="tml-empty" class="tml-empty" hidden></div>
         <div id="tml-align-bar" class="tml-align-bar" hidden>
           <span>拖动图片对齐地点，滚轮缩放；地点标记固定不动。</span>
@@ -156,7 +292,9 @@ const PANEL_HTML = `
       </div>
     </main>
     <aside id="tml-inspector" class="tml-inspector">
+      <div id="tml-position"></div>
       <div id="tml-detail"></div>
+      <div id="tml-nearby" class="tml-nearby" hidden></div>
     </aside>
   </div>
   <footer class="tml-foot">
@@ -187,10 +325,56 @@ const PANEL_HTML = `
   <div class="tml-modal-card tml-context-card">
     <header class="tml-modal-head">
       <strong>图层地图 · AI 上下文</strong>
-      <button type="button" class="tml-close" data-context-action="close">×</button>
+      <div class="tml-context-head-actions">
+        <button type="button" class="tml-btn" data-context-action="copy">复制</button>
+        <button type="button" class="tml-close" data-context-action="close" aria-label="关闭">×</button>
+      </div>
     </header>
-    <div class="tml-context-body">
-      <pre id="tml-context-text"></pre>
+    <div class="tml-context-layout">
+      <aside class="tml-context-controls">
+        <section class="tml-context-section">
+          <div class="tml-context-label">我的位置</div>
+          <div id="tml-context-position" class="tml-context-position"></div>
+          <div class="tml-context-coords">
+            X <input id="tml-context-x" type="number" min="0" max="100" step="0.1" aria-label="我的位置 X 百分比">%
+            Y <input id="tml-context-y" type="number" min="0" max="100" step="0.1" aria-label="我的位置 Y 百分比">%
+          </div>
+          <div class="tml-context-actions">
+            <button type="button" class="tml-mini" data-context-action="place">在地图上放置</button>
+            <button type="button" class="tml-mini" data-context-action="from-selected">用选中地点</button>
+            <button type="button" class="tml-mini" data-context-action="clear-position">清除</button>
+          </div>
+        </section>
+        <section class="tml-context-section">
+          <div class="tml-context-label">附近地点</div>
+          <label class="tml-context-field">数量
+            <select id="tml-context-count">
+              <option value="0">0</option><option value="4">4</option><option value="8">8</option>
+              <option value="12">12</option><option value="20">20</option>
+            </select>
+          </label>
+          <label class="tml-context-field">范围
+            <select id="tml-context-scope">
+              <option value="view">当前视野内</option>
+              <option value="map">全图最近</option>
+            </select>
+          </label>
+          <label class="tml-context-check"><input id="tml-context-nearby-notes" type="checkbox"> 附近地点笔记</label>
+          <label class="tml-context-check"><input id="tml-context-current-note" type="checkbox"> 当前地点笔记</label>
+        </section>
+        <section class="tml-context-section">
+          <div class="tml-context-label">地图网格</div>
+          <div id="tml-context-grid" class="tml-context-grid"></div>
+          <button type="button" class="tml-mini" data-context-action="grid">打开网格校准</button>
+        </section>
+        <section class="tml-context-section">
+          <label class="tml-context-check"><input id="tml-context-inject" type="checkbox"> 注入到 AI</label>
+          <div class="tml-context-hint">笔记全文不截断；地点类型随每个地点显示。</div>
+        </section>
+      </aside>
+      <div class="tml-context-preview">
+        <pre id="tml-context-text"></pre>
+      </div>
     </div>
     <footer class="tml-modal-foot">
       <span id="tml-context-tokens" class="tml-context-tokens"></span>
@@ -204,11 +388,26 @@ export class LayerMapUI {
   private ctx: StContext
   private readonly callbacks: LayerMapCallbacks
   private state: LayerChatState
+  private prefs: LayerPrefs = loadLayerPrefs()
   private pkg: LayerMapPackage | null = null
   private metas: LayerPackageMeta[] = []
   private view: LayerView = { cx: 0.5, cy: 0.5, zoom: 1 }
+  private maplibreEl!: HTMLElement
+  private maplibreMap: MapLibreMap | null = null
+  private maplibreReady: Promise<void> | null = null
+  private placingUser = false
+  private gridPanelOpen = false
+  private gridDragMode = false
+  private gridDragStart: { x: number; y: number; originX: number; originY: number } | null = null
+  private gridSaveTimer: number | undefined
   private image: HTMLImageElement | null = null
   private imageUrl: string | null = null
+  private imagePreview: HTMLImageElement | null = null
+  private imagePreviewUrl: string | null = null
+  private imageLarge = false
+  private imageFullRequested = false
+  private imageLoadTimer: number | undefined
+  private imagePreviewToken = 0
   private readonly tileCache = new Map<string, HTMLImageElement | 'loading' | 'error'>()
   private readonly tileFileUrls = new Map<string, string>()
   private readonly markerRegionCache = new Map<string, LayerRegion | undefined>()
@@ -291,6 +490,26 @@ export class LayerMapUI {
   private contextModalEl!: HTMLElement
   private contextTextEl!: HTMLElement
   private contextTokensEl!: HTMLElement
+  private positionEl!: HTMLElement
+  private nearbyEl!: HTMLElement
+  private placeBarEl!: HTMLElement
+  private gridPanelEl!: HTMLElement
+  private gridDragEl!: HTMLElement
+  private gridValueEl!: HTMLInputElement
+  private gridUnitEl!: HTMLInputElement
+  private gridShowEl!: HTMLInputElement
+  private gridCellEl!: HTMLInputElement
+  private gridXEl!: HTMLInputElement
+  private gridYEl!: HTMLInputElement
+  private contextPositionEl!: HTMLElement
+  private contextXEl!: HTMLInputElement
+  private contextYEl!: HTMLInputElement
+  private contextCountEl!: HTMLSelectElement
+  private contextScopeEl!: HTMLSelectElement
+  private contextNearbyNotesEl!: HTMLInputElement
+  private contextCurrentNoteEl!: HTMLInputElement
+  private contextInjectEl!: HTMLInputElement
+  private contextGridEl!: HTMLElement
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (this.importUI?.isOpen() || this.packagesUI?.isOpen()) return
@@ -375,6 +594,7 @@ export class LayerMapUI {
       },
       onDeleted: (id) => {
         if (this.pkg?.id === id) {
+          tileProtocolPackages.delete(id)
           this.closeImagePanel()
           if (this.state.packageId === id) this.state.packageId = undefined
           this.state.selectedMarkerId = undefined
@@ -385,6 +605,7 @@ export class LayerMapUI {
           this.persist(true)
           this.pkg = null
           this.image = null
+          this.setTileMapVisible(false)
           this.clearTileCaches()
           this.syncHeaderImage()
           this.renderEmpty('这个地图包已删除。可以重新导入，或选择另一个地图包。')
@@ -429,11 +650,8 @@ export class LayerMapUI {
       await this.loadPackage(wanted)
     } else {
       this.pkg = null
-      this.image = null
-      if (this.imageUrl) {
-        URL.revokeObjectURL(this.imageUrl)
-        this.imageUrl = null
-      }
+      this.clearImageResources()
+      this.setTileMapVisible(false)
       this.clearTileCaches()
       this.syncHeaderImage()
       this.renderEmpty('还没有地图包。点右上角“导入”读取本地 Fandom 或 Map Genie 数据。')
@@ -451,6 +669,8 @@ export class LayerMapUI {
   close(): void {
     this.closeImagePanel()
     this.closeLightbox()
+    this.cancelUserPlacement()
+    if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
     this.packagesUI?.close()
@@ -468,18 +688,17 @@ export class LayerMapUI {
     void flushGlobalNotes()
     this.closeImagePanel()
     this.closeLightbox()
+    this.cancelUserPlacement()
+    if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
     this.packagesUI?.close()
     this.ctx = this.liveContext()
     this.state = loadLayerState(this.ctx)
     this.pkg = null
-    this.image = null
+    this.clearImageResources()
+    this.setTileMapVisible(false)
     this.clearTileCaches()
-    if (this.imageUrl) {
-      URL.revokeObjectURL(this.imageUrl)
-      this.imageUrl = null
-    }
     this.syncHeaderImage()
     if (this.active) {
       void this.open()
@@ -492,6 +711,8 @@ export class LayerMapUI {
   clearChat(): void {
     this.closeImagePanel()
     this.closeLightbox()
+    this.cancelUserPlacement()
+    if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
     this.packagesUI?.close()
@@ -529,6 +750,7 @@ export class LayerMapUI {
     }
     this.panelEl = document.getElementById(PANEL_ID) as HTMLElement
     this.canvasEl = document.getElementById('tml-canvas') as HTMLCanvasElement
+    this.maplibreEl = document.getElementById('tml-maplibre') as HTMLElement
     this.viewportEl = document.getElementById('tml-viewport') as HTMLElement
     this.packageSelectEl = document.getElementById('tml-package') as HTMLSelectElement
     this.categoriesEl = document.getElementById('tml-categories') as HTMLElement
@@ -546,6 +768,26 @@ export class LayerMapUI {
     this.contextModalEl = document.getElementById('tml-context') as HTMLElement
     this.contextTextEl = document.getElementById('tml-context-text') as HTMLElement
     this.contextTokensEl = document.getElementById('tml-context-tokens') as HTMLElement
+    this.positionEl = document.getElementById('tml-position') as HTMLElement
+    this.nearbyEl = document.getElementById('tml-nearby') as HTMLElement
+    this.placeBarEl = document.getElementById('tml-place-bar') as HTMLElement
+    this.gridPanelEl = document.getElementById('tml-grid-panel') as HTMLElement
+    this.gridDragEl = document.getElementById('tml-grid-drag') as HTMLElement
+    this.gridValueEl = document.getElementById('tml-grid-value') as HTMLInputElement
+    this.gridUnitEl = document.getElementById('tml-grid-unit') as HTMLInputElement
+    this.gridShowEl = document.getElementById('tml-grid-show') as HTMLInputElement
+    this.gridCellEl = document.getElementById('tml-grid-cell') as HTMLInputElement
+    this.gridXEl = document.getElementById('tml-grid-x') as HTMLInputElement
+    this.gridYEl = document.getElementById('tml-grid-y') as HTMLInputElement
+    this.contextPositionEl = document.getElementById('tml-context-position') as HTMLElement
+    this.contextXEl = document.getElementById('tml-context-x') as HTMLInputElement
+    this.contextYEl = document.getElementById('tml-context-y') as HTMLInputElement
+    this.contextCountEl = document.getElementById('tml-context-count') as HTMLSelectElement
+    this.contextScopeEl = document.getElementById('tml-context-scope') as HTMLSelectElement
+    this.contextNearbyNotesEl = document.getElementById('tml-context-nearby-notes') as HTMLInputElement
+    this.contextCurrentNoteEl = document.getElementById('tml-context-current-note') as HTMLInputElement
+    this.contextInjectEl = document.getElementById('tml-context-inject') as HTMLInputElement
+    this.contextGridEl = document.getElementById('tml-context-grid') as HTMLElement
     this.headerImageEl = document.getElementById('tml-header-image') as HTMLImageElement
     this.headerImageEmptyEl = document.getElementById('tml-header-image-empty') as HTMLElement
     this.headerImageButtonEl = this.panelEl.querySelector(
@@ -587,7 +829,64 @@ export class LayerMapUI {
       const target = event.target as HTMLElement
       if (target.closest('[data-context-action="close"]') || target === this.contextModalEl) {
         this.contextModalEl.hidden = true
+        return
       }
+      const action = target.closest<HTMLElement>('[data-context-action]')?.dataset.contextAction
+      if (action === 'copy') {
+        void navigator.clipboard?.writeText(this.contextText())
+        this.toast('已复制 AI 上下文')
+      } else if (action === 'place') {
+        this.contextModalEl.hidden = true
+        this.startUserPlacement()
+      } else if (action === 'from-selected') {
+        const marker = this.currentMarker() ?? this.selectedMarker()
+        if (marker) {
+          this.setUserPosition(marker.x, marker.y)
+          this.showContextStatus()
+        } else {
+          this.toast('先选一个地点，再设为我的位置')
+        }
+      } else if (action === 'clear-position') {
+        this.clearUserPosition()
+        this.renderContextControls()
+      } else if (action === 'grid') {
+        this.contextModalEl.hidden = true
+        this.openGridPanel()
+      }
+    })
+    const updatePrefs = (): void => {
+      this.prefs = {
+        ...this.prefs,
+        nearbyCount: Number(this.contextCountEl.value) || 0,
+        nearbyScope: this.contextScopeEl.value === 'map' ? 'map' : 'view',
+        nearbyNotes: this.contextNearbyNotesEl.checked,
+        currentNote: this.contextCurrentNoteEl.checked,
+      }
+      saveLayerPrefs(this.prefs)
+      this.refreshContext()
+      this.renderContextPreview()
+    }
+    const updateCoords = (): void => {
+      const x = Number(this.contextXEl.value)
+      const y = Number(this.contextYEl.value)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      this.setUserPosition(Math.min(100, Math.max(0, x)) / 100, Math.min(100, Math.max(0, y)) / 100)
+      this.renderContextControls()
+      this.renderContextPreview()
+    }
+    this.contextXEl.addEventListener('change', updateCoords)
+    this.contextYEl.addEventListener('change', updateCoords)
+    this.contextCountEl.addEventListener('change', updatePrefs)
+    this.contextScopeEl.addEventListener('change', updatePrefs)
+    this.contextNearbyNotesEl.addEventListener('change', updatePrefs)
+    this.contextCurrentNoteEl.addEventListener('change', updatePrefs)
+    this.contextInjectEl.addEventListener('change', () => {
+      const settings = loadSettings(this.ctx)
+      settings.layerMapContext = this.contextInjectEl.checked
+      if (settings.layerMapContext) settings.realMapContext = false
+      saveSettings(this.ctx, settings)
+      this.callbacks.onSettingsChanged?.()
+      this.renderContextControls()
     })
     this.imagePanelEl.addEventListener('click', (event) => this.onImagePanelClick(event))
     this.imagePanelEl.addEventListener('change', (event) => this.onImagePanelChange(event))
@@ -613,6 +912,25 @@ export class LayerMapUI {
       const files = Array.from(this.tilesInput.files ?? [])
       this.tilesInput.value = ''
       if (files.length) void this.replaceTiles(files)
+    })
+    this.gridPanelEl.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement
+      const action = target.closest<HTMLElement>('[data-grid-action]')?.dataset.gridAction
+      if (action === 'close' || action === 'done') this.closeGridPanel()
+      else if (action === 'reset') this.resetGrid()
+      else if (action === 'drag') this.toggleGridDrag()
+    })
+    for (const input of [this.gridValueEl, this.gridUnitEl, this.gridCellEl, this.gridXEl, this.gridYEl, this.gridShowEl]) {
+      input.addEventListener('input', () => this.applyGridInputs())
+      input.addEventListener('change', () => this.applyGridInputs())
+    }
+    this.gridDragEl.addEventListener('pointerdown', (event) => this.onGridDragStart(event))
+    this.gridDragEl.addEventListener('pointermove', (event) => this.onGridDragMove(event))
+    this.gridDragEl.addEventListener('pointerup', (event) => this.onGridDragEnd(event))
+    this.gridDragEl.addEventListener('pointercancel', (event) => this.onGridDragEnd(event))
+    this.placeBarEl.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement
+      if (target.closest('[data-user-action="cancel"]')) this.cancelUserPlacement()
     })
     const onResize = (): void => {
       if (this.imagePanelOpen) this.positionImagePanel()
@@ -680,6 +998,15 @@ export class LayerMapUI {
         this.persist()
         this.requestDraw()
         break
+      case 'locate':
+        if (this.placingUser) this.cancelUserPlacement()
+        else if (this.state.userPosition) this.centerOnUserPosition()
+        else this.startUserPlacement()
+        break
+      case 'grid':
+        if (this.gridPanelOpen) this.closeGridPanel()
+        else this.openGridPanel()
+        break
       case 'show-all':
         this.state.hiddenCategories = []
         this.renderCategories()
@@ -697,13 +1024,51 @@ export class LayerMapUI {
     }
   }
 
-  private showContextStatus(): void {
+  private renderContextPosition(): void {
+    if (!this.contextPositionEl) return
+    const user = this.state.userPosition
+    if (!user) {
+      this.contextPositionEl.textContent = '未设置；不会输出“我的位置”。'
+      this.contextXEl.value = ''
+      this.contextYEl.value = ''
+      return
+    }
+    const area = this.regionForPoint(user.x, user.y)?.name
+    this.contextPositionEl.textContent = `${this.pointText(user.x, user.y)}${area ? ` · ${area}` : ''}`
+    this.contextXEl.value = (user.x * 100).toFixed(2)
+    this.contextYEl.value = (user.y * 100).toFixed(2)
+  }
+
+  private renderContextControls(): void {
+    if (!this.contextCountEl) return
+    this.renderContextPosition()
+    this.contextCountEl.value = String(this.prefs.nearbyCount)
+    this.contextScopeEl.value = this.prefs.nearbyScope
+    this.contextNearbyNotesEl.checked = this.prefs.nearbyNotes
+    this.contextCurrentNoteEl.checked = this.prefs.currentNote
+    this.contextInjectEl.checked = loadSettings(this.ctx).layerMapContext
+    const grid = this.gridConfig()
+    this.contextGridEl.textContent = grid
+      ? `1 格 = ${grid.unitValue} ${grid.unitLabel}`
+      : '未校准；AI 使用地图百分比坐标'
+  }
+
+  private renderContextPreview(): void {
     const text = this.contextText()
     this.contextTextEl.textContent =
-      text || '（还没有当前地点或当前区域。先点一个地点并“设为当前”。）'
-    this.contextTokensEl.textContent = text ? `≈ ${estimateTokens(text)} tokens · 是否注入取决于扩展设置` : '当前不会注入'
+      text || '（还没有当前地点或当前区域。先点一个地点、放置我的位置，或校准网格。）'
+    this.contextTokensEl.textContent = text
+      ? `≈ ${estimateTokens(text)} tokens · 笔记全文不截断`
+      : '当前不会注入'
     this.contextStatusEl.textContent = text ? '图层上下文：已生成' : '图层上下文：待机'
-    this.contextStatusEl.title = text || '没有可注入的图层地图上下文'
+    this.contextStatusEl.title = text
+      ? '当前图层地图场景会进入 AI 上下文'
+      : '没有可注入的图层地图上下文'
+  }
+
+  private showContextStatus(): void {
+    this.renderContextControls()
+    this.renderContextPreview()
     this.contextModalEl.hidden = false
   }
 
@@ -714,6 +1079,10 @@ export class LayerMapUI {
     labels?.setAttribute('aria-pressed', String(this.state.showLabels !== false))
     regions?.classList.toggle('active', this.state.showRegions !== false)
     regions?.setAttribute('aria-pressed', String(this.state.showRegions !== false))
+    const grid = this.panelEl.querySelector<HTMLElement>('[data-action="grid"]')
+    grid?.classList.toggle('active', this.gridPanelOpen)
+    const locate = this.panelEl.querySelector<HTMLElement>('[data-action="locate"]')
+    locate?.classList.toggle('active', this.placingUser || Boolean(this.state.userPosition))
   }
 
   private async refreshPackages(): Promise<void> {
@@ -740,11 +1109,8 @@ export class LayerMapUI {
     const pkg = await getLayerPackage(id)
     if (!pkg) {
       this.pkg = null
-      this.image = null
-      if (this.imageUrl) {
-        URL.revokeObjectURL(this.imageUrl)
-        this.imageUrl = null
-      }
+      this.clearImageResources()
+      this.setTileMapVisible(false)
       this.clearTileCaches()
       this.syncHeaderImage()
       this.renderEmpty('地图包读取失败或已不存在。')
@@ -758,6 +1124,7 @@ export class LayerMapUI {
       this.state.packageId = pkg.id
       this.state.selectedMarkerId = undefined
       this.state.currentMarkerId = undefined
+      this.state.userPosition = undefined
       this.state.selectedRegionId = undefined
       this.state.currentRegionId = undefined
       this.state.view = undefined
@@ -765,6 +1132,7 @@ export class LayerMapUI {
       this.linkDraftVisible = false
       this.lastRemovedImage = null
     }
+    if (this.pkg && this.pkg.id !== pkg.id) tileProtocolPackages.delete(this.pkg.id)
     this.pkg = pkg
     this.migrateLegacyNotes(pkg)
     if (
@@ -798,9 +1166,15 @@ export class LayerMapUI {
     this.buildMarkerIndex()
     this.clearTileCaches()
     this.packageSelectEl.value = pkg.id
-    this.view = this.resolveView(pkg, this.state.view)
-    this.state.view = this.view
-    this.loadImage(pkg)
+    if (pkg.kind === 'tiles') {
+      this.clearImageResources()
+      await this.loadTileMap(pkg, changed)
+    } else {
+      this.setTileMapVisible(false)
+      this.view = this.resolveView(pkg, this.state.view)
+      this.state.view = this.view
+      this.loadImage(pkg)
+    }
     this.renderCategories()
     this.renderDetail()
     this.syncToolButtons()
@@ -859,17 +1233,29 @@ export class LayerMapUI {
     return { cx: 0.5, cy: 0.5, zoom }
   }
 
-  private loadImage(pkg: LayerMapPackage): void {
+  private clearImageResources(): void {
+    if (this.imageLoadTimer !== undefined) {
+      window.clearTimeout(this.imageLoadTimer)
+      this.imageLoadTimer = undefined
+    }
     if (this.imageUrl) {
       URL.revokeObjectURL(this.imageUrl)
       this.imageUrl = null
     }
-    this.image = null
-    this.syncHeaderImage()
-    if (!pkg.image) {
-      this.requestDraw()
-      return
+    if (this.imagePreviewUrl) {
+      URL.revokeObjectURL(this.imagePreviewUrl)
+      this.imagePreviewUrl = null
     }
+    this.imagePreviewToken += 1
+    this.image = null
+    this.imagePreview = null
+    this.imageLarge = false
+    this.imageFullRequested = false
+  }
+
+  private loadFullImage(pkg: LayerMapPackage): void {
+    if (this.imageFullRequested || !pkg.image) return
+    this.imageFullRequested = true
     const url = URL.createObjectURL(pkg.image)
     this.imageUrl = url
     const image = new Image()
@@ -884,6 +1270,8 @@ export class LayerMapUI {
     image.onerror = () => {
       if (this.imageUrl !== url) return
       this.image = null
+      this.imageLarge = false
+      this.imageFullRequested = false
       this.emptyMessage = ''
       this.emptyEl.hidden = true
       this.syncHeaderImage()
@@ -891,6 +1279,307 @@ export class LayerMapUI {
       this.requestDraw()
     }
     image.src = url
+  }
+
+  private async loadMediumPreview(pkg: LayerMapPackage, token: number): Promise<void> {
+    if (!pkg.image) return
+    try {
+      const maxSide = 1800
+      const width = pkg.imageWidth ?? 0
+      const height = pkg.imageHeight ?? 0
+      let options: ImageBitmapOptions | undefined
+      if (width > 0 && height > 0) {
+        const scale = Math.min(1, maxSide / Math.max(width, height))
+        options = {
+          resizeWidth: Math.max(1, Math.round(width * scale)),
+          resizeHeight: Math.max(1, Math.round(height * scale)),
+          resizeQuality: 'medium',
+        }
+      } else {
+        options = { resizeWidth: maxSide, resizeQuality: 'medium' }
+      }
+      const bitmap = await createImageBitmap(pkg.image, options)
+      if (token !== this.imagePreviewToken) {
+        bitmap.close()
+        return
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = bitmap.width
+      canvas.height = bitmap.height
+      const context = canvas.getContext('2d')
+      if (!context) {
+        bitmap.close()
+        return
+      }
+      context.drawImage(bitmap, 0, 0)
+      bitmap.close()
+      const blob = await new Promise<Blob | undefined>((resolve) => {
+        canvas.toBlob((result) => resolve(result ?? undefined), 'image/jpeg', 0.82)
+      })
+      if (!blob || token !== this.imagePreviewToken) return
+      const url = URL.createObjectURL(blob)
+      const image = new Image()
+      image.onload = () => {
+        if (token !== this.imagePreviewToken) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        if (this.imagePreviewUrl) URL.revokeObjectURL(this.imagePreviewUrl)
+        this.imagePreviewUrl = url
+        this.imagePreview = image
+        this.requestDraw()
+      }
+      image.onerror = () => URL.revokeObjectURL(url)
+      image.src = url
+    } catch {
+      // The thumbnail remains usable if the browser cannot resize this image.
+    }
+  }
+
+  private loadImage(pkg: LayerMapPackage): void {
+    this.clearImageResources()
+    this.syncHeaderImage()
+    if (!pkg.image) {
+      this.requestDraw()
+      return
+    }
+    const area = Math.max(0, (pkg.imageWidth ?? 0) * (pkg.imageHeight ?? 0))
+    this.imageLarge = area > 16_000_000 || pkg.image.size > 12 * 1024 * 1024
+    if (this.imageLarge && pkg.thumbnail) {
+      const previewUrl = URL.createObjectURL(pkg.thumbnail)
+      this.imagePreviewUrl = previewUrl
+      const preview = new Image()
+      preview.onload = () => {
+        if (this.imagePreviewUrl !== previewUrl) return
+        this.imagePreview = preview
+        this.emptyMessage = ''
+        this.emptyEl.hidden = true
+        this.requestDraw()
+      }
+      preview.src = previewUrl
+      // Progressive: thumbnail now, medium overview next, full-resolution only
+      // after the user actually zooms in.
+      void this.loadMediumPreview(pkg, this.imagePreviewToken)
+      this.requestDraw()
+      return
+    }
+    this.loadFullImage(pkg)
+  }
+
+  private normalizedToLngLat(x: number, y: number): [number, number] {
+    return lngLatFromNormalized(x, y)
+  }
+
+  private lngLatToNormalized(lng: number, lat: number): { x: number; y: number } {
+    return normalizedFromLngLat(lng, lat)
+  }
+
+  private async ensureTileMap(): Promise<MapLibreMap> {
+    if (this.maplibreMap) return this.maplibreMap
+    registerTileProtocol()
+    const map = new MapLibreMap({
+      container: this.maplibreEl,
+      style: {
+        version: 8,
+        sources: {},
+        layers: [
+          {
+            id: 'tml-bg',
+            type: 'background',
+            paint: { 'background-color': '#0a0f14' },
+          },
+        ],
+      },
+      center: [0, 0],
+      zoom: 1,
+      minZoom: 0,
+      maxZoom: 25,
+      attributionControl: false,
+      dragRotate: false,
+      pitchWithRotate: false,
+      fadeDuration: 0,
+      maxTileCacheSize: 256,
+      localIdeographFontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+    })
+    this.maplibreMap = map
+    map.touchZoomRotate.disableRotation()
+    map.on('move', () => this.onTileMapMove())
+    map.on('moveend', () => this.onTileMapMoveEnd())
+    map.on('click', (event) => this.onTileMapClick(event))
+    this.maplibreReady = new Promise<void>((resolve) => {
+      map.once('load', () => resolve())
+    })
+    await this.maplibreReady
+    return map
+  }
+
+  private setTileMapVisible(visible: boolean): void {
+    this.maplibreEl.hidden = !visible
+    this.canvasEl.classList.toggle('tml-tile-overlay', visible)
+    this.canvasEl.style.pointerEvents = visible ? 'none' : ''
+    if (visible) this.maplibreMap?.resize()
+  }
+
+  private tileBoundsNormalized(pkg: LayerMapPackage): {
+    minX: number
+    minY: number
+    maxX: number
+    maxY: number
+  } | undefined {
+    const tile = pkg.tile
+    const zoom = tile?.coverageMaxZoom
+    const bounds = zoom != null ? tile?.boundsByZoom?.[String(zoom)] : undefined
+    if (bounds && zoom != null) {
+      const scale = 2 ** zoom
+      return {
+        minX: bounds.xMin / scale,
+        minY: bounds.yMin / scale,
+        maxX: (bounds.xMax + 1) / scale,
+        maxY: (bounds.yMax + 1) / scale,
+      }
+    }
+    return tile?.worldBounds
+  }
+
+  private tileBoundsLngLat(pkg: LayerMapPackage): [number, number, number, number] | undefined {
+    const bounds = this.tileBoundsNormalized(pkg)
+    if (!bounds) return undefined
+    const [west, north] = lngLatFromNormalized(bounds.minX, bounds.minY)
+    const [east, south] = lngLatFromNormalized(bounds.maxX, bounds.maxY)
+    return [west, south, east, north]
+  }
+
+  private async applyTileSource(pkg: LayerMapPackage): Promise<void> {
+    const map = await this.ensureTileMap()
+    const tile = pkg.tile
+    if (!tile) return
+    const coverageMin = tile.coverageMinZoom ?? tile.minZoom ?? 0
+    const coverageMax = Math.max(coverageMin, tile.coverageMaxZoom ?? tile.maxZoom ?? coverageMin)
+    const min = coverageMin
+    const max = coverageMax
+    tileProtocolPackages.set(pkg.id, pkg)
+    if (map.getLayer(TILE_LAYER_ID)) map.removeLayer(TILE_LAYER_ID)
+    if (map.getSource(TILE_SOURCE_ID)) map.removeSource(TILE_SOURCE_ID)
+    const bounds = this.tileBoundsLngLat(pkg)
+    const source: {
+      type: 'raster'
+      tiles: string[]
+      tileSize: number
+      minzoom: number
+      maxzoom: number
+      bounds?: [number, number, number, number]
+    } = {
+      type: 'raster',
+      tiles: [`${TILE_PROTOCOL}://${encodeURIComponent(pkg.id)}/{z}/{x}/{y}`],
+      tileSize: 256,
+      minzoom: min,
+      maxzoom: max,
+    }
+    if (bounds) source.bounds = bounds
+    map.addSource(TILE_SOURCE_ID, source)
+    map.addLayer({
+      id: TILE_LAYER_ID,
+      type: 'raster',
+      source: TILE_SOURCE_ID,
+      paint: {
+        'raster-opacity': 1,
+        'raster-fade-duration': 0,
+      },
+    })
+    map.setMinZoom(min)
+    map.setMaxZoom(25)
+    map.setPaintProperty('tml-bg', 'background-color', tile.backgroundColor ?? '#0a0f14')
+  }
+
+  private async loadTileMap(pkg: LayerMapPackage, changed: boolean): Promise<void> {
+    this.setTileMapVisible(true)
+    await this.applyTileSource(pkg)
+    if (changed || !this.state.view || !this.canRestoreTileView(pkg)) {
+      await this.fitTileMap(pkg)
+    } else {
+      this.applyStoredTileView()
+    }
+  }
+
+  private canRestoreTileView(pkg: LayerMapPackage): boolean {
+    const bounds = this.tileBoundsNormalized(pkg)
+    const view = this.state.view
+    if (!bounds || !view) return false
+    const marginX = (bounds.maxX - bounds.minX) * 0.02
+    const marginY = (bounds.maxY - bounds.minY) * 0.02
+    return (
+      view.cx > bounds.minX + marginX &&
+      view.cx < bounds.maxX - marginX &&
+      view.cy > bounds.minY + marginY &&
+      view.cy < bounds.maxY - marginY
+    )
+  }
+
+  private applyStoredTileView(): void {
+    const map = this.maplibreMap
+    const view = this.state.view
+    if (!map || !view) return
+    const [lng, lat] = this.normalizedToLngLat(view.cx, view.cy)
+    map.jumpTo({ center: [lng, lat], zoom: view.zoom })
+    this.syncViewFromMap()
+  }
+
+  private async fitTileMap(pkg: LayerMapPackage): Promise<void> {
+    const map = await this.ensureTileMap()
+    const bounds = this.tileBoundsLngLat(pkg)
+    if (bounds) {
+      const tile = pkg.tile
+      const max = tile?.coverageMaxZoom ?? tile?.maxZoom ?? 0
+      map.fitBounds(bounds, {
+        padding: 24,
+        duration: 0,
+        maxZoom: max + 0.8,
+      })
+    } else {
+      const view = this.defaultView(pkg)
+      const [lng, lat] = this.normalizedToLngLat(view.cx, view.cy)
+      map.jumpTo({ center: [lng, lat], zoom: view.zoom })
+    }
+    this.syncViewFromMap()
+    window.requestAnimationFrame(() => this.syncViewFromMap())
+  }
+
+  private syncViewFromMap(): void {
+    const map = this.maplibreMap
+    if (!map) return
+    const center = map.getCenter()
+    const normalized = this.lngLatToNormalized(center.lng, center.lat)
+    this.view = {
+      cx: Math.min(1, Math.max(0, normalized.x)),
+      cy: Math.min(1, Math.max(0, normalized.y)),
+      zoom: map.getZoom(),
+    }
+    this.state.view = this.view
+    this.updateStatus()
+    this.requestDraw()
+  }
+
+  private onTileMapMove(): void {
+    if (!this.maplibreMap) return
+    this.syncViewFromMap()
+  }
+
+  private onTileMapMoveEnd(): void {
+    if (!this.maplibreMap) return
+    this.syncViewFromMap()
+    this.persist()
+    this.refreshContext()
+  }
+
+  private onTileMapClick(event: { point: { x: number; y: number }; lngLat: { lng: number; lat: number } }): void {
+    if (!this.pkg || this.gridDragMode) return
+    if (this.placingUser) {
+      const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
+      this.setUserPosition(point.x, point.y)
+      return
+    }
+    const rect = this.viewportEl.getBoundingClientRect()
+    this.pickAt(rect.left + event.point.x, rect.top + event.point.y)
   }
 
   private observeViewport(): void {
@@ -915,6 +1604,7 @@ export class LayerMapUI {
     }
     const context = this.canvasEl.getContext('2d')
     context?.setTransform(dpr, 0, 0, dpr, 0, 0)
+    this.maplibreMap?.resize()
   }
 
   private requestDraw(): void {
@@ -932,17 +1622,107 @@ export class LayerMapUI {
     const context = canvas.getContext('2d')
     if (!context) return
     context.clearRect(0, 0, width, height)
-    context.fillStyle = this.pkg?.tile?.backgroundColor ?? '#0a0f14'
-    context.fillRect(0, 0, width, height)
     if (!this.pkg) {
+      context.fillStyle = '#0a0f14'
+      context.fillRect(0, 0, width, height)
       this.updateStatus()
       return
     }
-    if (this.pkg.kind === 'image') this.drawImageMap(context, width, height)
-    else this.drawTileMap(context, width, height)
+    if (this.pkg.kind === 'image') {
+      context.fillStyle = this.pkg.tile?.backgroundColor ?? '#0a0f14'
+      context.fillRect(0, 0, width, height)
+      this.drawImageMap(context, width, height)
+    } else if (!this.maplibreMap) {
+      context.fillStyle = this.pkg.tile?.backgroundColor ?? '#0a0f14'
+      context.fillRect(0, 0, width, height)
+      this.drawTileMap(context, width, height)
+    }
+    this.drawGrid(context, width, height)
     this.drawRegions(context, width, height)
     this.drawMarkers(context, width, height)
+    this.drawUserPosition(context, width, height)
     this.updateStatus()
+  }
+
+  private drawGrid(context: CanvasRenderingContext2D, width: number, height: number): void {
+    const grid = this.pkg?.grid
+    if (!grid || (!this.gridPanelOpen && grid.visible !== true)) return
+    const span = this.mapSpan()
+    const cellW = Math.max(1e-8, grid.cellW)
+    const cellH = Math.max(1e-8, grid.cellH)
+    context.save()
+    context.lineWidth = 1
+    context.strokeStyle = 'rgba(230, 181, 106, 0.62)'
+    const startX = grid.originX - Math.ceil((grid.originX - span.x) / cellW) * cellW - cellW
+    const startY = grid.originY - Math.ceil((grid.originY - span.y) / cellH) * cellH - cellH
+    let count = 0
+    for (let x = startX; x <= span.x + span.w + cellW && count < 900; x += cellW, count += 1) {
+      const [sx, sy] = this.project(x, span.y, width, height)
+      const [ex, ey] = this.project(x, span.y + span.h, width, height)
+      context.beginPath()
+      context.moveTo(sx, sy)
+      context.lineTo(ex, ey)
+      context.stroke()
+    }
+    count = 0
+    for (let y = startY; y <= span.y + span.h + cellH && count < 900; y += cellH, count += 1) {
+      const [sx, sy] = this.project(span.x, y, width, height)
+      const [ex, ey] = this.project(span.x + span.w, y, width, height)
+      context.beginPath()
+      context.moveTo(sx, sy)
+      context.lineTo(ex, ey)
+      context.stroke()
+    }
+    const [ox, oy] = this.project(grid.originX, grid.originY, width, height)
+    context.strokeStyle = 'rgba(243, 200, 127, 0.95)'
+    context.lineWidth = 1.5
+    context.beginPath()
+    context.moveTo(ox, 0)
+    context.lineTo(ox, height)
+    context.moveTo(0, oy)
+    context.lineTo(width, oy)
+    context.stroke()
+    context.fillStyle = 'rgba(243, 200, 127, 0.98)'
+    context.font = '600 10px ui-monospace, monospace'
+    context.fillText('0,0', ox + 5, oy - 5)
+    context.fillText('X', width - 16, Math.max(12, oy - 6))
+    context.fillText('Y', ox + 5, height - 8)
+    context.restore()
+  }
+
+  private drawUserPosition(
+    context: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ): void {
+    const user = this.state.userPosition
+    if (!user) return
+    const [x, y] = this.project(user.x, user.y, width, height)
+    if (x < -30 || y < -30 || x > width + 30 || y > height + 30) return
+    context.save()
+    context.beginPath()
+    context.arc(x, y, 10, 0, Math.PI * 2)
+    context.fillStyle = 'rgba(57, 181, 255, 0.18)'
+    context.fill()
+    context.beginPath()
+    context.arc(x, y, 5.5, 0, Math.PI * 2)
+    context.fillStyle = '#39b5ff'
+    context.fill()
+    context.lineWidth = 2.5
+    context.strokeStyle = '#ffffff'
+    context.stroke()
+    context.font = '600 11px system-ui, sans-serif'
+    context.textAlign = 'left'
+    context.textBaseline = 'middle'
+    const label = '我的位置'
+    const metrics = context.measureText(label)
+    const bx = x + 10
+    const by = y - 10
+    context.fillStyle = 'rgba(7, 13, 19, 0.9)'
+    context.fillRect(bx, by, metrics.width + 10, 18)
+    context.fillStyle = '#8fe0ff'
+    context.fillText(label, bx + 5, by + 9)
+    context.restore()
   }
 
   private drawImageMap(context: CanvasRenderingContext2D, width: number, height: number): void {
@@ -955,10 +1735,11 @@ export class LayerMapUI {
     const drawHeight = rect.h * pkg.height * scale
     const left = width / 2 + (rect.x - this.view.cx) * pkg.width * scale
     const top = height / 2 + (rect.y - this.view.cy) * pkg.height * scale
-    if (this.image) {
+    const image = this.image ?? this.imagePreview
+    if (image) {
       context.save()
       if (this.aligning) context.globalAlpha = 0.82
-      context.drawImage(this.image, left, top, drawWidth, drawHeight)
+      context.drawImage(image, left, top, drawWidth, drawHeight)
       context.restore()
       if (this.aligning) {
         context.save()
@@ -1013,7 +1794,9 @@ export class LayerMapUI {
       context.fillText('瓦片 URL 未设置；地点和区域仍可查看', width / 2, height / 2)
       return
     }
-    const z = Math.min(tile.maxZoom, Math.max(tile.minZoom, Math.round(this.view.zoom)))
+    const minZoom = tile.coverageMinZoom ?? tile.minZoom
+    const maxZoom = tile.coverageMaxZoom ?? tile.maxZoom
+    const z = Math.min(maxZoom, Math.max(minZoom, Math.round(this.view.zoom)))
     const count = this.tileCountAt(z)
     const tileSize = 256 * 2 ** (this.view.zoom - z)
     const minX = Math.floor((this.view.cx - width / 2 / scale) * count)
@@ -1244,6 +2027,10 @@ export class LayerMapUI {
   private project(x: number, y: number, width: number, height: number): [number, number] {
     const pkg = this.pkg
     if (!pkg) return [0, 0]
+    if (pkg.kind === 'tiles' && this.maplibreMap) {
+      const point = this.maplibreMap.project(this.normalizedToLngLat(x, y))
+      return [point.x, point.y]
+    }
     if (pkg.kind === 'image') {
       const fit = Math.min(width / pkg.width, height / pkg.height) * IMAGE_FIT_MARGIN
       const scale = fit * this.view.zoom
@@ -1259,6 +2046,11 @@ export class LayerMapUI {
   private unproject(sx: number, sy: number, width: number, height: number): [number, number] {
     const pkg = this.pkg
     if (!pkg) return [0, 0]
+    if (pkg.kind === 'tiles' && this.maplibreMap) {
+      const lngLat = this.maplibreMap.unproject([sx, sy])
+      const point = this.lngLatToNormalized(lngLat.lng, lngLat.lat)
+      return [point.x, point.y]
+    }
     if (pkg.kind === 'image') {
       const fit = Math.min(width / pkg.width, height / pkg.height) * IMAGE_FIT_MARGIN
       const scale = fit * this.view.zoom
@@ -1285,10 +2077,24 @@ export class LayerMapUI {
     if (this.aligning) {
       this.zoomEl.textContent = '对齐图片'
       this.scaleEl.textContent = '拖动移动 · 滚轮缩放'
+    } else if (pkg.kind === 'tiles') {
+      const min = pkg.tile?.coverageMinZoom ?? pkg.tile?.minZoom ?? 0
+      const max = pkg.tile?.coverageMaxZoom ?? pkg.tile?.maxZoom ?? min
+      const over = this.view.zoom > max + 0.05
+      this.zoomEl.textContent = `Z ${this.view.zoom.toFixed(1)}`
+      this.scaleEl.textContent = `本地瓦片 z${min}–${max}${over ? ' · 最高层放大' : ''}`
     } else {
-      this.zoomEl.textContent = pkg.kind === 'tiles' ? `Z ${this.view.zoom.toFixed(1)}` : `${this.view.zoom.toFixed(2)}×`
+      this.zoomEl.textContent = `${this.view.zoom.toFixed(2)}×`
       this.scaleEl.textContent =
-        pkg.kind === 'tiles' ? '地图单位未校准' : '图片像素 · 比例未校准'
+        this.imageLarge && !this.image
+          ? this.imageFullRequested
+            ? '高清底图加载中'
+            : '概览 · 放大加载高清'
+          : '图片像素 · 比例未校准'
+    }
+    const grid = this.gridConfig()
+    if (grid) {
+      this.scaleEl.textContent += ` · 网格 1格=${grid.unitValue}${grid.unitLabel}`
     }
     this.emptyEl.hidden = !this.emptyMessage
     this.contextStatusEl.textContent = this.state.context ? '图层上下文：已生成' : '图层上下文：待机'
@@ -1364,6 +2170,24 @@ export class LayerMapUI {
   }
 
   private onPointerUp(event: PointerEvent): void {
+    if (this.placingUser && !this.moved) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      const width = this.canvasEl.clientWidth || 1
+      const height = this.canvasEl.clientHeight || 1
+      const [x, y] = this.unproject(
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        width,
+        height,
+      )
+      this.dragging = false
+      if (this.canvasEl.hasPointerCapture(event.pointerId)) {
+        this.canvasEl.releasePointerCapture(event.pointerId)
+      }
+      this.canvasEl.style.cursor = 'grab'
+      this.setUserPosition(x, y)
+      return
+    }
     if (this.aligning) {
       if (!this.alignDrag) return
       this.alignDrag = false
@@ -1387,6 +2211,7 @@ export class LayerMapUI {
     this.suppressClick = false
     this.state.view = this.view
     this.persist()
+    if (this.pkg?.kind === 'image') this.refreshContext()
   }
 
   private onWheel(event: WheelEvent): void {
@@ -1410,16 +2235,20 @@ export class LayerMapUI {
 
   private zoomAt(sx: number, sy: number, factor: number): void {
     if (!this.pkg || this.aligning) return
+    if (this.pkg.kind === 'tiles' && this.maplibreMap) {
+      this.maplibreMap.zoomTo(this.maplibreMap.getZoom() + Math.log2(factor), { duration: 120 })
+      return
+    }
     const width = this.canvasEl.clientWidth || 1
     const height = this.canvasEl.clientHeight || 1
     const before = this.unproject(sx, sy, width, height)
     if (this.pkg.kind === 'image') {
-      this.view.zoom = Math.min(8, Math.max(0.5, this.view.zoom * factor))
+      this.view.zoom = Math.max(0.05, this.view.zoom * factor)
+      if (this.imageLarge && this.view.zoom > 1.15) this.loadFullImage(this.pkg)
     } else {
       const tile = this.pkg.tile
-      const min = tile?.minZoom ?? 0
-      const max = tile?.maxZoom ?? min + 8
-      this.view.zoom = Math.min(max + 1.2, Math.max(min, this.view.zoom + Math.log2(factor)))
+      const min = tile?.coverageMinZoom ?? tile?.minZoom ?? 0
+      this.view.zoom = Math.max(min, Math.min(25, this.view.zoom + Math.log2(factor)))
     }
     const after = this.unproject(sx, sy, width, height)
     this.view.cx += before[0] - after[0]
@@ -1437,10 +2266,15 @@ export class LayerMapUI {
 
   private fitView(): void {
     if (!this.pkg || this.aligning) return
+    if (this.pkg.kind === 'tiles' && this.maplibreMap) {
+      void this.fitTileMap(this.pkg)
+      return
+    }
     this.view = this.defaultView(this.pkg)
     this.state.view = this.view
     this.persist()
     this.requestDraw()
+    if (this.pkg.kind === 'image') this.refreshContext()
   }
 
   private pickAt(clientX: number, clientY: number): void {
@@ -1457,6 +2291,7 @@ export class LayerMapUI {
       this.state.selectedRegionId = region.id
       this.state.selectedMarkerId = undefined
       this.renderDetail()
+      this.refreshContext()
       this.persist()
       this.requestDraw()
       return
@@ -1464,6 +2299,7 @@ export class LayerMapUI {
     this.state.selectedMarkerId = undefined
     this.state.selectedRegionId = undefined
     this.renderDetail()
+    this.refreshContext()
     this.persist()
     this.requestDraw()
   }
@@ -1560,11 +2396,19 @@ export class LayerMapUI {
     this.state.selectedRegionId = undefined
     if (center) this.centerOnMarker(marker)
     this.renderDetail()
+    this.refreshContext()
     this.persist()
     this.requestDraw()
   }
 
   private centerOnMarker(marker: LayerMarker): void {
+    if (this.pkg?.kind === 'tiles' && this.maplibreMap) {
+      this.maplibreMap.easeTo({
+        center: this.normalizedToLngLat(marker.x, marker.y),
+        duration: 320,
+      })
+      return
+    }
     this.view.cx = marker.x
     this.view.cy = marker.y
     this.clampView()
@@ -1587,6 +2431,15 @@ export class LayerMapUI {
       }
     }
     if (Number.isFinite(minX)) {
+      if (this.pkg?.kind === 'tiles' && this.maplibreMap) {
+        const [west, north] = this.normalizedToLngLat(minX, minY)
+        const [east, south] = this.normalizedToLngLat(maxX, maxY)
+        this.maplibreMap.fitBounds(
+          [west, south, east, north],
+          { padding: 36, duration: 320, maxZoom: (this.pkg.tile?.coverageMaxZoom ?? 14) + 1 },
+        )
+        return
+      }
       this.view.cx = (minX + maxX) / 2
       this.view.cy = (minY + maxY) / 2
       this.clampView()
@@ -1753,8 +2606,10 @@ export class LayerMapUI {
     head.append(titleWrap, close)
     const meta = document.createElement('div')
     meta.className = 'tml-detail-meta'
+    const gridText = this.gridText(marker.x, marker.y)
     meta.textContent = [
       region?.name ?? '',
+      gridText ?? '',
       marker.sourceId ? `来源 id ${marker.sourceId}` : '',
       pkg.source === 'mapgenie' ? 'Map Genie 本地快照' : 'Fandom 本地导入',
     ]
@@ -1765,6 +2620,7 @@ export class LayerMapUI {
     actions.append(
       this.actionButton('居中', () => this.centerOnMarker(marker)),
       this.actionButton(current ? '取消当前' : '设为当前', () => this.toggleCurrent(marker), current),
+      this.actionButton('设为我的位置', () => this.setUserPosition(marker.x, marker.y)),
     )
     wrap.append(head, meta, actions)
     if (marker.description) {
@@ -1784,7 +2640,9 @@ export class LayerMapUI {
     const ai = document.createElement('div')
     ai.className = 'tml-ai-row'
     const aiLabel = document.createElement('span')
-    aiLabel.textContent = current ? '当前地点会进入 AI 上下文' : '设为当前后才进入 AI 上下文'
+    aiLabel.textContent = current
+      ? '当前地点会进入 AI 上下文'
+      : '选中的地点也会进入 AI 上下文'
     const preview = this.actionButton('预览 AI', () => this.showContextStatus())
     ai.append(aiLabel, preview)
     wrap.append(ai)
@@ -2247,10 +3105,15 @@ export class LayerMapUI {
     return section
   }
 
-  private actionButton(label: string, onClick: () => void, active = false): HTMLButtonElement {
+  private actionButton(
+    label: string,
+    onClick: () => void,
+    active = false,
+    extraClass = '',
+  ): HTMLButtonElement {
     const button = document.createElement('button')
     button.type = 'button'
-    button.className = `tml-action${active ? ' active' : ''}`
+    button.className = `tml-action${active ? ' active' : ''}${extraClass ? ` ${extraClass}` : ''}`
     button.textContent = label
     button.addEventListener('click', onClick)
     return button
@@ -2284,9 +3147,41 @@ export class LayerMapUI {
     this.requestDraw()
   }
 
+  private selectedMarker(): LayerMarker | undefined {
+    if (!this.pkg || !this.state.selectedMarkerId) return undefined
+    return this.pkg.markers.find((marker) => marker.id === this.state.selectedMarkerId)
+  }
+
   private currentMarker(): LayerMarker | undefined {
     if (!this.pkg || !this.state.currentMarkerId) return undefined
     return this.pkg.markers.find((marker) => marker.id === this.state.currentMarkerId)
+  }
+
+  private regionForPoint(x: number, y: number): LayerRegion | undefined {
+    if (!this.pkg) return undefined
+    let best: LayerRegion | undefined
+    let bestArea = Infinity
+    for (const region of this.pkg.regions) {
+      for (const ring of region.polygons) {
+        if (!pointInRing(x, y, ring)) continue
+        let minX = Infinity
+        let maxX = -Infinity
+        let minY = Infinity
+        let maxY = -Infinity
+        for (const [px, py] of ring) {
+          minX = Math.min(minX, px)
+          maxX = Math.max(maxX, px)
+          minY = Math.min(minY, py)
+          maxY = Math.max(maxY, py)
+        }
+        const area = Math.max(0, maxX - minX) * Math.max(0, maxY - minY)
+        if (area < bestArea) {
+          best = region
+          bestArea = area
+        }
+      }
+    }
+    return best
   }
 
   private regionForMarker(marker: LayerMarker): LayerRegion | undefined {
@@ -2300,31 +3195,84 @@ export class LayerMapUI {
         return direct
       }
     }
-    let best: LayerRegion | undefined
-    let bestArea = Infinity
-    for (const region of this.pkg.regions) {
-      for (const ring of region.polygons) {
-        if (!pointInRing(marker.x, marker.y, ring)) continue
-        let minX = Infinity
-        let maxX = -Infinity
-        let minY = Infinity
-        let maxY = -Infinity
-        for (const [x, y] of ring) {
-          minX = Math.min(minX, x)
-          maxX = Math.max(maxX, x)
-          minY = Math.min(minY, y)
-          maxY = Math.max(maxY, y)
-        }
-        const area = Math.max(0, maxX - minX) * Math.max(0, maxY - minY)
-        if (area < bestArea) {
-          best = region
-          bestArea = area
-        }
-      }
-    }
-    result = best
+    result = this.regionForPoint(marker.x, marker.y)
     this.markerRegionCache.set(marker.id, result)
     return result
+  }
+
+  private gridConfig(): LayerGridConfig | undefined {
+    const grid = this.pkg?.grid
+    if (!grid || !Number.isFinite(grid.cellW) || !Number.isFinite(grid.cellH)) return undefined
+    if (grid.cellW <= 0 || grid.cellH <= 0) return undefined
+    return grid
+  }
+
+  private gridPoint(x: number, y: number): { x: number; y: number } | undefined {
+    const grid = this.gridConfig()
+    if (!grid) return undefined
+    return {
+      x: (x - grid.originX) / grid.cellW,
+      y: (y - grid.originY) / grid.cellH,
+    }
+  }
+
+  private gridText(x: number, y: number): string | undefined {
+    const point = this.gridPoint(x, y)
+    if (!point) return undefined
+    const format = (value: number): string =>
+      Number.isInteger(value) ? String(value) : value.toFixed(1)
+    return `X ${format(point.x)}, Y ${format(point.y)}`
+  }
+
+  private mapPointText(x: number, y: number): string {
+    return `${(x * 100).toFixed(1)}%, ${(y * 100).toFixed(1)}%`
+  }
+
+  private pointText(x: number, y: number): string {
+    return this.gridText(x, y) ?? this.mapPointText(x, y)
+  }
+
+  private directionFor(dx: number, dy: number): string {
+    const directions = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE']
+    const angle = Math.atan2(dy, dx)
+    const index = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8
+    return directions[index]
+  }
+
+  private buildNearby(
+    anchor: { x: number; y: number },
+    excludeId?: string,
+  ): LayerNearbyPlace[] {
+    const pkg = this.pkg
+    if (!pkg || this.prefs.nearbyCount <= 0) return []
+    const width = this.canvasEl?.clientWidth || this.viewportEl?.clientWidth || 1
+    const height = this.canvasEl?.clientHeight || this.viewportEl?.clientHeight || 1
+    const candidates =
+      this.prefs.nearbyScope === 'view' ? this.markersInView(width, height) : pkg.markers
+    const hidden = new Set(this.state.hiddenCategories ?? [])
+    const categories = new Map(pkg.categories.map((category) => [category.id, category]))
+    return candidates
+      .filter((marker) => marker.id !== excludeId && !hidden.has(marker.categoryId))
+      .map((marker) => {
+        const dx = marker.x - anchor.x
+        const dy = marker.y - anchor.y
+        const category = categories.get(marker.categoryId)?.name
+        return {
+          id: marker.id,
+          name: marker.name,
+          category,
+          x: marker.x,
+          y: marker.y,
+          direction: this.directionFor(dx, dy),
+          distancePercent: Math.hypot(dx, dy) * 100,
+          note:
+            this.prefs.nearbyNotes && this.markerNoteValue(marker).trim()
+              ? this.markerNoteValue(marker)
+              : undefined,
+        }
+      })
+      .sort((a, b) => a.distancePercent - b.distancePercent)
+      .slice(0, this.prefs.nearbyCount)
   }
 
   private refreshContext(): void {
@@ -2332,10 +3280,12 @@ export class LayerMapUI {
     if (!pkg) {
       this.state.context = undefined
       this.persist()
+      this.renderPositionCard()
+      this.renderNearby()
       this.callbacks.onChange()
       return
     }
-    const marker = this.currentMarker()
+    const marker = this.currentMarker() ?? this.selectedMarker()
     const region = this.state.currentRegionId
       ? pkg.regions.find((item) => item.id === this.state.currentRegionId) ??
         (marker ? this.regionForMarker(marker) : undefined)
@@ -2343,44 +3293,199 @@ export class LayerMapUI {
         ? this.regionForMarker(marker)
         : undefined
     const category = marker ? pkg.categories.find((item) => item.id === marker.categoryId) : undefined
-    const note = marker
-      ? this.markerNoteValue(marker)
-      : region
-        ? this.regionNoteValue(region)
-        : undefined
-    const links = marker
-      ? [
-          marker.sourceTitle,
-          ...(marker.sourceLinks ?? []).map((link) => link.title),
-          ...(this.state.links?.[marker.id] ?? []).map((link) => link.title),
-        ]
-          .filter((title): title is string => Boolean(title))
-          .filter((title, index, list) => list.indexOf(title) === index)
+    const user = this.state.userPosition
+    const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
+    const anchor = user ?? marker ?? { x: this.view.cx, y: this.view.cy }
+    const anchorKind = user ? 'my position' : marker ? 'current place' : 'view center'
+    const nearby = this.buildNearby(anchor, marker?.id)
+    const note = this.prefs.currentNote
+      ? marker
+        ? this.markerNoteValue(marker)
+        : region
+          ? this.regionNoteValue(region)
+          : undefined
       : undefined
-    const hidden = new Set(this.state.hiddenCategories ?? [])
-    const visibleCategories = pkg.categories
-      .filter((item) => !hidden.has(item.id) && pkg.markers.some((markerItem) => markerItem.categoryId === item.id))
-      .map((item) => item.name)
     const context: LayerContextSnapshot = {
       mapName: pkg.name,
-      kind: pkg.kind,
-      source: pkg.source,
+      position: user
+        ? {
+            x: user.x,
+            y: user.y,
+            region: positionRegion?.name,
+          }
+        : undefined,
       currentPlace: marker?.name,
+      currentX: marker?.x,
+      currentY: marker?.y,
       category: category?.name,
       region: region?.name,
       note: note?.trim() || undefined,
-      links: links && links.length > 0 ? links : undefined,
-      visibleCategories: visibleCategories.length > 0 ? visibleCategories : undefined,
-      scaleNote:
-        pkg.kind === 'tiles'
-          ? 'tile map; map units are uncalibrated'
-          : 'image map; pixel coordinates; scale is uncalibrated',
+      nearby: nearby.length > 0 ? nearby : undefined,
+      nearbyAnchor: anchorKind,
+      nearbyScope: this.prefs.nearbyScope,
+      grid: this.gridConfig() ? { ...this.gridConfig()! } : undefined,
       updatedAt: Date.now(),
     }
     this.state.context = context
     this.persist()
-    this.contextStatusEl.textContent = context.currentPlace ? '图层上下文：已生成' : '图层上下文：待机'
+    this.contextStatusEl.textContent =
+      context.currentPlace || context.position || context.nearby
+        ? '图层上下文：已生成'
+        : '图层上下文：待机'
+    this.contextStatusEl.title = context.currentPlace
+      ? '当前地点会进入图层地图 AI 上下文'
+      : '在图层地图中选地点或放置“我的位置”后生成'
+    this.renderPositionCard()
+    this.renderNearby()
+    if (!this.contextModalEl.hidden) {
+      this.renderContextControls()
+      this.renderContextPreview()
+    }
     this.callbacks.onChange()
+  }
+
+  private renderPositionCard(): void {
+    if (!this.positionEl) return
+    this.positionEl.replaceChildren()
+    const pkg = this.pkg
+    if (!pkg) return
+    const user = this.state.userPosition
+    const card = document.createElement('section')
+    card.className = 'tml-position-card'
+    const head = document.createElement('div')
+    head.className = 'tml-position-head'
+    const flag = document.createElement('span')
+    flag.className = 'tml-position-flag'
+    flag.textContent = '◎'
+    const title = document.createElement('strong')
+    title.textContent = '我的位置'
+    const value = document.createElement('span')
+    value.className = 'tml-position-value'
+    value.textContent = user
+      ? this.pointText(user.x, user.y)
+      : '未设置'
+    head.append(flag, title, value)
+    card.append(head)
+    if (user) {
+      const area = this.regionForPoint(user.x, user.y)?.name
+      if (area) {
+        const areaEl = document.createElement('div')
+        areaEl.className = 'tml-position-area'
+        areaEl.textContent = `区域：${area}`
+        card.append(areaEl)
+      }
+      const actions = document.createElement('div')
+      actions.className = 'tml-position-actions'
+      actions.append(
+        this.actionButton('居中', () => this.centerOnUserPosition()),
+        this.actionButton('移动', () => this.startUserPlacement()),
+        this.actionButton('清除', () => this.clearUserPosition()),
+      )
+      card.append(actions)
+    } else {
+      card.append(
+        this.actionButton('在地图上放置', () => this.startUserPlacement(), false, 'tml-position-place'),
+      )
+    }
+    this.positionEl.append(card)
+  }
+
+  private renderNearby(): void {
+    if (!this.nearbyEl) return
+    this.nearbyEl.replaceChildren()
+    const context = this.state.context
+    if (!context?.nearby?.length) {
+      this.nearbyEl.hidden = true
+      return
+    }
+    this.nearbyEl.hidden = false
+    const head = document.createElement('div')
+    head.className = 'tml-nearby-head'
+    const title = document.createElement('strong')
+    title.textContent = `附近 ${context.nearby.length}`
+    const scope = document.createElement('span')
+    scope.textContent = context.nearbyScope === 'map' ? '全图最近' : '当前视野'
+    head.append(title, scope)
+    this.nearbyEl.append(head)
+    const list = document.createElement('div')
+    list.className = 'tml-nearby-list'
+    for (const place of context.nearby) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'tml-nearby-row'
+      const name = document.createElement('span')
+      name.className = 'tml-nearby-name'
+      name.textContent = place.name
+      const meta = document.createElement('span')
+      meta.className = 'tml-nearby-meta'
+      const grid = this.gridConfig()
+      const location = grid
+        ? this.gridText(place.x, place.y) ?? ''
+        : place.distancePercent < 0.01
+          ? '<0.01%'
+          : `${place.distancePercent.toFixed(2)}%`
+      meta.textContent = [place.category, location, place.direction]
+        .filter(Boolean)
+        .join(' · ')
+      button.append(name, meta)
+      button.addEventListener('click', () => {
+        const marker = this.pkg?.markers.find((item) => item.id === place.id)
+        if (marker) this.selectMarker(marker, true)
+      })
+      list.append(button)
+    }
+    this.nearbyEl.append(list)
+  }
+
+  private startUserPlacement(): void {
+    if (!this.pkg) return
+    this.placingUser = true
+    this.gridDragMode = false
+    if (this.placeBarEl) this.placeBarEl.hidden = false
+    this.syncToolButtons()
+  }
+
+  private cancelUserPlacement(): void {
+    this.placingUser = false
+    if (this.placeBarEl) this.placeBarEl.hidden = true
+    this.syncToolButtons()
+  }
+
+  private setUserPosition(x: number, y: number): void {
+    this.state.userPosition = {
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y)),
+    }
+    this.cancelUserPlacement()
+    this.refreshContext()
+    this.persist()
+    this.requestDraw()
+  }
+
+  private clearUserPosition(): void {
+    this.state.userPosition = undefined
+    this.cancelUserPlacement()
+    this.refreshContext()
+    this.persist()
+    this.requestDraw()
+  }
+
+  private centerOnUserPosition(): void {
+    const user = this.state.userPosition
+    if (!user) return
+    if (this.pkg?.kind === 'tiles' && this.maplibreMap) {
+      this.maplibreMap.easeTo({
+        center: this.normalizedToLngLat(user.x, user.y),
+        duration: 320,
+      })
+      return
+    }
+    this.view.cx = user.x
+    this.view.cy = user.y
+    this.clampView()
+    this.state.view = this.view
+    this.persist()
+    this.requestDraw()
   }
 
   private persist(immediate = false): void {
@@ -2483,6 +3588,203 @@ export class LayerMapUI {
   private hideSearch(): void {
     this.searchResultsEl.hidden = true
     this.searchResultsEl.replaceChildren()
+  }
+
+  private mapSpan(pkg = this.pkg): { x: number; y: number; w: number; h: number } {
+    if (pkg?.kind === 'tiles') {
+      const bounds = this.tileBoundsNormalized(pkg)
+      if (bounds) {
+        return {
+          x: bounds.minX,
+          y: bounds.minY,
+          w: Math.max(1e-8, bounds.maxX - bounds.minX),
+          h: Math.max(1e-8, bounds.maxY - bounds.minY),
+        }
+      }
+    }
+    return { x: 0, y: 0, w: 1, h: 1 }
+  }
+
+  private defaultGrid(pkg: LayerMapPackage): LayerGridConfig {
+    const span = this.mapSpan(pkg)
+    const cellW = span.w / 10
+    const cellH =
+      pkg.kind === 'image' && pkg.width > 0 && pkg.height > 0
+        ? cellW * (pkg.width / pkg.height)
+        : cellW
+    return {
+      originX: span.x,
+      originY: span.y,
+      cellW,
+      cellH,
+      unitValue: 1,
+      unitLabel: '格',
+      visible: false,
+    }
+  }
+
+  private ensureGrid(): LayerGridConfig | undefined {
+    const pkg = this.pkg
+    if (!pkg) return undefined
+    if (!pkg.grid) pkg.grid = this.defaultGrid(pkg)
+    return pkg.grid
+  }
+
+  private syncGridInputs(): void {
+    const grid = this.pkg?.grid
+    if (!grid) return
+    const span = this.mapSpan()
+    const percent = (value: number, total: number): string =>
+      (value / total * 100).toFixed(3).replace(/\.?0+$/, '')
+    this.gridValueEl.value = String(grid.unitValue)
+    this.gridUnitEl.value = grid.unitLabel
+    this.gridCellEl.value = percent(grid.cellW, span.w)
+    this.gridXEl.value = percent(grid.originX - span.x, span.w)
+    this.gridYEl.value = percent(grid.originY - span.y, span.h)
+    this.gridShowEl.checked = grid.visible === true
+  }
+
+  private readGridInputs(): LayerGridConfig | undefined {
+    const pkg = this.pkg
+    if (!pkg) return undefined
+    const grid = this.ensureGrid()
+    if (!grid) return undefined
+    const number = (value: string, fallback: number): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : fallback
+    }
+    grid.unitValue = Math.max(0.000001, number(this.gridValueEl.value, grid.unitValue || 1))
+    grid.unitLabel = this.gridUnitEl.value.trim() || '格'
+    const span = this.mapSpan(pkg)
+    grid.cellW = Math.min(span.w * 2, Math.max(span.w * 0.0001, span.w * number(this.gridCellEl.value, (grid.cellW / span.w) * 100) / 100))
+    grid.cellH =
+      pkg.kind === 'image' && pkg.width > 0 && pkg.height > 0
+        ? grid.cellW * (pkg.width / pkg.height)
+        : grid.cellW
+    grid.originX = span.x + span.w * number(this.gridXEl.value, ((grid.originX - span.x) / span.w) * 100) / 100
+    grid.originY = span.y + span.h * number(this.gridYEl.value, ((grid.originY - span.y) / span.h) * 100) / 100
+    grid.visible = this.gridShowEl.checked
+    return grid
+  }
+
+  private scheduleGridSave(): void {
+    if (this.gridSaveTimer !== undefined) window.clearTimeout(this.gridSaveTimer)
+    this.gridSaveTimer = window.setTimeout(() => {
+      this.gridSaveTimer = undefined
+      void this.saveGridNow()
+    }, 280)
+  }
+
+  private async saveGridNow(): Promise<void> {
+    const pkg = this.pkg
+    if (!pkg?.grid) return
+    const updated = await updateLayerPackage(pkg.id, { grid: { ...pkg.grid } })
+    if (updated && this.pkg?.id === updated.id) this.pkg = updated
+  }
+
+  private applyGridInputs(): void {
+    if (!this.readGridInputs()) return
+    this.scheduleGridSave()
+    this.refreshContext()
+    this.requestDraw()
+  }
+
+  private openGridPanel(): void {
+    if (!this.pkg) return
+    this.ensureGrid()
+    this.gridPanelOpen = true
+    this.gridDragMode = false
+    this.gridDragEl.hidden = true
+    this.gridPanelEl.hidden = false
+    this.gridPanelEl.classList.remove('dragging')
+    this.syncGridInputs()
+    this.refreshContext()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private closeGridPanel(): void {
+    if (this.gridSaveTimer !== undefined) {
+      window.clearTimeout(this.gridSaveTimer)
+      this.gridSaveTimer = undefined
+    }
+    this.gridDragMode = false
+    this.gridDragEl.hidden = true
+    this.gridPanelOpen = false
+    this.readGridInputs()
+    this.gridPanelEl.hidden = true
+    void this.saveGridNow()
+    this.refreshContext()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private resetGrid(): void {
+    const pkg = this.pkg
+    if (!pkg) return
+    pkg.grid = this.defaultGrid(pkg)
+    this.syncGridInputs()
+    this.refreshContext()
+    this.requestDraw()
+    this.scheduleGridSave()
+  }
+
+  private toggleGridDrag(): void {
+    if (!this.pkg?.grid) return
+    this.gridDragMode = !this.gridDragMode
+    this.gridDragEl.hidden = !this.gridDragMode
+    this.gridPanelEl.classList.toggle('dragging', this.gridDragMode)
+    if (this.gridDragMode) this.cancelUserPlacement()
+    this.requestDraw()
+  }
+
+  private onGridDragStart(event: PointerEvent): void {
+    if (!this.gridDragMode || !this.pkg?.grid) return
+    event.preventDefault()
+    this.gridDragStart = {
+      x: event.clientX,
+      y: event.clientY,
+      originX: this.pkg.grid.originX,
+      originY: this.pkg.grid.originY,
+    }
+    this.gridDragEl.setPointerCapture(event.pointerId)
+    this.gridDragEl.classList.add('active')
+  }
+
+  private onGridDragMove(event: PointerEvent): void {
+    if (!this.gridDragStart || !this.pkg?.grid) return
+    event.preventDefault()
+    const rect = this.viewportEl.getBoundingClientRect()
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const start = this.unproject(
+      this.gridDragStart.x - rect.left,
+      this.gridDragStart.y - rect.top,
+      width,
+      height,
+    )
+    const current = this.unproject(event.clientX - rect.left, event.clientY - rect.top, width, height)
+    this.pkg.grid.originX = Math.min(
+      2,
+      Math.max(-1, this.gridDragStart.originX + current[0] - start[0]),
+    )
+    this.pkg.grid.originY = Math.min(
+      2,
+      Math.max(-1, this.gridDragStart.originY + current[1] - start[1]),
+    )
+    this.syncGridInputs()
+    this.refreshContext()
+    this.requestDraw()
+  }
+
+  private onGridDragEnd(event: PointerEvent): void {
+    if (!this.gridDragStart) return
+    this.gridDragStart = null
+    this.gridDragEl.classList.remove('active')
+    if (this.gridDragEl.hasPointerCapture(event.pointerId)) {
+      this.gridDragEl.releasePointerCapture(event.pointerId)
+    }
+    this.scheduleGridSave()
   }
 
   private openImport(): void {
@@ -3210,6 +4512,9 @@ export class LayerMapUI {
 
   dispose(): void {
     void flushGlobalNotes()
+    this.maplibreMap?.remove()
+    this.maplibreMap = null
+    this.maplibreReady = null
     this.windowController?.dispose()
     this.importUI?.dispose()
     this.packagesUI?.dispose()

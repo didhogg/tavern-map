@@ -334,6 +334,7 @@ export async function saveImportedPackage(
       pkg.name = existing.name
       pkg.nameLocked = true
     }
+    if (existing.grid) pkg.grid = existing.grid
     if (existing.imageLocked) {
       pkg.image = existing.image
       pkg.imageType = existing.imageType

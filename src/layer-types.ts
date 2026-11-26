@@ -15,6 +15,20 @@ export type LayerImageRect = {
   h: number
 }
 
+export type LayerGridConfig = {
+  /** Grid origin in normalized map coordinates. */
+  originX: number
+  originY: number
+  /** Cell size in normalized map coordinates. */
+  cellW: number
+  cellH: number
+  /** User-facing scale: one cell equals this many units. */
+  unitValue: number
+  unitLabel: string
+  /** Show grid lines when the calibration panel is closed. */
+  visible?: boolean
+}
+
 export type LayerCategory = {
   id: string
   name: string
@@ -139,6 +153,8 @@ export type LayerMapPackage = {
   tile?: LayerTileConfig
   /** Optional local tile blobs keyed as `z/y/x` (without extension). */
   tileFiles?: Record<string, Blob>
+  /** Optional user calibration shared by all chats using this map package. */
+  grid?: LayerGridConfig
   categories: LayerCategory[]
   groups: LayerCategoryGroup[]
   markers: LayerMarker[]
@@ -185,17 +201,36 @@ export type LayerView = {
   zoom: number
 }
 
+export type LayerNearbyPlace = {
+  id: string
+  name: string
+  category?: string
+  x: number
+  y: number
+  direction: string
+  distancePercent: number
+  note?: string
+}
+
 export type LayerContextSnapshot = {
   mapName: string
-  kind: LayerMapKind
-  source: LayerMapSource
+  /** Explicit "my position", only when the user placed it. */
+  position?: {
+    x: number
+    y: number
+    region?: string
+  }
   currentPlace?: string
+  currentX?: number
+  currentY?: number
   category?: string
   region?: string
   note?: string
-  links?: string[]
-  visibleCategories?: string[]
-  scaleNote?: string
+  nearby?: LayerNearbyPlace[]
+  nearbyAnchor?: 'my position' | 'current place' | 'view center'
+  nearbyScope?: 'view' | 'map'
+  /** Present only after the user calibrated a grid on this map package. */
+  grid?: LayerGridConfig
   updatedAt: number
 }
 
@@ -205,6 +240,8 @@ export type LayerChatState = {
   view?: LayerView
   selectedMarkerId?: string
   currentMarkerId?: string
+  /** The user's own scene position in normalized map coordinates. */
+  userPosition?: { x: number; y: number }
   selectedRegionId?: string
   currentRegionId?: string
   hiddenCategories?: string[]
@@ -308,6 +345,12 @@ export function loadLayerState(ctx: StContext): LayerChatState {
       typeof value.selectedMarkerId === 'string' ? value.selectedMarkerId : undefined,
     currentMarkerId:
       typeof value.currentMarkerId === 'string' ? value.currentMarkerId : undefined,
+    userPosition:
+      value.userPosition &&
+      Number.isFinite(value.userPosition.x) &&
+      Number.isFinite(value.userPosition.y)
+        ? { x: value.userPosition.x, y: value.userPosition.y }
+        : undefined,
     selectedRegionId:
       typeof value.selectedRegionId === 'string' ? value.selectedRegionId : undefined,
     currentRegionId:
@@ -337,22 +380,77 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const value = raw as Partial<LayerContextSnapshot>
   if (typeof value.mapName !== 'string' || !value.mapName) return undefined
+  const position =
+    value.position &&
+    Number.isFinite(value.position.x) &&
+    Number.isFinite(value.position.y)
+      ? {
+          x: value.position.x,
+          y: value.position.y,
+          region:
+            typeof value.position.region === 'string' ? value.position.region : undefined,
+        }
+      : undefined
+  const nearby = Array.isArray(value.nearby)
+    ? value.nearby
+        .filter(
+          (item): item is LayerNearbyPlace =>
+            Boolean(item) &&
+            typeof item.id === 'string' &&
+            typeof item.name === 'string' &&
+            Number.isFinite(item.x) &&
+            Number.isFinite(item.y) &&
+            typeof item.direction === 'string' &&
+            Number.isFinite(item.distancePercent),
+        )
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          category: typeof item.category === 'string' ? item.category : undefined,
+          x: item.x,
+          y: item.y,
+          direction: item.direction,
+          distancePercent: item.distancePercent,
+          note: typeof item.note === 'string' ? item.note : undefined,
+        }))
+    : undefined
+  const grid = value.grid
+    ? {
+        originX: Number.isFinite(value.grid.originX) ? value.grid.originX : 0,
+        originY: Number.isFinite(value.grid.originY) ? value.grid.originY : 0,
+        cellW: Number.isFinite(value.grid.cellW) && value.grid.cellW > 0 ? value.grid.cellW : 0.05,
+        cellH: Number.isFinite(value.grid.cellH) && value.grid.cellH > 0 ? value.grid.cellH : 0.05,
+        unitValue:
+          Number.isFinite(value.grid.unitValue) && value.grid.unitValue > 0
+            ? value.grid.unitValue
+            : 1,
+        unitLabel:
+          typeof value.grid.unitLabel === 'string' && value.grid.unitLabel.trim()
+            ? value.grid.unitLabel.trim()
+            : '格',
+      }
+    : undefined
   return {
     mapName: value.mapName,
-    kind: value.kind === 'tiles' ? 'tiles' : 'image',
-    source:
-      value.source === 'mapgenie' || value.source === 'manual' ? value.source : 'fandom',
+    position,
     currentPlace: typeof value.currentPlace === 'string' ? value.currentPlace : undefined,
+    currentX: Number.isFinite(value.currentX) ? value.currentX : undefined,
+    currentY: Number.isFinite(value.currentY) ? value.currentY : undefined,
     category: typeof value.category === 'string' ? value.category : undefined,
     region: typeof value.region === 'string' ? value.region : undefined,
     note: typeof value.note === 'string' ? value.note : undefined,
-    links: Array.isArray(value.links)
-      ? value.links.filter((link): link is string => typeof link === 'string')
-      : undefined,
-    visibleCategories: Array.isArray(value.visibleCategories)
-      ? value.visibleCategories.filter((name): name is string => typeof name === 'string')
-      : undefined,
-    scaleNote: typeof value.scaleNote === 'string' ? value.scaleNote : undefined,
+    nearby: nearby && nearby.length > 0 ? nearby : undefined,
+    nearbyAnchor:
+      value.nearbyAnchor === 'my position' ||
+      value.nearbyAnchor === 'current place' ||
+      value.nearbyAnchor === 'view center'
+        ? value.nearbyAnchor
+        : undefined,
+    nearbyScope:
+      value.nearbyScope === 'view' || value.nearbyScope === 'map'
+        ? value.nearbyScope
+        : undefined,
+    grid,
     updatedAt:
       typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
         ? value.updatedAt
