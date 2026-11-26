@@ -13,7 +13,7 @@ import {
   readLayerImage,
   sanitizeRect,
 } from './layer-image'
-import { cleanSourceText, type MapGenieTileSetInfo } from './layer-import'
+import type { MapGenieTileSetInfo } from './layer-import'
 import { LayerImportUI } from './layer-import-ui'
 import { LayerPackagesUI } from './layer-packages-ui'
 import {
@@ -48,6 +48,7 @@ import {
   type LayerView,
 } from './layer-types'
 import {
+  clearGlobalNote,
   flushGlobalNotes,
   globalNote,
   globalNotesSnapshot,
@@ -109,6 +110,122 @@ function saveLayerPrefs(prefs: LayerPrefs): void {
     localStorage.setItem(LAYER_PREFS_KEY, JSON.stringify(prefs))
   } catch {
     // Preferences are non-critical; keep the in-memory copy.
+  }
+}
+
+const LINK_PREFS_KEY = 'tavern-map:layer-link-prefs:v1'
+const SOURCE_PREFS_KEY = 'tavern-map:layer-source-prefs:v1'
+
+type LinkPrefs = {
+  pinned: boolean
+  inContext: boolean
+}
+
+function loadLinkPrefs(): Record<string, LinkPrefs> {
+  try {
+    const raw = localStorage.getItem(LINK_PREFS_KEY)
+    if (!raw) return {}
+    const value = JSON.parse(raw) as Record<string, Partial<LinkPrefs>>
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([url, entry]) => Boolean(url) && entry && typeof entry === 'object')
+        .map(([url, entry]) => [
+          url,
+          { pinned: entry.pinned === true, inContext: entry.inContext === true },
+        ]),
+    )
+  } catch {
+    return {}
+  }
+}
+
+function saveLinkPrefs(prefs: Record<string, LinkPrefs>): void {
+  try {
+    localStorage.setItem(LINK_PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    // Preferences are non-critical; keep the in-memory copy.
+  }
+}
+
+function loadSourcePrefs(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SOURCE_PREFS_KEY)
+    if (!raw) return {}
+    const value = JSON.parse(raw) as Record<string, unknown>
+    const result: Record<string, boolean> = {}
+    for (const [key, enabled] of Object.entries(value)) {
+      if (enabled === true) result[key] = true
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+function saveSourcePrefs(prefs: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(SOURCE_PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    // Preferences are non-critical; keep the in-memory copy.
+  }
+}
+
+function linkTextKey(url: string): string {
+  return `layer-linktext:${url}`
+}
+
+const REFERENCE_HEADINGS = new Set([
+  'references',
+  'reference',
+  '参考文献',
+  '參考文獻',
+  '参考资料',
+  '參考資料',
+  '参考',
+  '參考',
+  '来源',
+  '來源',
+  '引用',
+  '脚注',
+  '腳註',
+  '注释',
+  '註釋',
+])
+
+function isReferenceHeading(element: Element): boolean {
+  const text = (element.textContent ?? '')
+    .replace(/\[.*?\]/g, ' ')
+    .replace(/edit/gi, ' ')
+    .replace(/[\s_]+/g, ' ')
+    .trim()
+    .toLowerCase()
+  return REFERENCE_HEADINGS.has(text)
+}
+
+function removeReferenceSections(doc: Document): void {
+  doc
+    .querySelectorAll(
+      '.references, .reflist, .reference-list, .mw-references-wrap, ol.references, li.reference, #References',
+    )
+    .forEach((node) => node.remove())
+  const headings = Array.from(doc.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6'))
+  for (const heading of headings) {
+    if (!heading.isConnected || !isReferenceHeading(heading)) continue
+    const level = Number(heading.tagName.slice(1))
+    let node: Element | null = heading
+    while (node) {
+      const next: Element | null = node.nextElementSibling
+      if (
+        node !== heading &&
+        next &&
+        /^H[1-6]$/.test(next.tagName) &&
+        Number(next.tagName.slice(1)) <= level
+      ) {
+        break
+      }
+      node.remove()
+      node = next
+    }
   }
 }
 
@@ -389,6 +506,8 @@ export class LayerMapUI {
   private readonly callbacks: LayerMapCallbacks
   private state: LayerChatState
   private prefs: LayerPrefs = loadLayerPrefs()
+  private linkPrefs: Record<string, LinkPrefs> = loadLinkPrefs()
+  private sourcePrefs: Record<string, boolean> = loadSourcePrefs()
   private pkg: LayerMapPackage | null = null
   private metas: LayerPackageMeta[] = []
   private view: LayerView = { cx: 0.5, cy: 0.5, zoom: 1 }
@@ -2623,18 +2742,7 @@ export class LayerMapUI {
       this.actionButton('设为我的位置', () => this.setUserPosition(marker.x, marker.y)),
     )
     wrap.append(head, meta, actions)
-    if (marker.description) {
-      const details = document.createElement('details')
-      details.className = 'tml-source'
-      details.open = true
-      const summary = document.createElement('summary')
-      summary.textContent = '来源资料（只读）'
-      const body = document.createElement('div')
-      body.className = 'tml-source-text'
-      body.textContent = cleanSourceText(marker.description)
-      details.append(summary, body)
-      wrap.append(details)
-    }
+    wrap.append(this.sourceSection(marker))
     wrap.append(this.linksSection(marker))
     wrap.append(this.noteSection(marker))
     const ai = document.createElement('div')
@@ -2734,12 +2842,20 @@ export class LayerMapUI {
     for (const link of imported) {
       const key = `${marker.id}:${link.id}`
       const saved = this.state.sourceLinkText?.[key]
+      const cached = this.linkTextValue(link)
+      if (cached === undefined && saved?.text) {
+        setGlobalNote(linkTextKey(link.url), saved.text)
+      }
       section.append(
-        this.linkRow(marker, link, true, key, saved?.text, saved?.status),
+        this.linkRow(marker, link, true, key, cached ?? saved?.text, saved?.status),
       )
     }
     for (const link of userLinks) {
-      section.append(this.linkRow(marker, link, false, undefined, link.text, link.status))
+      const cached = this.linkTextValue(link)
+      if (cached === undefined && link.text) setGlobalNote(linkTextKey(link.url), link.text)
+      section.append(
+        this.linkRow(marker, link, false, undefined, cached ?? link.text, link.status),
+      )
     }
     if (!this.linkDraftVisible) {
       const add = document.createElement('button')
@@ -2781,10 +2897,13 @@ export class LayerMapUI {
     title.textContent = link.title
     const status = document.createElement('div')
     status.className = 'tml-link-status'
+    const pref = this.linkPreference(link.url)
     const text = savedText ?? link.text
+    const hasError = Boolean(savedStatus && /失败|错误|没有可读取/.test(savedStatus))
     status.textContent =
-      savedStatus ??
-      (text ? `已保存正文 · ${text.length} 字` : imported ? '导入链接' : '未抓取')
+      hasError || !text
+        ? savedStatus ?? (imported ? '导入链接' : '未抓取')
+        : `已缓存正文 · ${text.length} 字`
     body.append(title, status)
     const actions = document.createElement('div')
     actions.className = 'tml-link-actions'
@@ -2800,12 +2919,12 @@ export class LayerMapUI {
       textBody = document.createElement('pre')
       textBody.className = 'tml-link-text'
       textBody.textContent = text
-      textBody.hidden = true
+      textBody.hidden = !pref.pinned
       const read = document.createElement('button')
       read.type = 'button'
       read.className = 'tml-mini'
-      read.textContent = '正文'
-      read.setAttribute('aria-expanded', 'false')
+      read.textContent = pref.pinned ? '收起正文' : '正文'
+      read.setAttribute('aria-expanded', String(pref.pinned))
       read.addEventListener('click', () => {
         if (!textBody) return
         textBody.hidden = !textBody.hidden
@@ -2826,7 +2945,7 @@ export class LayerMapUI {
     paste.className = 'tml-mini'
     paste.textContent = '粘贴'
     paste.addEventListener('click', () => {
-      const pasted = window.prompt('粘贴正文（只保存在本地地图会话）', text ?? '')
+      const pasted = window.prompt('粘贴正文（会保存在本地全局缓存）', text ?? '')
       if (!pasted?.trim()) return
       this.storeLinkText(link, imported, stateKey, pasted, `已手动保存 · ${pasted.length} 字`)
       this.renderDetail()
@@ -2847,6 +2966,36 @@ export class LayerMapUI {
       })
       actions.append(remove)
     }
+    const options = document.createElement('div')
+    options.className = 'tml-link-options'
+    const pinLabel = document.createElement('label')
+    pinLabel.className = 'tml-link-option'
+    const pin = document.createElement('input')
+    pin.type = 'checkbox'
+    pin.checked = pref.pinned
+    pin.addEventListener('change', () => {
+      this.setLinkPreference(link.url, { pinned: pin.checked })
+      this.renderDetail()
+      if (pin.checked && !text && /^https?:\/\//i.test(link.url)) {
+        void this.fetchLink(marker, link, imported, stateKey)
+      }
+    })
+    pinLabel.append(pin, document.createTextNode(' 常驻显示'))
+    const aiLabel = document.createElement('label')
+    aiLabel.className = 'tml-link-option'
+    const inContext = document.createElement('input')
+    inContext.type = 'checkbox'
+    inContext.checked = pref.inContext
+    inContext.addEventListener('change', () => {
+      this.setLinkPreference(link.url, { inContext: inContext.checked })
+      this.refreshContext()
+      if (inContext.checked && !text && /^https?:\/\//i.test(link.url)) {
+        void this.fetchLink(marker, link, imported, stateKey)
+      }
+    })
+    aiLabel.append(inContext, document.createTextNode(' 加入 AI'))
+    options.append(pinLabel, aiLabel)
+    body.append(options)
     row.append(icon, body, actions)
     if (textBody) row.append(textBody)
     return row
@@ -2859,6 +3008,7 @@ export class LayerMapUI {
     text: string,
     status: string,
   ): void {
+    if (text.trim()) setGlobalNote(linkTextKey(link.url), text)
     if (imported && stateKey) {
       const target = this.state.sourceLinkText ?? (this.state.sourceLinkText = {})
       target[stateKey] = { text, status, fetchedAt: Date.now() }
@@ -3018,12 +3168,93 @@ export class LayerMapUI {
         'script, style, nav, footer, header, aside, noscript, .navbox, .toc, .mw-editsection, sup.reference, .reference, .mw-jump-link',
       )
       .forEach((node) => node.remove())
+    removeReferenceSections(doc)
     return (
       doc.querySelector('.mw-parser-output, #mw-content-text, article, main, body')
         ?.textContent ?? ''
     )
       .replace(/\s+/g, ' ')
       .trim()
+  }
+
+  private markerSourceKey(marker: LayerMarker): string {
+    return `layer-source:${this.pkg?.id ?? ''}:${marker.id}`
+  }
+
+  private markerSourceValue(marker: LayerMarker): string {
+    const global = globalNote(this.markerSourceKey(marker))
+    if (global !== undefined) return global
+    return marker.description ?? ''
+  }
+
+  private markerSourceInContext(marker: LayerMarker): boolean {
+    return this.sourcePrefs[`${this.pkg?.id ?? ''}:${marker.id}`] === true
+  }
+
+  private setMarkerSource(marker: LayerMarker, value: string): void {
+    setGlobalNote(this.markerSourceKey(marker), value)
+    if (this.markerSourceInContext(marker)) this.refreshContext()
+  }
+
+  private sourceSection(marker: LayerMarker): HTMLElement {
+    const details = document.createElement('details')
+    details.className = 'tml-source'
+    details.open = true
+    const summary = document.createElement('summary')
+    summary.textContent = '来源资料（可编辑）'
+    const textarea = document.createElement('textarea')
+    textarea.className = 'tml-source-input'
+    textarea.placeholder = '可编辑的来源资料…'
+    textarea.value = this.markerSourceValue(marker)
+    const status = document.createElement('div')
+    status.className = 'tml-source-status'
+    textarea.addEventListener('input', () => {
+      this.setMarkerSource(marker, textarea.value)
+      status.textContent = '自动保存 · 与笔记一样全局保存'
+      if (this.state.selectedMarkerId === marker.id) this.renderPositionCard()
+    })
+    const actions = document.createElement('div')
+    actions.className = 'tml-source-actions'
+    const aiLabel = document.createElement('label')
+    aiLabel.className = 'tml-link-option'
+    const ai = document.createElement('input')
+    ai.type = 'checkbox'
+    ai.checked = this.markerSourceInContext(marker)
+    ai.addEventListener('change', () => {
+      const key = `${this.pkg?.id ?? ''}:${marker.id}`
+      if (ai.checked) this.sourcePrefs[key] = true
+      else delete this.sourcePrefs[key]
+      saveSourcePrefs(this.sourcePrefs)
+      this.refreshContext()
+    })
+    aiLabel.append(ai, document.createTextNode(' 加入 AI'))
+    const restore = document.createElement('button')
+    restore.type = 'button'
+    restore.className = 'tml-mini'
+    restore.textContent = '恢复导入原文'
+    restore.addEventListener('click', () => {
+      clearGlobalNote(this.markerSourceKey(marker))
+      textarea.value = marker.description ?? ''
+      status.textContent = '已恢复导入原文'
+      this.refreshContext()
+    })
+    actions.append(aiLabel, restore)
+    details.append(summary, textarea, status, actions)
+    return details
+  }
+
+  private linkPreference(url: string): LinkPrefs {
+    return this.linkPrefs[url] ?? { pinned: false, inContext: false }
+  }
+
+  private setLinkPreference(url: string, patch: Partial<LinkPrefs>): void {
+    this.linkPrefs[url] = { ...this.linkPreference(url), ...patch }
+    saveLinkPrefs(this.linkPrefs)
+  }
+
+  private linkTextValue(link: LayerLink): string | undefined {
+    const global = globalNote(linkTextKey(link.url))
+    return global !== undefined ? global : undefined
   }
 
   private notePrefix(): string {
@@ -3275,6 +3506,36 @@ export class LayerMapUI {
       .slice(0, this.prefs.nearbyCount)
   }
 
+  private contextWikiTexts(marker: LayerMarker): Array<{ title: string; text: string }> {
+    const imported = marker.sourceLinks ?? (
+      marker.sourceUrl
+        ? [{
+            id: `source:${marker.id}:wiki`,
+            kind: 'wikipedia' as const,
+            title: marker.sourceTitle || marker.name,
+            url: marker.sourceUrl,
+          }]
+        : []
+    )
+    const userLinks = this.state.links?.[marker.id] ?? []
+    const seen = new Set<string>()
+    const result: Array<{ title: string; text: string }> = []
+    for (const [link, importedLink] of [
+      ...imported.map((link) => [link, true] as const),
+      ...userLinks.map((link) => [link, false] as const),
+    ]) {
+      if (!this.linkPreference(link.url).inContext) continue
+      const key = `${marker.id}:${link.id}`
+      const text = this.linkTextValue(link) ??
+        (importedLink ? this.state.sourceLinkText?.[key]?.text : link.text)
+      const cleanText = (text ?? '').trim()
+      if (!cleanText || seen.has(cleanText)) continue
+      seen.add(cleanText)
+      result.push({ title: link.title, text: cleanText })
+    }
+    return result
+  }
+
   private refreshContext(): void {
     const pkg = this.pkg
     if (!pkg) {
@@ -3320,6 +3581,11 @@ export class LayerMapUI {
       category: category?.name,
       region: region?.name,
       note: note?.trim() || undefined,
+      sourceMaterial:
+        marker && this.markerSourceInContext(marker)
+          ? this.markerSourceValue(marker).trim() || undefined
+          : undefined,
+      wikiTexts: marker ? this.contextWikiTexts(marker) : undefined,
       nearby: nearby.length > 0 ? nearby : undefined,
       nearbyAnchor: anchorKind,
       nearbyScope: this.prefs.nearbyScope,

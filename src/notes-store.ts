@@ -19,7 +19,7 @@ type NoteRecord = {
 let databasePromise: Promise<IDBDatabase> | null = null
 let loadPromise: Promise<void> | null = null
 let cache: Map<string, string> | null = null
-const dirty = new Map<string, string>()
+const dirty = new Map<string, string | null>()
 let flushTimer: number | undefined
 let pageHideBound = false
 
@@ -112,6 +112,17 @@ export function setGlobalNote(key: string, text: string): void {
   }
 }
 
+export function clearGlobalNote(key: string): void {
+  if (cache) cache.delete(key)
+  dirty.set(key, null)
+  if (flushTimer === undefined) {
+    flushTimer = window.setTimeout(() => {
+      flushTimer = undefined
+      void flushGlobalNotes()
+    }, 250)
+  }
+}
+
 export async function flushGlobalNotes(): Promise<void> {
   if (dirty.size === 0) return
   if (flushTimer !== undefined) {
@@ -126,7 +137,8 @@ export async function flushGlobalNotes(): Promise<void> {
     const store = transaction.objectStore(STORE)
     const updatedAt = Date.now()
     for (const [key, text] of entries) {
-      store.put({ key, text, updatedAt } satisfies NoteRecord)
+      if (text === null) store.delete(key)
+      else store.put({ key, text, updatedAt } satisfies NoteRecord)
     }
     await transactionDone(transaction)
   } catch (error) {

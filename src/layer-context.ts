@@ -77,6 +77,14 @@ export function buildLayerContext(state: LayerChatState): string {
     }
   }
   if (snapshot.note) lines.push(`Place note: ${clean(snapshot.note)}`)
+  if (snapshot.sourceMaterial) {
+    lines.push(`Source material: ${clean(snapshot.sourceMaterial)}`)
+  }
+  if (snapshot.wikiTexts?.length) {
+    for (const item of snapshot.wikiTexts) {
+      lines.push(`Wiki text (${clean(item.title)}): ${clean(item.text)}`)
+    }
+  }
   lines.push('[/SCENE MAP]')
   return lines.join('\n')
 }

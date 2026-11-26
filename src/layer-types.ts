@@ -226,6 +226,10 @@ export type LayerContextSnapshot = {
   category?: string
   region?: string
   note?: string
+  /** User-edited source material, only when explicitly included. */
+  sourceMaterial?: string
+  /** Fetched wiki/source text explicitly checked for AI context. */
+  wikiTexts?: Array<{ title: string; text: string }>
   nearby?: LayerNearbyPlace[]
   nearbyAnchor?: 'my position' | 'current place' | 'view center'
   nearbyScope?: 'view' | 'map'
@@ -439,6 +443,18 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
     category: typeof value.category === 'string' ? value.category : undefined,
     region: typeof value.region === 'string' ? value.region : undefined,
     note: typeof value.note === 'string' ? value.note : undefined,
+    sourceMaterial:
+      typeof value.sourceMaterial === 'string' && value.sourceMaterial.trim()
+        ? value.sourceMaterial
+        : undefined,
+    wikiTexts: Array.isArray(value.wikiTexts)
+      ? value.wikiTexts.filter(
+          (item): item is { title: string; text: string } =>
+            Boolean(item) &&
+            typeof item.title === 'string' &&
+            typeof item.text === 'string',
+        )
+      : undefined,
     nearby: nearby && nearby.length > 0 ? nearby : undefined,
     nearbyAnchor:
       value.nearbyAnchor === 'my position' ||
