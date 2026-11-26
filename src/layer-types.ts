@@ -203,6 +203,18 @@ export type LayerView = {
   zoom: number
 }
 
+export type LayerFavoritePlace = {
+  key: string
+  name: string
+  category?: string
+  region?: string
+  x?: number
+  y?: number
+  note?: string
+  sourceMaterial?: string
+  wikiTexts?: Array<{ title: string; text: string }>
+}
+
 export type LayerNearbyPlace = {
   id: string
   name: string
@@ -233,8 +245,10 @@ export type LayerContextSnapshot = {
   /** Fetched wiki/source text explicitly checked for AI context. */
   wikiTexts?: Array<{ title: string; text: string }>
   nearby?: LayerNearbyPlace[]
-  nearbyAnchor?: 'my position' | 'current place' | 'view center'
-  nearbyScope?: 'view' | 'map'
+  nearbyAnchor?: 'my position' | 'at place' | 'view center'
+  nearbyScope?: 'view' | 'map' | 'radius'
+  nearbyCoords?: boolean
+  favorites?: LayerFavoritePlace[]
   /** Present only after the user calibrated a grid on this map package. */
   grid?: LayerGridConfig
   updatedAt: number
@@ -248,6 +262,10 @@ export type LayerChatState = {
   currentMarkerId?: string
   /** The user's own scene position in normalized map coordinates. */
   userPosition?: { x: number; y: number }
+  /** Marker the user has actually moved onto; only this place is "at place". */
+  atPlaceId?: string
+  /** Nearby radius as a fraction of the map span width. */
+  nearbyRadius?: number
   selectedRegionId?: string
   currentRegionId?: string
   hiddenCategories?: string[]
@@ -357,6 +375,11 @@ export function loadLayerState(ctx: StContext): LayerChatState {
       Number.isFinite(value.userPosition.y)
         ? { x: value.userPosition.x, y: value.userPosition.y }
         : undefined,
+    atPlaceId: typeof value.atPlaceId === 'string' ? value.atPlaceId : undefined,
+    nearbyRadius:
+      typeof value.nearbyRadius === 'number' && Number.isFinite(value.nearbyRadius)
+        ? Math.min(0.8, Math.max(0.001, value.nearbyRadius))
+        : undefined,
     selectedRegionId:
       typeof value.selectedRegionId === 'string' ? value.selectedRegionId : undefined,
     currentRegionId:
@@ -460,14 +483,23 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
     nearby: nearby && nearby.length > 0 ? nearby : undefined,
     nearbyAnchor:
       value.nearbyAnchor === 'my position' ||
-      value.nearbyAnchor === 'current place' ||
+      value.nearbyAnchor === 'at place' ||
       value.nearbyAnchor === 'view center'
         ? value.nearbyAnchor
         : undefined,
     nearbyScope:
-      value.nearbyScope === 'view' || value.nearbyScope === 'map'
+      value.nearbyScope === 'view' ||
+      value.nearbyScope === 'map' ||
+      value.nearbyScope === 'radius'
         ? value.nearbyScope
         : undefined,
+    nearbyCoords: value.nearbyCoords !== false,
+    favorites: Array.isArray(value.favorites)
+      ? value.favorites.filter(
+          (item): item is LayerFavoritePlace =>
+            Boolean(item) && typeof item.key === 'string' && typeof item.name === 'string',
+        )
+      : undefined,
     grid,
     updatedAt:
       typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)

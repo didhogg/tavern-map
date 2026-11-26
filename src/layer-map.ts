@@ -38,6 +38,7 @@ import {
   type LayerImageFit,
   type LayerImageRect,
   type LayerGridConfig,
+  type LayerFavoritePlace,
   type LayerLink,
   type LayerLinkKind,
   type LayerMapPackage,
@@ -55,8 +56,15 @@ import {
   setGlobalNote,
 } from './notes-store'
 import { loadSettings, saveSettings } from './settings'
+import {
+  layerFavoriteKey,
+  listFavorites,
+  removeFavorite,
+  toggleFavorite,
+  type FavoritePlace,
+} from './favorites-store'
 import { LayerWindowController } from './layer-window'
-import type { StContext } from './types'
+import type { Settings, StContext } from './types'
 
 const PANEL_ID = 'tm-layer'
 const IMAGE_FIT_MARGIN = 0.94
@@ -70,106 +78,6 @@ const IMAGE_PANEL_WIDTH = 340
 /** Decoded-tile cache only; imported tile files and map data are never discarded. */
 const DECODED_TILE_MEMORY_BUDGET = 256 * 1024 * 1024
 const TILE_LOAD_CONCURRENCY = 8
-const LAYER_PREFS_KEY = 'tavern-map:layer-context-prefs:v1'
-
-type LayerPrefs = {
-  nearbyCount: number
-  nearbyScope: 'view' | 'map'
-  nearbyNotes: boolean
-  currentNote: boolean
-}
-
-const DEFAULT_LAYER_PREFS: LayerPrefs = {
-  nearbyCount: 8,
-  nearbyScope: 'view',
-  nearbyNotes: false,
-  currentNote: true,
-}
-
-function loadLayerPrefs(): LayerPrefs {
-  try {
-    const raw = localStorage.getItem(LAYER_PREFS_KEY)
-    if (!raw) return { ...DEFAULT_LAYER_PREFS }
-    const value = JSON.parse(raw) as Partial<LayerPrefs>
-    return {
-      nearbyCount: Math.min(
-        20,
-        Math.max(0, Math.round(Number(value.nearbyCount ?? DEFAULT_LAYER_PREFS.nearbyCount) || 0)),
-      ),
-      nearbyScope: value.nearbyScope === 'map' ? 'map' : 'view',
-      nearbyNotes: value.nearbyNotes === true,
-      currentNote: value.currentNote !== false,
-    }
-  } catch {
-    return { ...DEFAULT_LAYER_PREFS }
-  }
-}
-
-function saveLayerPrefs(prefs: LayerPrefs): void {
-  try {
-    localStorage.setItem(LAYER_PREFS_KEY, JSON.stringify(prefs))
-  } catch {
-    // Preferences are non-critical; keep the in-memory copy.
-  }
-}
-
-const LINK_PREFS_KEY = 'tavern-map:layer-link-prefs:v1'
-const SOURCE_PREFS_KEY = 'tavern-map:layer-source-prefs:v1'
-
-type LinkPrefs = {
-  pinned: boolean
-  inContext: boolean
-}
-
-function loadLinkPrefs(): Record<string, LinkPrefs> {
-  try {
-    const raw = localStorage.getItem(LINK_PREFS_KEY)
-    if (!raw) return {}
-    const value = JSON.parse(raw) as Record<string, Partial<LinkPrefs>>
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([url, entry]) => Boolean(url) && entry && typeof entry === 'object')
-        .map(([url, entry]) => [
-          url,
-          { pinned: entry.pinned === true, inContext: entry.inContext === true },
-        ]),
-    )
-  } catch {
-    return {}
-  }
-}
-
-function saveLinkPrefs(prefs: Record<string, LinkPrefs>): void {
-  try {
-    localStorage.setItem(LINK_PREFS_KEY, JSON.stringify(prefs))
-  } catch {
-    // Preferences are non-critical; keep the in-memory copy.
-  }
-}
-
-function loadSourcePrefs(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(SOURCE_PREFS_KEY)
-    if (!raw) return {}
-    const value = JSON.parse(raw) as Record<string, unknown>
-    const result: Record<string, boolean> = {}
-    for (const [key, enabled] of Object.entries(value)) {
-      if (enabled === true) result[key] = true
-    }
-    return result
-  } catch {
-    return {}
-  }
-}
-
-function saveSourcePrefs(prefs: Record<string, boolean>): void {
-  try {
-    localStorage.setItem(SOURCE_PREFS_KEY, JSON.stringify(prefs))
-  } catch {
-    // Preferences are non-critical; keep the in-memory copy.
-  }
-}
-
 function linkTextKey(url: string): string {
   return `layer-linktext:${url}`
 }
@@ -325,6 +233,11 @@ const PANEL_HTML = `
   </header>
   <div class="tml-body">
     <aside class="tml-left">
+      <div class="tml-side-tabs">
+        <button type="button" class="active" data-left-tab="layers">图层</button>
+        <button type="button" data-left-tab="favorites">收藏 <span id="tml-favorite-count">0</span></button>
+      </div>
+      <div id="tml-layer-pane">
       <div class="tml-side-heading">
         <span>图层</span>
         <span id="tml-visible-count" class="tml-side-count">0</span>
@@ -339,6 +252,8 @@ const PANEL_HTML = `
         <button type="button" class="tml-mini" data-action="fit">适配</button>
       </div>
       <div class="tml-side-note" id="tml-package-info"></div>
+      </div>
+      <div id="tml-favorites" class="tml-favorites" hidden></div>
     </aside>
     <main class="tml-main">
       <div class="tml-toolbar">
@@ -349,7 +264,7 @@ const PANEL_HTML = `
         <div class="tml-toolbar-actions">
           <button type="button" class="tml-tool active" data-action="labels" aria-pressed="true">标签</button>
           <button type="button" class="tml-tool active" data-action="regions" aria-pressed="true">区域</button>
-          <button type="button" class="tml-tool" data-action="locate" title="放置或定位我的位置" aria-label="我的位置">◎ 位置</button>
+          <button type="button" class="tml-tool" data-action="locate" title="回到我的位置；未设置时放置" aria-label="回到我的位置">◎ 回到我</button>
           <button type="button" class="tml-tool" data-action="grid" title="校准地图网格" aria-label="网格校准"># 网格</button>
           <button type="button" class="tml-tool tml-mobile-only" data-action="filters">图层</button>
           <button type="button" class="tml-tool" data-action="zoom-out" aria-label="缩小">−</button>
@@ -360,6 +275,7 @@ const PANEL_HTML = `
       <div id="tml-viewport" class="tml-viewport">
         <div id="tml-maplibre" class="tml-maplibre" hidden></div>
         <canvas id="tml-canvas"></canvas>
+        <button type="button" id="tml-user-stamp" class="tml-user-stamp" hidden title="拖动我">我</button>
         <button type="button" id="tml-grid-origin" class="tml-grid-handle tml-grid-origin" hidden aria-label="拖动网格原点">0,0</button>
         <button type="button" id="tml-grid-scale" class="tml-grid-handle tml-grid-scale" hidden aria-label="拖动缩放网格">↘</button>
         <div id="tml-place-bar" class="tml-place-bar" hidden>
@@ -474,21 +390,8 @@ const PANEL_HTML = `
           </div>
         </section>
         <section class="tml-context-section">
-          <div class="tml-context-label">附近地点</div>
-          <label class="tml-context-field">数量
-            <select id="tml-context-count">
-              <option value="0">0</option><option value="4">4</option><option value="8">8</option>
-              <option value="12">12</option><option value="20">20</option>
-            </select>
-          </label>
-          <label class="tml-context-field">范围
-            <select id="tml-context-scope">
-              <option value="view">当前视野内</option>
-              <option value="map">全图最近</option>
-            </select>
-          </label>
-          <label class="tml-context-check"><input id="tml-context-nearby-notes" type="checkbox"> 附近地点笔记</label>
-          <label class="tml-context-check"><input id="tml-context-current-note" type="checkbox"> 当前地点笔记</label>
+          <div class="tml-context-label">AI 内容</div>
+          <div class="tml-context-hint">所在地点、周围地点、收藏地点的字段开关在扩展设置 › Tavern Map 里调整。</div>
         </section>
         <section class="tml-context-section">
           <div class="tml-context-label">地图网格</div>
@@ -516,9 +419,6 @@ export class LayerMapUI {
   private ctx: StContext
   private readonly callbacks: LayerMapCallbacks
   private state: LayerChatState
-  private prefs: LayerPrefs = loadLayerPrefs()
-  private linkPrefs: Record<string, LinkPrefs> = loadLinkPrefs()
-  private sourcePrefs: Record<string, boolean> = loadSourcePrefs()
   private pkg: LayerMapPackage | null = null
   private metas: LayerPackageMeta[] = []
   private view: LayerView = { cx: 0.5, cy: 0.5, zoom: 1 }
@@ -528,6 +428,9 @@ export class LayerMapUI {
   private placingUser = false
   private gridPanelOpen = false
   private gridSaveTimer: number | undefined
+  private userDrag: { startX: number; startY: number; originX: number; originY: number } | null = null
+  private userStampEl!: HTMLButtonElement
+  private favoriteMarkerIds = new Set<string>()
   private gridHandleDrag: {
     mode: 'origin' | 'scale'
     startX: number
@@ -614,6 +517,9 @@ export class LayerMapUI {
   private canvasEl!: HTMLCanvasElement
   private viewportEl!: HTMLElement
   private packageSelectEl!: HTMLSelectElement
+  private layerPaneEl!: HTMLElement
+  private favoritesEl!: HTMLElement
+  private favoriteCountEl!: HTMLElement
   private categoriesEl!: HTMLElement
   private categoryFilterEl!: HTMLInputElement
   private detailEl!: HTMLElement
@@ -645,10 +551,6 @@ export class LayerMapUI {
   private contextPositionEl!: HTMLElement
   private contextXEl!: HTMLInputElement
   private contextYEl!: HTMLInputElement
-  private contextCountEl!: HTMLSelectElement
-  private contextScopeEl!: HTMLSelectElement
-  private contextNearbyNotesEl!: HTMLInputElement
-  private contextCurrentNoteEl!: HTMLInputElement
   private contextInjectEl!: HTMLInputElement
   private contextGridEl!: HTMLElement
 
@@ -751,6 +653,7 @@ export class LayerMapUI {
           this.syncHeaderImage()
           this.renderEmpty('这个地图包已删除。可以重新导入，或选择另一个地图包。')
           this.renderCategories()
+          this.renderFavorites()
           this.renderDetail()
           this.requestDraw()
         }
@@ -771,6 +674,12 @@ export class LayerMapUI {
 
   isOpen(): boolean {
     return !this.panelEl.hidden
+  }
+
+  handleSettingsChanged(): void {
+    if (!this.pkg) return
+    this.renderDetail()
+    this.refreshContext()
   }
 
   async open(): Promise<void> {
@@ -797,6 +706,7 @@ export class LayerMapUI {
       this.syncHeaderImage()
       this.renderEmpty('还没有地图包。点右上角“导入”读取本地 Fandom 或 Map Genie 数据。')
       this.renderCategories()
+      this.renderFavorites()
       this.renderDetail()
       this.requestDraw()
     }
@@ -894,6 +804,9 @@ export class LayerMapUI {
     this.maplibreEl = document.getElementById('tml-maplibre') as HTMLElement
     this.viewportEl = document.getElementById('tml-viewport') as HTMLElement
     this.packageSelectEl = document.getElementById('tml-package') as HTMLSelectElement
+    this.layerPaneEl = document.getElementById('tml-layer-pane') as HTMLElement
+    this.favoritesEl = document.getElementById('tml-favorites') as HTMLElement
+    this.favoriteCountEl = document.getElementById('tml-favorite-count') as HTMLElement
     this.categoriesEl = document.getElementById('tml-categories') as HTMLElement
     this.categoryFilterEl = document.getElementById('tml-filter') as HTMLInputElement
     this.detailEl = document.getElementById('tml-detail') as HTMLElement
@@ -913,6 +826,7 @@ export class LayerMapUI {
     this.nearbyEl = document.getElementById('tml-nearby') as HTMLElement
     this.placeBarEl = document.getElementById('tml-place-bar') as HTMLElement
     this.gridPanelEl = document.getElementById('tml-grid-panel') as HTMLElement
+    this.userStampEl = document.getElementById('tml-user-stamp') as HTMLButtonElement
     this.gridOriginHandleEl = document.getElementById('tml-grid-origin') as HTMLButtonElement
     this.gridScaleHandleEl = document.getElementById('tml-grid-scale') as HTMLButtonElement
     this.gridValueEl = document.getElementById('tml-grid-value') as HTMLInputElement
@@ -925,10 +839,6 @@ export class LayerMapUI {
     this.contextPositionEl = document.getElementById('tml-context-position') as HTMLElement
     this.contextXEl = document.getElementById('tml-context-x') as HTMLInputElement
     this.contextYEl = document.getElementById('tml-context-y') as HTMLInputElement
-    this.contextCountEl = document.getElementById('tml-context-count') as HTMLSelectElement
-    this.contextScopeEl = document.getElementById('tml-context-scope') as HTMLSelectElement
-    this.contextNearbyNotesEl = document.getElementById('tml-context-nearby-notes') as HTMLInputElement
-    this.contextCurrentNoteEl = document.getElementById('tml-context-current-note') as HTMLInputElement
     this.contextInjectEl = document.getElementById('tml-context-inject') as HTMLInputElement
     this.contextGridEl = document.getElementById('tml-context-grid') as HTMLElement
     const inspector = this.positionEl.parentElement
@@ -963,6 +873,10 @@ export class LayerMapUI {
     this.canvasEl.addEventListener('pointercancel', (event) => this.onPointerUp(event))
     this.canvasEl.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
     this.canvasEl.addEventListener('dblclick', (event) => this.onDoubleClick(event))
+    this.userStampEl.addEventListener('pointerdown', (event) => this.onUserStampDown(event))
+    this.userStampEl.addEventListener('pointermove', (event) => this.onUserStampMove(event))
+    this.userStampEl.addEventListener('pointerup', (event) => this.onUserStampUp(event))
+    this.userStampEl.addEventListener('pointercancel', (event) => this.onUserStampUp(event))
     this.searchEl.addEventListener('input', () => this.onSearchInput())
     this.searchEl.addEventListener('keydown', (event) => this.onSearchKeyDown(event))
     this.categoryFilterEl.addEventListener('input', () => this.renderCategories())
@@ -984,12 +898,12 @@ export class LayerMapUI {
         this.contextModalEl.hidden = true
         this.startUserPlacement()
       } else if (action === 'from-selected') {
-        const marker = this.currentMarker() ?? this.selectedMarker()
+        const marker = this.selectedMarker()
         if (marker) {
-          this.setUserPosition(marker.x, marker.y)
+          this.setUserPosition(marker.x, marker.y, marker.id)
           this.showContextStatus()
         } else {
-          this.toast('先选一个地点，再设为我的位置')
+          this.toast('先点开一个地点，再移动我过去')
         }
       } else if (action === 'clear-position') {
         this.clearUserPosition()
@@ -999,32 +913,6 @@ export class LayerMapUI {
         this.openGridPanel()
       }
     })
-    const updatePrefs = (): void => {
-      this.prefs = {
-        ...this.prefs,
-        nearbyCount: Number(this.contextCountEl.value) || 0,
-        nearbyScope: this.contextScopeEl.value === 'map' ? 'map' : 'view',
-        nearbyNotes: this.contextNearbyNotesEl.checked,
-        currentNote: this.contextCurrentNoteEl.checked,
-      }
-      saveLayerPrefs(this.prefs)
-      this.refreshContext()
-      this.renderContextPreview()
-    }
-    const updateCoords = (): void => {
-      const x = Number(this.contextXEl.value)
-      const y = Number(this.contextYEl.value)
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return
-      this.setUserPosition(Math.min(100, Math.max(0, x)) / 100, Math.min(100, Math.max(0, y)) / 100)
-      this.renderContextControls()
-      this.renderContextPreview()
-    }
-    this.contextXEl.addEventListener('change', updateCoords)
-    this.contextYEl.addEventListener('change', updateCoords)
-    this.contextCountEl.addEventListener('change', updatePrefs)
-    this.contextScopeEl.addEventListener('change', updatePrefs)
-    this.contextNearbyNotesEl.addEventListener('change', updatePrefs)
-    this.contextCurrentNoteEl.addEventListener('change', updatePrefs)
     this.contextInjectEl.addEventListener('change', () => {
       const settings = loadSettings(this.ctx)
       settings.layerMapContext = this.contextInjectEl.checked
@@ -1111,6 +999,16 @@ export class LayerMapUI {
 
   private onPanelClick(event: MouseEvent): void {
     const target = event.target as HTMLElement
+    const leftTab = target.closest<HTMLElement>('[data-left-tab]')?.dataset.leftTab
+    if (leftTab === 'layers' || leftTab === 'favorites') {
+      this.layerPaneEl.hidden = leftTab !== 'layers'
+      this.favoritesEl.hidden = leftTab !== 'favorites'
+      for (const button of this.panelEl.querySelectorAll<HTMLElement>('[data-left-tab]')) {
+        button.classList.toggle('active', button.dataset.leftTab === leftTab)
+      }
+      this.renderFavorites()
+      return
+    }
     const action = target.closest<HTMLElement>('[data-action]')?.dataset.action
     if (!action) return
     switch (action) {
@@ -1199,12 +1097,8 @@ export class LayerMapUI {
   }
 
   private renderContextControls(): void {
-    if (!this.contextCountEl) return
+    if (!this.contextInjectEl) return
     this.renderContextPosition()
-    this.contextCountEl.value = String(this.prefs.nearbyCount)
-    this.contextScopeEl.value = this.prefs.nearbyScope
-    this.contextNearbyNotesEl.checked = this.prefs.nearbyNotes
-    this.contextCurrentNoteEl.checked = this.prefs.currentNote
     this.contextInjectEl.checked = loadSettings(this.ctx).layerMapContext
     const grid = this.gridConfig()
     this.contextGridEl.textContent = grid
@@ -1274,6 +1168,7 @@ export class LayerMapUI {
       this.syncHeaderImage()
       this.renderEmpty('地图包读取失败或已不存在。')
       this.renderCategories()
+      this.renderFavorites()
       this.renderDetail()
       this.requestDraw()
       return
@@ -1284,6 +1179,7 @@ export class LayerMapUI {
       this.state.selectedMarkerId = undefined
       this.state.currentMarkerId = undefined
       this.state.userPosition = undefined
+      this.state.atPlaceId = undefined
       this.state.selectedRegionId = undefined
       this.state.currentRegionId = undefined
       this.state.view = undefined
@@ -1335,6 +1231,8 @@ export class LayerMapUI {
       this.loadImage(pkg)
     }
     this.renderCategories()
+    this.refreshFavoriteMarkerIds()
+    this.renderFavorites()
     this.renderDetail()
     this.syncToolButtons()
     this.updatePackageInfo()
@@ -1761,11 +1659,15 @@ export class LayerMapUI {
     this.refreshContext()
   }
 
-  private onTileMapClick(event: { point: { x: number; y: number }; lngLat: { lng: number; lat: number } }): void {
+  private onTileMapClick(event: {
+    point: { x: number; y: number }
+    lngLat: { lng: number; lat: number }
+    originalEvent?: MouseEvent
+  }): void {
     if (!this.pkg) return
     if (this.placingUser) {
       const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
-      this.setUserPosition(point.x, point.y)
+      this.setUserPosition(point.x, point.y, undefined, !event.originalEvent?.altKey)
       return
     }
     const rect = this.viewportEl.getBoundingClientRect()
@@ -1830,7 +1732,8 @@ export class LayerMapUI {
     this.drawGrid(context, width, height)
     this.drawRegions(context, width, height)
     this.drawMarkers(context, width, height)
-    this.drawUserPosition(context, width, height)
+    this.drawUserRadius(context, width, height)
+    this.updateUserStamp()
     this.updateGridHandles()
     this.updateStatus()
   }
@@ -1896,40 +1799,6 @@ export class LayerMapUI {
     context.restore()
   }
 
-  private drawUserPosition(
-    context: CanvasRenderingContext2D,
-    width: number,
-    height: number,
-  ): void {
-    const user = this.state.userPosition
-    if (!user) return
-    const [x, y] = this.project(user.x, user.y, width, height)
-    if (x < -30 || y < -30 || x > width + 30 || y > height + 30) return
-    context.save()
-    context.beginPath()
-    context.arc(x, y, 10, 0, Math.PI * 2)
-    context.fillStyle = 'rgba(57, 181, 255, 0.18)'
-    context.fill()
-    context.beginPath()
-    context.arc(x, y, 5.5, 0, Math.PI * 2)
-    context.fillStyle = '#39b5ff'
-    context.fill()
-    context.lineWidth = 2.5
-    context.strokeStyle = '#ffffff'
-    context.stroke()
-    context.font = '600 11px system-ui, sans-serif'
-    context.textAlign = 'left'
-    context.textBaseline = 'middle'
-    const label = '我的位置'
-    const metrics = context.measureText(label)
-    const bx = x + 10
-    const by = y - 10
-    context.fillStyle = 'rgba(7, 13, 19, 0.9)'
-    context.fillRect(bx, by, metrics.width + 10, 18)
-    context.fillStyle = '#8fe0ff'
-    context.fillText(label, bx + 5, by + 9)
-    context.restore()
-  }
 
   private drawImageMap(context: CanvasRenderingContext2D, width: number, height: number): void {
     const pkg = this.pkg
@@ -2147,7 +2016,7 @@ export class LayerMapUI {
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const categories = new Map(pkg.categories.map((category) => [category.id, category]))
     const selectedId = this.state.selectedMarkerId
-    const currentId = this.state.currentMarkerId
+    const favoriteIds = this.favoriteMarkerIds
     const labelThreshold = pkg.kind === 'image' ? LABEL_IMAGE_ZOOM : LABEL_TILE_ZOOM
     const showLabels = this.state.showLabels !== false && this.view.zoom >= labelThreshold
     const visible = this.markersInView(width, height).filter(
@@ -2158,17 +2027,24 @@ export class LayerMapUI {
       const [x, y] = this.project(marker.x, marker.y, width, height)
       const category = categories.get(marker.categoryId)
       const selected = marker.id === selectedId
-      const current = marker.id === currentId
+      const current = false
       context.save()
       context.beginPath()
-      context.arc(x, y, current ? 7 : selected ? 6.5 : 4.5, 0, Math.PI * 2)
+      context.arc(x, y, current ? 8 : selected ? 7.5 : 4.5, 0, Math.PI * 2)
       context.fillStyle = category?.color ?? '#e6b56a'
       context.globalAlpha = current || selected ? 1 : 0.9
       context.fill()
       context.globalAlpha = 1
-      context.lineWidth = current ? 3 : selected ? 2 : 1.2
+      context.lineWidth = current ? 3 : selected ? 2.5 : 1.2
       context.strokeStyle = current ? '#ffffff' : selected ? '#f3c87f' : 'rgba(255,255,255,0.8)'
       context.stroke()
+      if (favoriteIds.has(marker.id)) {
+        context.font = '600 10px system-ui, sans-serif'
+        context.fillStyle = '#ffd98f'
+        context.textAlign = 'center'
+        context.textBaseline = 'middle'
+        context.fillText('★', x + 7, y - 8)
+      }
       if (current) {
         context.beginPath()
         context.arc(x, y, 12, 0, Math.PI * 2)
@@ -2393,7 +2269,7 @@ export class LayerMapUI {
         this.canvasEl.releasePointerCapture(event.pointerId)
       }
       this.canvasEl.style.cursor = 'grab'
-      this.setUserPosition(x, y)
+      this.setUserPosition(x, y, undefined, !event.altKey)
       return
     }
     if (this.aligning) {
@@ -2773,11 +2649,6 @@ export class LayerMapUI {
         return
       }
     }
-    const current = this.currentMarker()
-    if (current) {
-      this.detailEl.append(this.markerDetail(current))
-      return
-    }
     this.detailEl.append(
       textElement('div', 'tml-empty-small', '点地图上的地点查看详情；也可以搜索或使用左侧分类。'),
     )
@@ -2788,7 +2659,8 @@ export class LayerMapUI {
     if (!pkg) return textElement('div', 'tml-empty-small', '')
     const category = pkg.categories.find((item) => item.id === marker.categoryId)
     const region = this.regionForMarker(marker)
-    const current = this.state.currentMarkerId === marker.id
+    const atPlace = this.state.atPlaceId === marker.id
+    const favorite = this.markerFavorite(marker)
     const wrap = document.createElement('article')
     wrap.className = 'tml-detail-card'
     const head = document.createElement('header')
@@ -2811,7 +2683,17 @@ export class LayerMapUI {
       this.persist()
       this.requestDraw()
     })
-    head.append(titleWrap, close)
+    const star = document.createElement('button')
+    star.type = 'button'
+    star.className = `tml-star-toggle${favorite ? ' active' : ''}`
+    star.textContent = favorite ? '★' : '☆'
+    star.title = favorite ? '取消收藏' : '收藏地点'
+    star.addEventListener('click', () => {
+      this.toggleMarkerFavorite(marker)
+      this.renderDetail()
+      this.renderFavorites()
+    })
+    head.append(titleWrap, star, close)
     const meta = document.createElement('div')
     meta.className = 'tml-detail-meta'
     const gridText = this.gridText(marker.x, marker.y)
@@ -2827,8 +2709,7 @@ export class LayerMapUI {
     actions.className = 'tml-detail-actions'
     actions.append(
       this.actionButton('居中', () => this.centerOnMarker(marker)),
-      this.actionButton(current ? '取消当前' : '设为当前', () => this.toggleCurrent(marker), current),
-      this.actionButton('设为我的位置', () => this.setUserPosition(marker.x, marker.y)),
+      this.actionButton(atPlace ? '我在这里' : '移动我到这里', () => this.setUserPosition(marker.x, marker.y, marker.id), atPlace),
     )
     wrap.append(head, meta, actions)
     wrap.append(this.sourceSection(marker))
@@ -2837,19 +2718,113 @@ export class LayerMapUI {
     const ai = document.createElement('div')
     ai.className = 'tml-ai-row'
     const aiLabel = document.createElement('span')
-    aiLabel.textContent = current
-      ? '当前地点会进入 AI 上下文'
-      : '选中的地点也会进入 AI 上下文'
+    aiLabel.textContent = atPlace
+      ? '我在的地点会进入 AI 上下文'
+      : '点开只是查看；AI 不会把这里当成我在的地点'
     const preview = this.actionButton('预览 AI', () => this.showContextStatus())
     ai.append(aiLabel, preview)
     wrap.append(ai)
     return wrap
   }
 
+  private markerFavoriteKey(marker: LayerMarker): string {
+    return layerFavoriteKey(this.pkg?.id ?? '', marker.id)
+  }
+
+  private markerFavorite(marker: LayerMarker): FavoritePlace | undefined {
+    const key = this.markerFavoriteKey(marker)
+    return listFavorites().find((favorite) => favorite.key === key)
+  }
+
+  private toggleMarkerFavorite(marker: LayerMarker): void {
+    const pkg = this.pkg
+    if (!pkg) return
+    const place: FavoritePlace = {
+      key: this.markerFavoriteKey(marker),
+      kind: 'layer',
+      mapId: pkg.id,
+      mapName: pkg.name,
+      markerId: marker.id,
+      name: marker.name,
+      category: pkg.categories.find((item) => item.id === marker.categoryId)?.name,
+      x: marker.x,
+      y: marker.y,
+      note: this.markerNoteValue(marker),
+      savedAt: Date.now(),
+    }
+    const added = toggleFavorite(place)
+    this.toast(added ? `已收藏 ${marker.name}` : `已取消收藏 ${marker.name}`)
+    this.refreshContext()
+    this.renderFavorites()
+    this.requestDraw()
+  }
+
+  private refreshFavoriteMarkerIds(): void {
+    const pkg = this.pkg
+    this.favoriteMarkerIds = new Set(
+      pkg
+        ? listFavorites()
+            .filter((favorite) => favorite.kind === 'layer' && favorite.mapId === pkg.id)
+            .map((favorite) => favorite.markerId)
+            .filter((id): id is string => Boolean(id))
+        : [],
+    )
+  }
+
+  private renderFavorites(): void {
+    if (!this.favoritesEl) return
+    this.refreshFavoriteMarkerIds()
+    const pkg = this.pkg
+    const favorites = listFavorites().filter(
+      (favorite) => favorite.kind === 'layer' && pkg && favorite.mapId === pkg.id,
+    )
+    this.favoriteCountEl.textContent = String(favorites.length)
+    this.favoritesEl.replaceChildren()
+    if (!pkg || favorites.length === 0) {
+      this.favoritesEl.append(
+        textElement('div', 'tml-empty-small', '还没有收藏这个地图的地点。点开地点后点 ☆ 收藏。'),
+      )
+      return
+    }
+    for (const favorite of favorites) {
+      const row = document.createElement('div')
+      row.className = 'tml-favorite-row'
+      const marker = favorite.markerId
+        ? pkg.markers.find((item) => item.id === favorite.markerId)
+        : undefined
+      const title = document.createElement('button')
+      title.type = 'button'
+      title.className = 'tml-favorite-main'
+      const name = document.createElement('span')
+      name.className = 'tml-favorite-name'
+      name.textContent = favorite.name
+      const meta = document.createElement('span')
+      meta.className = 'tml-favorite-meta'
+      meta.textContent = [favorite.category, favorite.mapName].filter(Boolean).join(' · ')
+      title.append(name, meta)
+      title.addEventListener('click', () => {
+        if (marker) this.selectMarker(marker, true)
+      })
+      const remove = document.createElement('button')
+      remove.type = 'button'
+      remove.className = 'tml-star-toggle active'
+      remove.textContent = '★'
+      remove.title = '取消收藏'
+      remove.addEventListener('click', () => {
+        removeFavorite(favorite.key)
+        this.refreshContext()
+        this.renderFavorites()
+        this.renderDetail()
+        this.requestDraw()
+      })
+      row.append(title, remove)
+      this.favoritesEl.append(row)
+    }
+  }
+
   private regionDetail(region: LayerRegion): HTMLElement {
     const pkg = this.pkg
     if (!pkg) return textElement('div', 'tml-empty-small', '')
-    const current = this.state.currentRegionId === region.id
     const count = pkg.markers.filter((marker) => this.regionForMarker(marker)?.id === region.id).length
     const wrap = document.createElement('article')
     wrap.className = 'tml-detail-card'
@@ -2878,10 +2853,7 @@ export class LayerMapUI {
     meta.textContent = `${count} 个地点 · ${region.polygons.length} 个多边形`
     const actions = document.createElement('div')
     actions.className = 'tml-detail-actions'
-    actions.append(
-      this.actionButton('居中', () => this.centerOnRegion(region)),
-      this.actionButton(current ? '取消当前区域' : '设为当前区域', () => this.toggleCurrentRegion(region), current),
-    )
+    actions.append(this.actionButton('居中', () => this.centerOnRegion(region)))
     wrap.append(head, meta, actions)
     const noteWrap = document.createElement('div')
     noteWrap.className = 'tml-note-section'
@@ -2986,7 +2958,7 @@ export class LayerMapUI {
     title.textContent = link.title
     const status = document.createElement('div')
     status.className = 'tml-link-status'
-    const pref = this.linkPreference(link.url)
+    const autoExpand = loadSettings(this.ctx).layerAutoExpandWiki
     const text = savedText ?? link.text
     const hasError = Boolean(savedStatus && /失败|错误|没有可读取/.test(savedStatus))
     status.textContent =
@@ -3008,12 +2980,12 @@ export class LayerMapUI {
       textBody = document.createElement('pre')
       textBody.className = 'tml-link-text'
       textBody.textContent = text
-      textBody.hidden = !pref.pinned
+      textBody.hidden = !autoExpand
       const read = document.createElement('button')
       read.type = 'button'
       read.className = 'tml-mini'
-      read.textContent = pref.pinned ? '收起正文' : '正文'
-      read.setAttribute('aria-expanded', String(pref.pinned))
+      read.textContent = autoExpand ? '收起正文' : '正文'
+      read.setAttribute('aria-expanded', String(autoExpand))
       read.addEventListener('click', () => {
         if (!textBody) return
         textBody.hidden = !textBody.hidden
@@ -3055,36 +3027,6 @@ export class LayerMapUI {
       })
       actions.append(remove)
     }
-    const options = document.createElement('div')
-    options.className = 'tml-link-options'
-    const pinLabel = document.createElement('label')
-    pinLabel.className = 'tml-link-option'
-    const pin = document.createElement('input')
-    pin.type = 'checkbox'
-    pin.checked = pref.pinned
-    pin.addEventListener('change', () => {
-      this.setLinkPreference(link.url, { pinned: pin.checked })
-      this.renderDetail()
-      if (pin.checked && !text && /^https?:\/\//i.test(link.url)) {
-        void this.fetchLink(marker, link, imported, stateKey)
-      }
-    })
-    pinLabel.append(pin, document.createTextNode(' 常驻显示'))
-    const aiLabel = document.createElement('label')
-    aiLabel.className = 'tml-link-option'
-    const inContext = document.createElement('input')
-    inContext.type = 'checkbox'
-    inContext.checked = pref.inContext
-    inContext.addEventListener('change', () => {
-      this.setLinkPreference(link.url, { inContext: inContext.checked })
-      this.refreshContext()
-      if (inContext.checked && !text && /^https?:\/\//i.test(link.url)) {
-        void this.fetchLink(marker, link, imported, stateKey)
-      }
-    })
-    aiLabel.append(inContext, document.createTextNode(' 加入 AI'))
-    options.append(pinLabel, aiLabel)
-    body.append(options)
     row.append(icon, body, actions)
     if (textBody) row.append(textBody)
     return row
@@ -3276,13 +3218,10 @@ export class LayerMapUI {
     return marker.description ?? ''
   }
 
-  private markerSourceInContext(marker: LayerMarker): boolean {
-    return this.sourcePrefs[`${this.pkg?.id ?? ''}:${marker.id}`] === true
-  }
 
   private setMarkerSource(marker: LayerMarker, value: string): void {
     setGlobalNote(this.markerSourceKey(marker), value)
-    if (this.markerSourceInContext(marker)) this.refreshContext()
+    if (loadSettings(this.ctx).layerSourceAI) this.refreshContext()
   }
 
   private sourceSection(marker: LayerMarker): HTMLElement {
@@ -3290,7 +3229,7 @@ export class LayerMapUI {
     details.className = 'tml-source'
     details.open = true
     const summary = document.createElement('summary')
-    summary.textContent = '来源资料（可编辑）'
+    summary.textContent = '来源资料（随地点显示）'
     const textarea = document.createElement('textarea')
     textarea.className = 'tml-source-input'
     textarea.placeholder = '可编辑的来源资料…'
@@ -3304,19 +3243,6 @@ export class LayerMapUI {
     })
     const actions = document.createElement('div')
     actions.className = 'tml-source-actions'
-    const aiLabel = document.createElement('label')
-    aiLabel.className = 'tml-link-option'
-    const ai = document.createElement('input')
-    ai.type = 'checkbox'
-    ai.checked = this.markerSourceInContext(marker)
-    ai.addEventListener('change', () => {
-      const key = `${this.pkg?.id ?? ''}:${marker.id}`
-      if (ai.checked) this.sourcePrefs[key] = true
-      else delete this.sourcePrefs[key]
-      saveSourcePrefs(this.sourcePrefs)
-      this.refreshContext()
-    })
-    aiLabel.append(ai, document.createTextNode(' 加入 AI'))
     const restore = document.createElement('button')
     restore.type = 'button'
     restore.className = 'tml-mini'
@@ -3327,19 +3253,11 @@ export class LayerMapUI {
       status.textContent = '已恢复导入原文'
       this.refreshContext()
     })
-    actions.append(aiLabel, restore)
+    actions.append(restore)
     details.append(summary, textarea, status, actions)
     return details
   }
 
-  private linkPreference(url: string): LinkPrefs {
-    return this.linkPrefs[url] ?? { pinned: false, inContext: false }
-  }
-
-  private setLinkPreference(url: string, patch: Partial<LinkPrefs>): void {
-    this.linkPrefs[url] = { ...this.linkPreference(url), ...patch }
-    saveLinkPrefs(this.linkPrefs)
-  }
 
   private linkTextValue(link: LayerLink): string | undefined {
     const global = globalNote(linkTextKey(link.url))
@@ -3439,43 +3357,13 @@ export class LayerMapUI {
     return button
   }
 
-  private toggleCurrent(marker: LayerMarker): void {
-    if (this.state.currentMarkerId === marker.id) {
-      this.state.currentMarkerId = undefined
-      this.state.currentRegionId = undefined
-    } else {
-      this.state.currentMarkerId = marker.id
-      const region = this.regionForMarker(marker)
-      this.state.currentRegionId = region?.id
-    }
-    this.refreshContext()
-    this.persist()
-    this.renderDetail()
-    this.requestDraw()
-  }
 
-  private toggleCurrentRegion(region: LayerRegion): void {
-    if (this.state.currentRegionId === region.id) {
-      this.state.currentRegionId = undefined
-    } else {
-      this.state.currentRegionId = region.id
-      this.state.currentMarkerId = undefined
-    }
-    this.refreshContext()
-    this.persist()
-    this.renderDetail()
-    this.requestDraw()
-  }
 
   private selectedMarker(): LayerMarker | undefined {
     if (!this.pkg || !this.state.selectedMarkerId) return undefined
     return this.pkg.markers.find((marker) => marker.id === this.state.selectedMarkerId)
   }
 
-  private currentMarker(): LayerMarker | undefined {
-    if (!this.pkg || !this.state.currentMarkerId) return undefined
-    return this.pkg.markers.find((marker) => marker.id === this.state.currentMarkerId)
-  }
 
   private regionForPoint(x: number, y: number): LayerRegion | undefined {
     if (!this.pkg) return undefined
@@ -3561,18 +3449,22 @@ export class LayerMapUI {
 
   private buildNearby(
     anchor: { x: number; y: number },
+    settings: Settings,
     excludeId?: string,
   ): LayerNearbyPlace[] {
     const pkg = this.pkg
-    if (!pkg || this.prefs.nearbyCount <= 0) return []
-    const width = this.canvasEl?.clientWidth || this.viewportEl?.clientWidth || 1
-    const height = this.canvasEl?.clientHeight || this.viewportEl?.clientHeight || 1
-    const candidates =
-      this.prefs.nearbyScope === 'view' ? this.markersInView(width, height) : pkg.markers
+    if (!pkg || !settings.layerNearbyAI || settings.layerNearbyMax <= 0) return []
+    const radius = this.state.nearbyRadius ?? 0.08
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const categories = new Map(pkg.categories.map((category) => [category.id, category]))
-    return candidates
-      .filter((marker) => marker.id !== excludeId && !hidden.has(marker.categoryId))
+    return pkg.markers
+      .filter((marker) => {
+        if (marker.id === excludeId) return false
+        if (hidden.has(marker.categoryId)) return false
+        const dx = marker.x - anchor.x
+        const dy = marker.y - anchor.y
+        return Math.hypot(dx, dy) <= radius
+      })
       .map((marker) => {
         const dx = marker.x - anchor.x
         const dy = marker.y - anchor.y
@@ -3580,22 +3472,27 @@ export class LayerMapUI {
         return {
           id: marker.id,
           name: marker.name,
-          category,
+          category: settings.layerNearbyType ? category : undefined,
           x: marker.x,
           y: marker.y,
-          direction: this.directionFor(dx, dy),
+          direction: settings.layerNearbyDirection ? this.directionFor(dx, dy) : '',
           distancePercent: Math.hypot(dx, dy) * 100,
           note:
-            this.prefs.nearbyNotes && this.markerNoteValue(marker).trim()
+            settings.layerNearbyNotes && this.markerNoteValue(marker).trim()
               ? this.markerNoteValue(marker)
               : undefined,
         }
       })
       .sort((a, b) => a.distancePercent - b.distancePercent)
-      .slice(0, this.prefs.nearbyCount)
+      .slice(0, settings.layerNearbyMax)
   }
 
-  private contextWikiTexts(marker: LayerMarker): Array<{ title: string; text: string }> {
+  private contextWikiTexts(
+    marker: LayerMarker,
+    settings: Settings,
+    includeWiki = settings.layerWikiAI,
+  ): Array<{ title: string; text: string }> {
+    if (!includeWiki) return []
     const imported = marker.sourceLinks ?? (
       marker.sourceUrl
         ? [{
@@ -3613,7 +3510,6 @@ export class LayerMapUI {
       ...imported.map((link) => [link, true] as const),
       ...userLinks.map((link) => [link, false] as const),
     ]) {
-      if (!this.linkPreference(link.url).inContext) continue
       const key = `${marker.id}:${link.id}`
       const text = this.linkTextValue(link) ??
         (importedLink ? this.state.sourceLinkText?.[key]?.text : link.text)
@@ -3625,7 +3521,43 @@ export class LayerMapUI {
     return result
   }
 
-  private refreshContext(): void {
+  private favoriteContext(settings: Settings): LayerFavoritePlace[] {
+    const pkg = this.pkg
+    if (!pkg || !settings.layerFavoritesAI) return []
+    const categories = new Map(pkg.categories.map((category) => [category.id, category]))
+    return listFavorites()
+      .filter((favorite) => favorite.kind === 'layer' && favorite.mapId === pkg.id)
+      .map((favorite) => {
+        const marker = favorite.markerId
+          ? pkg.markers.find((item) => item.id === favorite.markerId)
+          : undefined
+        const region = marker ? this.regionForMarker(marker)?.name : undefined
+        const category = marker
+          ? categories.get(marker.categoryId)?.name
+          : favorite.category
+        return {
+          key: favorite.key,
+          name: favorite.name,
+          category: settings.layerFavoriteType ? category : undefined,
+          region: settings.layerFavoriteCoords ? region : undefined,
+          x: settings.layerFavoriteCoords ? (marker?.x ?? favorite.x) : undefined,
+          y: settings.layerFavoriteCoords ? (marker?.y ?? favorite.y) : undefined,
+          note: settings.layerFavoriteNote
+            ? (marker ? this.markerNoteValue(marker) : favorite.note)?.trim() || undefined
+            : undefined,
+          sourceMaterial:
+            settings.layerFavoriteSource && marker
+              ? this.markerSourceValue(marker).trim() || undefined
+              : undefined,
+          wikiTexts:
+            settings.layerFavoriteWiki && marker
+              ? this.contextWikiTexts(marker, settings, settings.layerFavoriteWiki)
+              : undefined,
+        }
+      })
+  }
+
+  private refreshContext(renderPosition = true): void {
     const pkg = this.pkg
     if (!pkg) {
       this.state.context = undefined
@@ -3635,26 +3567,21 @@ export class LayerMapUI {
       this.callbacks.onChange()
       return
     }
-    const marker = this.currentMarker() ?? this.selectedMarker()
-    const region = this.state.currentRegionId
-      ? pkg.regions.find((item) => item.id === this.state.currentRegionId) ??
-        (marker ? this.regionForMarker(marker) : undefined)
-      : marker
-        ? this.regionForMarker(marker)
-        : undefined
+    const settings = loadSettings(this.ctx)
+    const marker = this.state.atPlaceId
+      ? pkg.markers.find((item) => item.id === this.state.atPlaceId)
+      : undefined
+    const region = marker ? this.regionForMarker(marker) : undefined
     const category = marker ? pkg.categories.find((item) => item.id === marker.categoryId) : undefined
     const user = this.state.userPosition
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
-    const anchor = user ?? marker ?? { x: this.view.cx, y: this.view.cy }
-    const anchorKind = user ? 'my position' : marker ? 'current place' : 'view center'
-    const nearby = this.buildNearby(anchor, marker?.id)
-    const note = this.prefs.currentNote
+    const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
+    const note = settings.layerNoteAI
       ? marker
         ? this.markerNoteValue(marker)
-        : region
-          ? this.regionNoteValue(region)
-          : undefined
+        : undefined
       : undefined
+    const favorites = this.favoriteContext(settings)
     const context: LayerContextSnapshot = {
       mapName: pkg.name,
       position: user
@@ -3671,26 +3598,28 @@ export class LayerMapUI {
       region: region?.name,
       note: note?.trim() || undefined,
       sourceMaterial:
-        marker && this.markerSourceInContext(marker)
+        marker && settings.layerSourceAI
           ? this.markerSourceValue(marker).trim() || undefined
           : undefined,
-      wikiTexts: marker ? this.contextWikiTexts(marker) : undefined,
+      wikiTexts: marker ? this.contextWikiTexts(marker, settings) : undefined,
+      favorites: favorites.length > 0 ? favorites : undefined,
       nearby: nearby.length > 0 ? nearby : undefined,
-      nearbyAnchor: anchorKind,
-      nearbyScope: this.prefs.nearbyScope,
+      nearbyAnchor: user ? 'my position' : undefined,
+      nearbyScope: 'radius',
+      nearbyCoords: settings.layerNearbyCoords,
       grid: this.gridConfig() ? { ...this.gridConfig()! } : undefined,
       updatedAt: Date.now(),
     }
     this.state.context = context
     this.persist()
     this.contextStatusEl.textContent =
-      context.currentPlace || context.position || context.nearby
+      context.currentPlace || context.position || context.nearby || context.favorites
         ? '图层上下文：已生成'
         : '图层上下文：待机'
     this.contextStatusEl.title = context.currentPlace
-      ? '当前地点会进入图层地图 AI 上下文'
-      : '在图层地图中选地点或放置“我的位置”后生成'
-    this.renderPositionCard()
+      ? '所在地点会进入图层地图 AI 上下文'
+      : '拖动“我”到地点，或调整附近范围后生成'
+    if (renderPosition) this.renderPositionCard()
     this.renderNearby()
     if (!this.contextModalEl.hidden) {
       this.renderContextControls()
@@ -3698,6 +3627,7 @@ export class LayerMapUI {
     }
     this.callbacks.onChange()
   }
+
 
   private renderPositionCard(): void {
     if (!this.positionEl) return
@@ -3712,12 +3642,17 @@ export class LayerMapUI {
     const flag = document.createElement('span')
     flag.className = 'tml-position-flag'
     flag.textContent = '◎'
+    const atPlace = this.state.atPlaceId
+      ? pkg.markers.find((item) => item.id === this.state.atPlaceId)
+      : undefined
     const title = document.createElement('strong')
-    title.textContent = '我的位置'
+    title.textContent = '我'
     const value = document.createElement('span')
     value.className = 'tml-position-value'
     value.textContent = user
-      ? this.pointText(user.x, user.y)
+      ? atPlace
+        ? atPlace.name
+        : this.pointText(user.x, user.y)
       : '未设置'
     head.append(flag, title, value)
     card.append(head)
@@ -3726,9 +3661,29 @@ export class LayerMapUI {
       if (area) {
         const areaEl = document.createElement('div')
         areaEl.className = 'tml-position-area'
-        areaEl.textContent = `区域：${area}`
+        areaEl.textContent = atPlace ? `我在这里 · 区域：${area}` : `区域：${area}`
         card.append(areaEl)
       }
+      const radiusRow = document.createElement('label')
+      radiusRow.className = 'tml-position-radius'
+      const radiusText = document.createElement('span')
+      radiusText.textContent = `附近 ${this.radiusLabel()}`
+      const radiusInput = document.createElement('input')
+      radiusInput.type = 'range'
+      radiusInput.min = '0.01'
+      radiusInput.max = '0.4'
+      radiusInput.step = '0.005'
+      radiusInput.value = String(this.state.nearbyRadius ?? 0.08)
+      radiusInput.setAttribute('aria-label', '附近半径')
+      radiusInput.addEventListener('input', () => {
+        this.state.nearbyRadius = Number(radiusInput.value)
+        radiusText.textContent = `附近 ${this.radiusLabel()}`
+        this.refreshContext(false)
+        this.persist()
+        this.requestDraw()
+      })
+      radiusRow.append(radiusText, radiusInput)
+      card.append(radiusRow)
       const actions = document.createElement('div')
       actions.className = 'tml-position-actions'
       actions.append(
@@ -3759,7 +3714,7 @@ export class LayerMapUI {
     const title = document.createElement('strong')
     title.textContent = `附近 ${context.nearby.length}`
     const scope = document.createElement('span')
-    scope.textContent = context.nearbyScope === 'map' ? '全图最近' : '当前视野'
+    scope.textContent = '半径圈内'
     head.append(title, scope)
     this.nearbyEl.append(head)
     const list = document.createElement('div')
@@ -3805,15 +3760,151 @@ export class LayerMapUI {
     this.syncToolButtons()
   }
 
-  private setUserPosition(x: number, y: number): void {
-    this.state.userPosition = {
-      x: Math.min(1, Math.max(0, x)),
-      y: Math.min(1, Math.max(0, y)),
+  private nearestMarkerAt(x: number, y: number): LayerMarker | undefined {
+    const pkg = this.pkg
+    if (!pkg) return undefined
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const [sx, sy] = this.project(x, y, width, height)
+    let best: LayerMarker | undefined
+    let bestDistance = 18
+    for (const marker of pkg.markers) {
+      const [mx, my] = this.project(marker.x, marker.y, width, height)
+      const distance = Math.hypot(mx - sx, my - sy)
+      if (distance < bestDistance) {
+        best = marker
+        bestDistance = distance
+      }
     }
+    return best
+  }
+
+  private setUserPosition(
+    x: number,
+    y: number,
+    placeId?: string,
+    allowSnap = true,
+  ): void {
+    const nx = Math.min(1, Math.max(0, x))
+    const ny = Math.min(1, Math.max(0, y))
+    const marker = placeId
+      ? this.pkg?.markers.find((item) => item.id === placeId)
+      : allowSnap
+        ? this.nearestMarkerAt(nx, ny)
+        : undefined
+    this.state.userPosition = { x: nx, y: ny }
+    this.state.atPlaceId = marker?.id
     this.cancelUserPlacement()
     this.refreshContext()
     this.persist()
     this.requestDraw()
+    if (marker) this.toast(`我在 ${marker.name}`)
+  }
+
+  private updateUserStamp(): void {
+    const user = this.state.userPosition
+    if (!user || !this.pkg) {
+      this.userStampEl.hidden = true
+      return
+    }
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const [x, y] = this.project(user.x, user.y, width, height)
+    if (x < -30 || y < -30 || x > width + 30 || y > height + 30) {
+      this.userStampEl.hidden = true
+      return
+    }
+    this.userStampEl.hidden = false
+    this.userStampEl.style.left = `${x}px`
+    this.userStampEl.style.top = `${y}px`
+  }
+
+  private drawUserRadius(context: CanvasRenderingContext2D, width: number, height: number): void {
+    const user = this.state.userPosition
+    if (!user) return
+    const radius = Math.min(0.8, Math.max(0.001, this.state.nearbyRadius ?? 0.08))
+    const [cx, cy] = this.project(user.x, user.y, width, height)
+    const [rx] = this.project(user.x + radius, user.y, width, height)
+    const [, ry] = this.project(user.x, user.y + radius, width, height)
+    const xRadius = Math.abs(rx - cx)
+    const yRadius = Math.abs(ry - cy)
+    if (xRadius < 4 || yRadius < 4) return
+    context.save()
+    context.beginPath()
+    context.ellipse(cx, cy, xRadius, yRadius, 0, 0, Math.PI * 2)
+    context.fillStyle = 'rgba(57, 181, 255, 0.11)'
+    context.fill()
+    context.setLineDash([6, 5])
+    context.lineWidth = 1.6
+    context.strokeStyle = 'rgba(57, 181, 255, 0.9)'
+    context.stroke()
+    context.restore()
+  }
+
+  private onUserStampDown = (event: PointerEvent): void => {
+    const user = this.state.userPosition
+    if (!user) return
+    event.preventDefault()
+    event.stopPropagation()
+    this.userDrag = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: user.x,
+      originY: user.y,
+    }
+    this.userStampEl.classList.add('dragging')
+    this.userStampEl.setPointerCapture(event.pointerId)
+  }
+
+  private onUserStampMove = (event: PointerEvent): void => {
+    if (!this.userDrag) return
+    event.preventDefault()
+    const rect = this.viewportEl.getBoundingClientRect()
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const start = this.unproject(
+      this.userDrag.startX - rect.left,
+      this.userDrag.startY - rect.top,
+      width,
+      height,
+    )
+    const current = this.unproject(event.clientX - rect.left, event.clientY - rect.top, width, height)
+    this.state.userPosition = {
+      x: Math.min(1, Math.max(0, this.userDrag.originX + current[0] - start[0])),
+      y: Math.min(1, Math.max(0, this.userDrag.originY + current[1] - start[1])),
+    }
+    this.state.atPlaceId = undefined
+    this.updateUserStamp()
+    this.requestDraw()
+  }
+
+  private onUserStampUp = (event: PointerEvent): void => {
+    if (!this.userDrag) return
+    this.userDrag = null
+    this.userStampEl.classList.remove('dragging')
+    if (this.userStampEl.hasPointerCapture(event.pointerId)) {
+      this.userStampEl.releasePointerCapture(event.pointerId)
+    }
+    const user = this.state.userPosition
+    if (user) {
+      const marker = event.altKey ? undefined : this.nearestMarkerAt(user.x, user.y)
+      this.state.atPlaceId = marker?.id
+      if (marker) this.toast(`我在 ${marker.name}`)
+    }
+    this.refreshContext()
+    this.persist()
+    this.requestDraw()
+  }
+
+  private radiusLabel(): string {
+    const radius = this.state.nearbyRadius ?? 0.08
+    const grid = this.gridConfig()
+    if (grid) {
+      const cells = radius / grid.cellW
+      const amount = grid.unitValue * cells
+      return `${cells.toFixed(1)} 格${grid.unitValue ? ` ≈ ${amount.toFixed(1)} ${grid.unitLabel}` : ''}`
+    }
+    return `${(radius * 100).toFixed(1)}% 地图宽`
   }
 
   private clearUserPosition(): void {

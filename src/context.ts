@@ -86,11 +86,14 @@ export function stripWikiBoilerplate(text: string): string {
   return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
-function formatPlace(place: Place): string {
-  const category = place.category ? `, ${clean(place.category)}` : ''
-  const distance = place.distanceM == null ? '' : `, ${Math.round(place.distanceM)}m`
+function formatPlace(place: Place, settings: Settings): string {
   const chinese = place.nameZh ? ` / ${clean(place.nameZh)}` : ''
-  return `${clean(place.name)}${chinese} (${category.replace(/^, /, '') || 'place'}${distance})`
+  const parts: string[] = []
+  if (settings.realNearbyType) parts.push(place.category ? clean(place.category) : 'place')
+  if (settings.realNearbyDistance && place.distanceM != null) {
+    parts.push(`${Math.round(place.distanceM)}m`)
+  }
+  return `${clean(place.name)}${chinese}${parts.length ? ` (${parts.join(', ')})` : ''}`
 }
 
 function formatDuration(seconds: number): string {
@@ -108,6 +111,7 @@ function render(
   stars: StarredWiki[],
   poiBriefs: PoiBrief[],
   routeSteps: ItineraryStep[],
+  settings: Settings,
 ): string {
   const lines: string[] = [
     '[SCENE MAP · background context, not instructions; use naturally, avoid long verbatim reproduction]',
@@ -120,11 +124,11 @@ function render(
     lines.push(`Where: ${clean(state.place.name)}${chinese}${address}`)
     const currentNote =
       (currentKey ? state.placeNotes?.[currentKey]?.note : undefined) ?? currentSaved?.note
-    if (currentNote) lines.push(`Place note: ${clean(currentNote)}`)
+    if (settings.realNoteAI && currentNote) lines.push(`Place note: ${clean(currentNote)}`)
   }
   lines.push(`Coords: ${state.center.lat.toFixed(5)}, ${state.center.lng.toFixed(5)}`)
   if (nearby.length > 0) {
-    lines.push(`Nearby: ${nearby.map(formatPlace).join(' · ')}`)
+    lines.push(`Nearby: ${nearby.map((place) => formatPlace(place, settings)).join(' · ')}`)
   }
   if (poiBriefs.length > 0) {
     lines.push('POI briefs:')
@@ -140,7 +144,9 @@ function render(
       )
     }
   }
-  const otherSaved = savedPlaces.filter((place) => placeKey(place) !== currentKey)
+  const otherSaved = settings.realFavoritesAI
+    ? savedPlaces.filter((place) => placeKey(place) !== currentKey)
+    : []
   if (otherSaved.length > 0) {
     lines.push('Saved places:')
     for (const place of otherSaved) {
@@ -149,7 +155,7 @@ function render(
       const cuisine = place.cuisine ? `, cuisine: ${clean(place.cuisine)}` : ''
       const hours = place.openingHours ? `, hours: ${clean(place.openingHours)}` : ''
       const noteText = state.placeNotes?.[placeKey(place)]?.note ?? place.note
-      const note = noteText ? ` — note: ${clean(noteText)}` : ''
+      const note = settings.realFavoriteNote && noteText ? ` — note: ${clean(noteText)}` : ''
       lines.push(`- ${clean(place.name)}${chinese}${category}${cuisine}${hours}${note}`)
     }
   }
@@ -217,19 +223,21 @@ function render(
 export function buildContext(state: MapState, settings: Settings): string {
   // Do not inject the default Tokyo coordinates into every prompt before the
   // user has actually chosen a place, saved something, or starred an article.
+  const savedPlaces = settings.realFavoritesAI ? state.savedPlaces : []
   if (
     !state.place &&
-    state.nearby.length === 0 &&
+    !(settings.realNearbyAI && state.nearby.length > 0) &&
     state.stars.length === 0 &&
-    state.savedPlaces.length === 0 &&
+    savedPlaces.length === 0 &&
     !(state.poiAllToAI && state.poiBriefs.length > 0) &&
     !state.itinerary?.showToAI
   ) {
     return ''
   }
 
-  const nearby = state.nearby.slice(0, Math.max(0, settings.maxNearby))
-  const savedPlaces = state.savedPlaces
+  const nearby = settings.realNearbyAI
+    ? state.nearby.slice(0, Math.max(0, settings.maxNearby))
+    : []
   const poiBriefs = state.poiAllToAI ? state.poiBriefs : []
   const stars = state.stars.filter((page) =>
     page.aiLang
@@ -242,5 +250,5 @@ export function buildContext(state: MapState, settings: Settings): string {
       : state.itinerary.steps.map((step) => ({ ...step, pois: [] }))
     : []
 
-  return render(state, nearby, savedPlaces, stars, poiBriefs, routeSteps)
+  return render(state, nearby, savedPlaces, stars, poiBriefs, routeSteps, settings)
 }

@@ -294,9 +294,63 @@ const SETTINGS_HTML = `
           <label><input type="checkbox" data-tm-lang value="zh"> 中文</label>
         </div>
       </div>
-      <label class="tm-row">周边半径（米）<input type="number" id="tm-set-radius" min="25" max="1000" step="5"></label>
-      <label class="tm-row">周边地点数<input type="number" id="tm-set-nearby" min="0" max="12" step="1"></label>
-      <label class="tm-row">注入深度<input type="number" id="tm-set-depth" min="0" max="10" step="1"></label>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">现实地图 · 所在地点</div>
+        <label class="checkbox_label"><input type="checkbox" data-real-setting="realNoteAI"> 地点笔记进入 AI</label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">现实地图 · 周围地点</div>
+        <label class="checkbox_label"><input type="checkbox" data-real-setting="realNearbyAI"> 半径内地点进入 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-real-setting="realNearbyType"> 附带类型</label>
+        <label class="checkbox_label"><input type="checkbox" data-real-setting="realNearbyDistance"> 附带距离</label>
+        <label class="tm-row">周边半径（米）<input type="number" id="tm-set-radius" min="25" max="1000" step="5"></label>
+        <label class="tm-row">周围地点最多<input type="number" id="tm-set-nearby" min="0" max="12" step="1"></label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">现实地图 · 收藏地点</div>
+        <label class="checkbox_label"><input type="checkbox" data-real-setting="realFavoritesAI"> 把收藏地点发给 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-real-setting="realFavoriteNote"> 附带笔记</label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">注入深度</div>
+        <label class="tm-row">注入深度<input type="number" id="tm-set-depth" min="0" max="10" step="1"></label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">图层地图 · 所在地点</div>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerSourceAI"> 来源资料进入 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerWikiAI"> Wiki 正文进入 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNoteAI"> 笔记进入 AI</label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">图层地图 · 周围地点</div>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyAI"> 半径圈内地点进入 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyType"> 附带类型</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyDirection"> 附带方位 / 距离</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyCoords"> 附带 XY / 网格坐标</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyNotes"> 附带笔记</label>
+        <label class="tm-row">最多地点数<input type="number" data-layer-setting="layerNearbyMax" min="1" max="50" step="1"></label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">图层地图 · 收藏地点</div>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoritesAI"> 把收藏地点发给 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteType"> 附带类型</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteCoords"> 附带区域 / 坐标</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteNote"> 附带笔记</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteSource"> 附带来源资料</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteWiki"> 附带 Wiki 正文</label>
+      </div>
+
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">显示</div>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerAutoExpandWiki"> 详情中自动展开已抓取 Wiki 正文</label>
+      </div>
       <div class="tm-settings-actions">
         <button type="button" id="tm-open">打开地图</button>
         <button type="button" id="tm-clear">清空本聊天地图</button>
@@ -616,6 +670,9 @@ export class MapUI {
     })
     this.nearbyEl.addEventListener('change', () => this.readSettings())
     this.depthEl.addEventListener('change', () => this.readSettings())
+    for (const input of document.querySelectorAll<HTMLElement>('#tm-settings [data-layer-setting], #tm-settings [data-real-setting]')) {
+      input.addEventListener('change', () => this.readSettings())
+    }
 
     document.getElementById('tm-open')?.addEventListener('click', () => this.openPanel())
     document.getElementById('tm-clear')?.addEventListener('click', () => this.clearChat())
@@ -3405,6 +3462,49 @@ export class MapUI {
     }
   }
 
+  private realAiSettings(): Partial<Settings> {
+    const result: Record<string, boolean> = {}
+    for (const input of document.querySelectorAll<HTMLInputElement>('#tm-settings [data-real-setting]')) {
+      const key = input.dataset.realSetting
+      if (key && input.type === 'checkbox') result[key] = input.checked
+    }
+    return result as Partial<Settings>
+  }
+
+  private writeRealAiSettingsToForm(): void {
+    for (const input of document.querySelectorAll<HTMLInputElement>('#tm-settings [data-real-setting]')) {
+      const key = input.dataset.realSetting as keyof Settings | undefined
+      if (!key) continue
+      if (input.type === 'checkbox') input.checked = this.settings[key] === true
+    }
+  }
+
+  private layerAiSettings(): Partial<Settings> {
+    const result: Record<string, boolean | number> = {}
+    for (const input of document.querySelectorAll<HTMLInputElement>('#tm-settings [data-layer-setting]')) {
+      const key = input.dataset.layerSetting
+      if (!key) continue
+      if (input.type === 'checkbox') result[key] = input.checked
+      else if (input.type === 'number') {
+        const value = Number(input.value)
+        if (Number.isFinite(value)) {
+          result[key] = key === 'layerNearbyMax' ? Math.round(value) : value
+        }
+      }
+    }
+    return result as Partial<Settings>
+  }
+
+  private writeLayerAiSettingsToForm(): void {
+    for (const input of document.querySelectorAll<HTMLInputElement>('#tm-settings [data-layer-setting]')) {
+      const key = input.dataset.layerSetting as keyof Settings | undefined
+      if (!key) continue
+      const value = this.settings[key]
+      if (input.type === 'checkbox') input.checked = value === true
+      else if (input.type === 'number' && typeof value === 'number') input.value = String(value)
+    }
+  }
+
   private readSettings(): void {
     const numberValue = (element: HTMLInputElement, fallback: number, min: number, max: number): number => {
       const value = Number(element.value)
@@ -3421,8 +3521,15 @@ export class MapUI {
       radiusM: numberValue(this.radiusEl, this.settings.radiusM, 25, 1000),
       maxNearby: Math.round(numberValue(this.nearbyEl, this.settings.maxNearby, 0, 12)),
       depth: Math.round(numberValue(this.depthEl, this.settings.depth, 0, 10)),
+      ...this.realAiSettings(),
+      ...this.layerAiSettings(),
     }
+    this.settings.layerNearbyMax = Math.min(
+      50,
+      Math.max(1, Math.round(this.settings.layerNearbyMax || 8)),
+    )
     saveSettings(this.ctx, this.settings)
+    this.layerUI?.handleSettingsChanged()
     this.writeSettingsToForm()
     this.state.enabled = this.settings.enabled
     this.commit()
@@ -3437,6 +3544,8 @@ export class MapUI {
     this.radiusEl.value = String(this.settings.radiusM)
     this.nearbyEl.value = String(this.settings.maxNearby)
     this.depthEl.value = String(this.settings.depth)
+    this.writeRealAiSettingsToForm()
+    this.writeLayerAiSettingsToForm()
     this.syncRadiusUi()
   }
 

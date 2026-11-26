@@ -24,15 +24,20 @@ function mapPoint(point: { x: number; y: number }): string {
   return `${(point.x * 100).toFixed(1)}%, ${(point.y * 100).toFixed(1)}%`
 }
 
-function placeLine(place: LayerNearbyPlace, grid: LayerGridConfig | undefined): string {
+function placeLine(
+  place: LayerNearbyPlace,
+  grid: LayerGridConfig | undefined,
+  showCoords = true,
+): string {
   const category = place.category ? ` (${clean(place.category)})` : ''
-  const coords = grid
+  const coords = grid && showCoords
     ? gridPoint(place, grid)
     : place.distancePercent < 0.01
       ? '<0.01%'
       : `${place.distancePercent.toFixed(2)}%`
+  const direction = place.direction ? ` · ${place.direction}` : ''
   const note = place.note ? ` · note: ${clean(place.note)}` : ''
-  return `- ${clean(place.name)}${category} — ${coords} · ${place.direction}${note}`
+  return `- ${clean(place.name)}${category} — ${coords}${direction}${note}`
 }
 
 export function buildLayerContext(state: LayerChatState): string {
@@ -70,10 +75,34 @@ export function buildLayerContext(state: LayerChatState): string {
     lines.push(`Area: ${clean(snapshot.region)}`)
   }
   if (snapshot.nearby?.length) {
-    const scope = snapshot.nearbyScope === 'map' ? 'whole map' : 'current view'
+    const scope =
+      snapshot.nearbyScope === 'map'
+        ? 'whole map'
+        : snapshot.nearbyScope === 'radius'
+          ? 'within radius'
+          : 'current view'
     lines.push(`Nearby (nearest ${snapshot.nearby.length}, ${scope}):`)
     for (const place of snapshot.nearby) {
-      lines.push(placeLine(place, snapshot.grid))
+      lines.push(placeLine(place, snapshot.grid, snapshot.nearbyCoords !== false))
+    }
+  }
+  if (snapshot.favorites?.length) {
+    lines.push('Favorites:')
+    for (const favorite of snapshot.favorites) {
+      const category = favorite.category ? ` (${clean(favorite.category)})` : ''
+      const area = favorite.region ? ` · Area: ${clean(favorite.region)}` : ''
+      const coords =
+        favorite.x != null && favorite.y != null && snapshot.grid
+          ? ` · ${gridPoint({ x: favorite.x, y: favorite.y }, snapshot.grid)}`
+          : ''
+      const note = favorite.note ? ` · note: ${clean(favorite.note)}` : ''
+      lines.push(`- ${clean(favorite.name)}${category}${area}${coords}${note}`)
+      if (favorite.sourceMaterial) {
+        lines.push(`  Source material: ${clean(favorite.sourceMaterial)}`)
+      }
+      for (const wiki of favorite.wikiTexts ?? []) {
+        lines.push(`  Wiki text (${clean(wiki.title)}): ${clean(wiki.text)}`)
+      }
     }
   }
   if (snapshot.note) lines.push(`Place note: ${clean(snapshot.note)}`)

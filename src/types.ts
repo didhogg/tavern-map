@@ -171,6 +171,31 @@ export type Settings = {
   realMapContext: boolean
   /** Include the imported layer-map scene block in AI context. */
   layerMapContext: boolean
+  /** Real-map AI content switches. */
+  realNoteAI: boolean
+  realNearbyAI: boolean
+  realNearbyType: boolean
+  realNearbyDistance: boolean
+  realFavoritesAI: boolean
+  realFavoriteNote: boolean
+  /** Layer-map AI content switches. */
+  layerSourceAI: boolean
+  layerWikiAI: boolean
+  layerNoteAI: boolean
+  layerNearbyAI: boolean
+  layerNearbyName: boolean
+  layerNearbyType: boolean
+  layerNearbyDirection: boolean
+  layerNearbyCoords: boolean
+  layerNearbyNotes: boolean
+  layerNearbyMax: number
+  layerFavoritesAI: boolean
+  layerFavoriteType: boolean
+  layerFavoriteCoords: boolean
+  layerFavoriteNote: boolean
+  layerFavoriteSource: boolean
+  layerFavoriteWiki: boolean
+  layerAutoExpandWiki: boolean
 }
 
 /** A minimal subset of the SillyTavern context used by this extension. */

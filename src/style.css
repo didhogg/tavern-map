@@ -2179,7 +2179,7 @@
   min-height: 0;
   padding: 12px 10px 10px;
   border-right: 1px solid var(--tm-line);
-  background: rgba(0, 0, 0, 0.12);
+  background: var(--tm-bg);
 }
 
 .tml-side-heading {
@@ -2943,7 +2943,7 @@
   display: flex;
   width: min(262px, 86vw);
   border-right: 1px solid var(--tm-line-strong);
-  background: rgba(12, 17, 22, 0.98);
+  background: var(--tm-bg);
   box-shadow: 16px 0 38px rgba(0, 0, 0, 0.45);
 }
 
@@ -2963,7 +2963,7 @@
   max-height: 43%;
   border-top: 1px solid var(--tm-line-strong);
   border-left: 0;
-  background: rgba(12, 17, 22, 0.97);
+  background: var(--tm-bg);
   box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.35);
 }
 
@@ -5292,4 +5292,189 @@
 .tml-grid-mode.tml-grid-collapsed .tml-grid-head {
   min-height: 44px;
   border-bottom: 0;
+}
+
+/* ---------- Draggable "me" stamp, selected marker and favorites ---------- */
+
+.tml-user-stamp {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 3px solid #f3c87f;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 30%, rgba(255,255,255,0.32), transparent 38%),
+    rgba(42, 88, 128, 0.94);
+  box-shadow:
+    0 3px 0 rgba(0, 0, 0, 0.25),
+    0 8px 18px rgba(0, 0, 0, 0.42),
+    inset 0 0 0 3px rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: 700 13px/1 system-ui, sans-serif;
+  cursor: grab;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+}
+
+.tml-user-stamp::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border: 1px dashed rgba(57, 181, 255, 0.7);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.tml-user-stamp:hover,
+.tml-user-stamp:focus-visible {
+  outline: 2px solid #8fe0ff;
+  outline-offset: 3px;
+  background:
+    radial-gradient(circle at 38% 30%, rgba(255,255,255,0.4), transparent 38%),
+    rgba(48, 104, 150, 0.98);
+}
+
+.tml-user-stamp.dragging {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(1.08);
+  box-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.2),
+    0 12px 24px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 3px rgba(255, 255, 255, 0.2);
+}
+
+.tml-user-stamp[hidden] {
+  display: none !important;
+}
+
+.tml-position-radius {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+  margin: 6px 0 2px;
+  color: var(--tm-muted);
+  font-size: 9px;
+}
+
+.tml-position-radius input[type="range"] {
+  width: 100%;
+  height: 17px;
+  margin: 0;
+  accent-color: #39b5ff;
+}
+
+.tml-side-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 7px 8px 6px;
+  border-bottom: 1px solid var(--tm-line);
+}
+
+.tml-side-tabs button {
+  flex: 1 1 0;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tm-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tml-side-tabs button.active {
+  border-color: rgba(230, 181, 106, 0.28);
+  background: rgba(230, 181, 106, 0.09);
+  color: var(--tm-brass-strong);
+}
+
+.tml-favorites {
+  min-height: 0;
+  overflow: auto;
+  padding: 3px 8px 10px;
+}
+
+.tml-favorite-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tml-favorite-main {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tml-favorite-name {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tml-favorite-meta {
+  overflow: hidden;
+  color: var(--tm-faint);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tml-star-toggle {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--tm-line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--tm-brass);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tml-star-toggle.active {
+  border-color: rgba(230, 181, 106, 0.4);
+  background: rgba(230, 181, 106, 0.1);
+  color: #ffd98f;
+}
+
+.tml-detail-head > .tml-star-toggle {
+  margin-left: auto;
+}
+
+.tm-settings-group {
+  margin-top: 9px;
+  padding: 7px 8px;
+  border: 1px solid var(--tm-line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.tm-settings-group-title {
+  margin-bottom: 4px;
+  color: var(--tm-brass-strong);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.tm-settings-group .checkbox_label {
+  margin: 3px 0;
+  font-size: 10px;
 }
