@@ -339,6 +339,10 @@ export async function saveImportedPackage(
       pkg.iconFont = existing.iconFont
       pkg.dataBytes = (pkg.dataBytes ?? 0) + existing.iconFont.data.size
     }
+    if (existing.iconAtlas && !pkg.iconAtlas) {
+      pkg.iconAtlas = existing.iconAtlas
+      pkg.dataBytes = (pkg.dataBytes ?? 0) + existing.iconAtlas.image.size
+    }
     if (existing.imageLocked) {
       pkg.image = existing.image
       pkg.imageType = existing.imageType

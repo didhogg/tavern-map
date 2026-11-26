@@ -78,3 +78,61 @@ export async function downloadMapGenieIconFont(
     return undefined
   }
 }
+
+
+const MAPGENIE_ICON_ATLAS_VERSION = 'v158'
+
+/** Download the original Map Genie icon-set sprite atlas (e.g. GTA6). */
+export async function downloadMapGenieIconAtlas(
+  pkg: LayerMapPackage,
+  signal?: AbortSignal,
+): Promise<LayerMapPackage['iconAtlas'] | undefined> {
+  if (pkg.source !== 'mapgenie') return undefined
+  const icons = new Set(
+    pkg.categories
+      .map((category) => category.icon?.trim())
+      .filter((icon): icon is string => Boolean(icon)),
+  )
+  if (icons.size === 0) return undefined
+  const game = mapGenieGameSlug(pkg)
+  if (!game) return undefined
+  const base = `https://media.mapgenie.io/v2/assets/prod/games/${encodeURIComponent(game)}/icon-set/build/${MAPGENIE_ICON_ATLAS_VERSION}`
+  try {
+    const [jsonResponse, imageResponse] = await Promise.all([
+      fetch(`${base}/atlas.json`, { signal, credentials: 'omit', cache: 'force-cache' }),
+      fetch(`${base}/atlas.png`, { signal, credentials: 'omit', cache: 'force-cache' }),
+    ])
+    if (!jsonResponse.ok || !imageResponse.ok) return undefined
+    const raw = (await jsonResponse.json()) as Record<string, unknown>
+    const frames: NonNullable<LayerMapPackage['iconAtlas']>['frames'] = {}
+    for (const [key, value] of Object.entries(raw)) {
+      if (!value || typeof value !== 'object') continue
+      const item = value as Record<string, unknown>
+      const x = Number(item.x)
+      const y = Number(item.y)
+      const width = Number(item.width)
+      const height = Number(item.height)
+      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) continue
+      frames[key] = {
+        x,
+        y,
+        width,
+        height,
+        pixelRatio: Number.isFinite(Number(item.pixelRatio))
+          ? Number(item.pixelRatio)
+          : undefined,
+      }
+    }
+    const usable = [...icons].some((icon) =>
+      [`g.${icon}.a`, `g.${icon}.ffffff`, icon].some((key) => Boolean(frames[key])),
+    )
+    if (!usable) return undefined
+    const image = await imageResponse.blob()
+    if (image.size === 0) return undefined
+    return { image, frames, source: `${base}/atlas.json` }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    console.warn('[tavern-map] Map Genie icon atlas download failed', error)
+    return undefined
+  }
+}

@@ -447,6 +447,9 @@ export class LayerMapUI {
   private favoriteMarkerIds = new Set<string>()
   private iconFontPackageId = ''
   private iconFontFamily = ''
+  private iconAtlasPackageId = ''
+  private iconAtlasUrl: string | null = null
+  private iconAtlasImage: HTMLImageElement | null = null
   private readonly markerIconCache = new Map<string, HTMLCanvasElement>()
   private gridHandleDrag: {
     mode: 'origin' | 'scale'
@@ -1223,6 +1226,7 @@ export class LayerMapUI {
     this.pkg = pkg
     this.migrateLegacyNotes(pkg)
     await this.ensureIconFont(pkg)
+    await this.ensureIconAtlas(pkg)
     if (
       this.state.selectedMarkerId &&
       !pkg.markers.some((marker) => marker.id === this.state.selectedMarkerId)
@@ -2132,9 +2136,82 @@ export class LayerMapUI {
     }
   }
 
+  private async ensureIconAtlas(pkg: LayerMapPackage): Promise<void> {
+    if (this.iconAtlasPackageId === pkg.id && this.iconAtlasImage) return
+    this.iconAtlasPackageId = ''
+    this.iconAtlasImage = null
+    if (this.iconAtlasUrl) {
+      URL.revokeObjectURL(this.iconAtlasUrl)
+      this.iconAtlasUrl = null
+    }
+    this.markerIconCache.clear()
+    if (!pkg.iconAtlas) return
+    const url = URL.createObjectURL(pkg.iconAtlas.image)
+    const image = new Image()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve()
+        image.onerror = () => reject(new Error('icon atlas image decode failed'))
+        image.src = url
+      })
+      this.iconAtlasPackageId = pkg.id
+      this.iconAtlasUrl = url
+      this.iconAtlasImage = image
+      this.markerIconCache.clear()
+      this.requestDraw()
+    } catch (error) {
+      URL.revokeObjectURL(url)
+      console.warn('[tavern-map] Map Genie icon atlas load failed', error)
+    }
+  }
+
+  private iconAtlasFrameKey(icon: string): string | undefined {
+    const frames = this.pkg?.iconAtlas?.frames
+    if (!frames) return undefined
+    const direct = [`g.${icon}.a`, `g.${icon}.ffffff`, icon].find((key) => Boolean(frames[key]))
+    if (direct) return direct
+    return Object.keys(frames).find((key) => key.startsWith(`g.${icon}.`))
+  }
+
   private markerIconFor(category: LayerCategory | undefined): HTMLCanvasElement | undefined {
     const pkg = this.pkg
-    if (!pkg?.iconFont || !this.iconFontFamily || !category?.icon) return undefined
+    if (!category?.icon) return undefined
+    const frameKey = this.iconAtlasFrameKey(category.icon)
+    if (this.iconAtlasImage && frameKey) {
+      const cachedAtlas = this.markerIconCache.get(`atlas:${category.id}`)
+      if (cachedAtlas) return cachedAtlas
+      const frame = pkg?.iconAtlas?.frames[frameKey]
+      if (!frame) return undefined
+      const cssSize = 30
+      const dpr = Math.min(2, window.devicePixelRatio || 1)
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.round(cssSize * dpr)
+      canvas.height = Math.round(cssSize * dpr)
+      const atlasContext = canvas.getContext('2d')
+      if (!atlasContext) return undefined
+      atlasContext.setTransform(dpr, 0, 0, dpr, 0, 0)
+      atlasContext.beginPath()
+      atlasContext.arc(cssSize / 2, cssSize / 2, 11, 0, Math.PI * 2)
+      atlasContext.fillStyle = category.color || '#e6b56a'
+      atlasContext.fill()
+      atlasContext.lineWidth = 1.2
+      atlasContext.strokeStyle = 'rgba(255,255,255,0.82)'
+      atlasContext.stroke()
+      atlasContext.drawImage(
+        this.iconAtlasImage,
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+        cssSize / 2 - 9,
+        cssSize / 2 - 9,
+        18,
+        18,
+      )
+      this.markerIconCache.set(`atlas:${category.id}`, canvas)
+      return canvas
+    }
+    if (!pkg?.iconFont || !this.iconFontFamily) return undefined
     const glyph = pkg.iconFont.glyphs[category.icon]
     if (!glyph) return undefined
     const cached = this.markerIconCache.get(category.id)

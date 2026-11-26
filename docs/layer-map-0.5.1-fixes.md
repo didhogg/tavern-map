@@ -56,7 +56,7 @@ Mapdata 里的分类带有 `icon` slug，例如：
 ### 已知边界
 
 - Cyberpunk 2077、RDR2 等公开 Map Genie 图标 font 可取得。
-- GTA6 / Leonida 的 `grand-theft-auto-6-icons.css` 和 markers sprite 目前返回 404/403，因此这版回退彩色圆点；如果上游以后公开，同一套导入逻辑会自动使用。
+- GTA6 / Leonida 的 icon font 路径返回 404，因此 0.5.1 回退彩色圆点；0.5.3 已改用 Map Genie 公开的 `icon-set/atlas.png + atlas.json` 雪碧图。
 - Fandom `markers` JSON 通常没有分类图标字段，继续使用彩色圆点。
 - 0.5.0 已经导入的包需要重新导入同一个包一次，才会下载并写入新的 `iconFont`；重新导入会保留聊天、笔记、底图、网格和收藏。
 - RDR2 还有一份 sprite（`media.mapgenie.io/.../markers.png` + `.json`）；这版优先用 icon font，sprite 可后续扩展为更精确的位图图标。

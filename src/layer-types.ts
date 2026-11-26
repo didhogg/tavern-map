@@ -39,6 +39,22 @@ export type LayerCategory = {
   order?: number
 }
 
+export type LayerIconFrame = {
+  x: number
+  y: number
+  width: number
+  height: number
+  pixelRatio?: number
+}
+
+export type LayerIconAtlas = {
+  /** Original Map Genie icon-set atlas image, stored locally. */
+  image: Blob
+  /** Atlas frame keys such as `g.atms.a`. */
+  frames: Record<string, LayerIconFrame>
+  source?: string
+}
+
 export type LayerIconFont = {
   family: string
   /** Original Map Genie icon font, stored locally after import. */
@@ -174,6 +190,8 @@ export type LayerMapPackage = {
   regions: LayerRegion[]
   /** Optional original Map Genie icon font for marker symbols. */
   iconFont?: LayerIconFont
+  /** Original Map Genie icon-set atlas; takes priority over the font. */
+  iconAtlas?: LayerIconAtlas
   attribution?: string
   createdAt: number
   updatedAt: number
