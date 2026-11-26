@@ -96,6 +96,7 @@ export type LayerTileStats = {
 export type LayerImportStats = {
   markerCount: number
   regionCount: number
+  streetCount?: number
   categoryCount: number
   groupCount: number
   descriptionCount: number
@@ -157,6 +158,7 @@ type Manifest = {
   tileSet?: number
   wiki?: string
   sourceUrl?: string
+  sourceLabel?: string
 }
 
 type ManifestResult = {
@@ -365,6 +367,7 @@ async function parseManifest(bundle: LayerSourceBundle): Promise<ManifestResult>
     if (typeof raw.tileSet === 'number') manifest.tileSet = raw.tileSet
     if (typeof raw.wiki === 'string') manifest.wiki = raw.wiki
     if (typeof raw.sourceUrl === 'string') manifest.sourceUrl = raw.sourceUrl
+    if (typeof raw.sourceLabel === 'string') manifest.sourceLabel = raw.sourceLabel.trim()
     return { ...result, manifest }
   } catch (error) {
     return {
@@ -768,6 +771,7 @@ function buildStats(
   return {
     markerCount: pkg.markers.length,
     regionCount: pkg.regions.length,
+    streetCount: pkg.streets?.length ?? 0,
     categoryCount: pkg.categories.length,
     groupCount: pkg.groups.length,
     descriptionCount,
@@ -1080,7 +1084,13 @@ async function analyzeMapGenie(
     ...manifest,
     tileSet: options.tileSetIndex ?? manifest?.tileSet,
   })
-  for (const warning of scanned.warnings) notices.push({ tone: 'warning', text: warning })
+  const hasRemoteTileTemplate = Boolean(
+    options.tileUrl?.trim() || manifest?.tileUrl?.trim() || scanned.tileSet?.pattern,
+  )
+  for (const warning of scanned.warnings) {
+    if (hasRemoteTileTemplate && warning.startsWith('没有找到 z/x/y')) continue
+    notices.push({ tone: 'warning', text: warning })
+  }
   if (scanned.tileSet && info.tileSets.length > 1) {
     notices.push({
       tone: 'info',
@@ -1099,10 +1109,14 @@ async function analyzeMapGenie(
       ? { expected: scanned.stats.expected, missing: scanned.stats.missing }
       : undefined,
     sourceUrl: manifest?.sourceUrl,
+    sourceLabel: manifest?.sourceLabel,
   })
   pkg.dataBytes = pkg.dataBytes ?? 0
   const stats = buildStats(pkg, scanned.stats, undefined)
-  if (!scanned.tileFiles || Object.keys(scanned.tileFiles).length === 0) {
+  if (
+    (!scanned.tileFiles || Object.keys(scanned.tileFiles).length === 0) &&
+    !pkg.tile?.template
+  ) {
     notices.push({
       tone: 'warning',
       text: '没有找到本地瓦片。地点、区域和说明仍可导入，之后可以在“底图”里补瓦片。',
@@ -1112,7 +1126,7 @@ async function analyzeMapGenie(
     pkg,
     stats,
     notices,
-    sourceLabel: 'Map Genie 瓦片地图',
+    sourceLabel: manifest?.sourceLabel || 'Map Genie 瓦片地图',
     sourceUrl: manifest?.sourceUrl,
     imageChoices: [],
     dataPath,

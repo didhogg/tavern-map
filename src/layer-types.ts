@@ -90,8 +90,20 @@ export type LayerRegion = {
   id: string
   name: string
   parentId?: string
+  /** Optional label anchor; otherwise the polygon centroid is used. */
+  labelX?: number
+  labelY?: number
   /** Normalized polygons; each ring is a list of [x, y] points. */
   polygons: Array<Array<[number, number]>>
+}
+
+/** A named road/street line used for map labels. */
+export type LayerStreet = {
+  id: string
+  name: string
+  type?: string
+  /** Normalized polyline coordinates, [x, y] in 0..1. */
+  points: Array<[number, number]>
 }
 
 export type LayerLinkKind = 'wikipedia' | 'official' | 'review' | 'source' | 'custom'
@@ -154,6 +166,8 @@ export type LayerMapPackage = {
   name: string
   kind: LayerMapKind
   source: LayerMapSource
+  /** Human-readable source label for imported third-party maps. */
+  sourceLabel?: string
   /** Stable identity used to update the same map package on re-import. */
   sourceKey?: string
   sourceUrl?: string
@@ -182,12 +196,16 @@ export type LayerMapPackage = {
   tile?: LayerTileConfig
   /** Optional local tile blobs keyed as `z/y/x` (without extension). */
   tileFiles?: Record<string, Blob>
+  /** Optional starting camera for a newly imported package. */
+  defaultView?: LayerView
   /** Optional user calibration shared by all chats using this map package. */
   grid?: LayerGridConfig
   categories: LayerCategory[]
   groups: LayerCategoryGroup[]
   markers: LayerMarker[]
   regions: LayerRegion[]
+  /** Optional named street lines, used to draw road labels. */
+  streets?: LayerStreet[]
   /** Optional original Map Genie icon font for marker symbols. */
   iconFont?: LayerIconFont
   /** Original Map Genie icon-set atlas; takes priority over the font. */
@@ -205,6 +223,9 @@ export type LayerPackageMeta = {
   sourceKey?: string
   markerCount: number
   regionCount: number
+  streetCount?: number
+  sourceLabel?: string
+  remoteTiles?: boolean
   categoryCount: number
   descriptionCount?: number
   linkCount?: number

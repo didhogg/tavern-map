@@ -71,6 +71,7 @@ function element<K extends keyof HTMLElementTagNameMap>(
 }
 
 function typeLabel(meta: LayerPackageMeta): string {
+  if (meta.sourceLabel) return meta.sourceLabel
   if (meta.source === 'fandom') return 'Fandom 图片'
   if (meta.source === 'mapgenie') return 'Map Genie 瓦片'
   return meta.kind === 'tiles' ? '瓦片' : '图片'
@@ -449,7 +450,9 @@ export class LayerPackagesUI {
       const tileText =
         meta.tileCount && meta.tileCount > 0
           ? `瓦片 ${formatCount(meta.tileCount)} 张${meta.tileZoomMin != null ? ` · z${meta.tileZoomMin}–z${meta.tileZoomMax}` : ''}${meta.missingTiles ? ` · 缺 ${formatCount(meta.missingTiles)}` : ''}`
-          : '未关联瓦片'
+          : meta.remoteTiles
+            ? '在线瓦片'
+            : '未关联瓦片'
       info.append(element('span', 'tml-package-asset', tileText))
     } else if (meta.hasImage) {
       info.append(

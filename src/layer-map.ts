@@ -48,6 +48,7 @@ import {
   type LayerUserPosition,
   type LayerPackageMeta,
   type LayerRegion,
+  type LayerStreet,
   type LayerView,
 } from './layer-types'
 import {
@@ -1225,6 +1226,10 @@ export class LayerMapUI {
       this.lastRemovedImage = null
     }
     if (changed || !this.state.userPosition) this.restoreUserPosition(pkg.id)
+    if (!this.state.view && pkg.defaultView) {
+      this.state.view = { ...pkg.defaultView }
+      this.view = { ...pkg.defaultView }
+    }
     if (
       this.state.atPlaceId &&
       !pkg.markers.some((marker) => marker.id === this.state.atPlaceId)
@@ -1299,9 +1304,13 @@ export class LayerMapUI {
       pkg.kind === 'tiles' ? '瓦片地图' : '图片地图',
       `${pkg.markers.length} 个地点`,
       pkg.regions.length ? `${pkg.regions.length} 个区域` : '无区域面',
-      pkg.source === 'mapgenie' ? 'Map Genie' : pkg.source === 'fandom' ? 'Fandom' : '本地',
+      pkg.sourceLabel || (pkg.source === 'mapgenie' ? 'Map Genie' : pkg.source === 'fandom' ? 'Fandom' : '本地'),
       pkg.kind === 'tiles'
-        ? `${Object.keys(pkg.tileFiles ?? {}).length} 张瓦片`
+        ? Object.keys(pkg.tileFiles ?? {}).length > 0
+          ? `${Object.keys(pkg.tileFiles ?? {}).length} 张瓦片`
+          : pkg.tile?.template
+            ? '在线瓦片'
+            : '0 张瓦片'
         : pkg.image
           ? '有底图'
           : '缺底图',
@@ -1780,8 +1789,10 @@ export class LayerMapUI {
     }
     this.drawGrid(context, width, height)
     this.drawRegions(context, width, height)
-    this.drawMarkers(context, width, height)
+    this.labelCells.clear()
     this.drawRegionLabels(context, width, height)
+    this.drawStreetLabels(context, width, height)
+    this.drawMarkers(context, width, height)
     this.drawUserRadius(context, width, height)
     this.updateUserStamp()
     this.updateGridHandles()
@@ -2061,6 +2072,9 @@ export class LayerMapUI {
   }
 
   private regionLabelPoint(region: LayerRegion): { x: number; y: number; area: number } | undefined {
+    if (region.labelX != null && region.labelY != null) {
+      return { x: region.labelX, y: region.labelY, area: 1 }
+    }
     const cached = this.regionLabelCache.get(region.id)
     if (cached) return cached
     let best: { x: number; y: number; area: number } | undefined
@@ -2334,6 +2348,75 @@ export class LayerMapUI {
     this.requestDraw()
   }
 
+  private streetRank(street: LayerStreet): number {
+    const type = (street.type ?? '').toLowerCase()
+    if (type === 'main') return 0
+    if (type === 'major') return 1
+    return 2
+  }
+
+  private drawStreetLabels(
+    context: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ): void {
+    const pkg = this.pkg
+    if (!pkg?.streets?.length || this.state.showLabels === false) return
+    const zoom = this.view.zoom
+    const seen = new Set<string>()
+    const ordered = [...pkg.streets].sort(
+      (a, b) => this.streetRank(a) - this.streetRank(b) || a.name.localeCompare(b.name),
+    )
+    for (const street of ordered) {
+      const rank = this.streetRank(street)
+      const minZoom = rank === 0 ? 13 : rank === 1 ? 14 : 15
+      if (zoom < minZoom) continue
+      const nameKey = street.name.toLocaleLowerCase()
+      if (seen.has(nameKey)) continue
+      let best: { x: number; y: number; angle: number; length: number } | undefined
+      for (let index = 1; index < street.points.length; index += 1) {
+        const [x1, y1] = this.project(street.points[index - 1][0], street.points[index - 1][1], width, height)
+        const [x2, y2] = this.project(street.points[index][0], street.points[index][1], width, height)
+        const length = Math.hypot(x2 - x1, y2 - y1)
+        if (length < 2) continue
+        const x = (x1 + x2) / 2
+        const y = (y1 + y2) / 2
+        if (x < -60 || y < -30 || x > width + 60 || y > height + 30) continue
+        if (!best || length > best.length) {
+          best = { x, y, angle: Math.atan2(y2 - y1, x2 - x1), length }
+        }
+      }
+      if (!best) continue
+      let angle = best.angle
+      if (angle > Math.PI / 2) angle -= Math.PI
+      if (angle < -Math.PI / 2) angle += Math.PI
+      const size = rank === 0 ? 13 : rank === 1 ? 12 : 11
+      context.save()
+      context.font = `${rank === 2 ? '' : '600 '}${size}px Georgia, "Times New Roman", serif`
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      const metrics = context.measureText(street.name)
+      const halfWidth = Math.min(150, Math.max(18, metrics.width / 2 + 3))
+      const halfHeight = size / 2 + 3
+      const cells = this.labelCellKeys(best.x - halfWidth, best.y - halfHeight, halfWidth * 2, halfHeight * 2)
+      if (cells.some((cell) => this.labelCells.has(cell))) {
+        context.restore()
+        continue
+      }
+      for (const cell of cells) this.labelCells.add(cell)
+      seen.add(nameKey)
+      context.translate(best.x, best.y)
+      context.rotate(angle)
+      context.lineJoin = 'round'
+      context.lineWidth = 3
+      context.strokeStyle = 'rgba(31,20,29,0.9)'
+      context.strokeText(street.name, 0, 0)
+      context.fillStyle = rank === 0 ? '#eadfc6' : '#d8cfb8'
+      context.fillText(street.name, 0, 0)
+      context.restore()
+    }
+  }
+
   private drawMarkers(context: CanvasRenderingContext2D, width: number, height: number): void {
     const pkg = this.pkg
     if (!pkg) return
@@ -2341,12 +2424,16 @@ export class LayerMapUI {
     const categories = new Map(pkg.categories.map((category) => [category.id, category]))
     const selectedId = this.state.selectedMarkerId
     const favoriteIds = this.favoriteMarkerIds
-    const labelThreshold = pkg.kind === 'image' ? LABEL_IMAGE_ZOOM : LABEL_TILE_ZOOM
+    const labelThreshold =
+      pkg.kind === 'image'
+        ? LABEL_IMAGE_ZOOM
+        : pkg.streets?.length
+          ? 14
+          : LABEL_TILE_ZOOM
     const showLabels = this.state.showLabels !== false && this.view.zoom >= labelThreshold
     const visible = this.markersInView(width, height).filter(
       (marker) => !hidden.has(marker.categoryId),
     )
-    this.labelCells.clear()
     this.clusterHitAreas = []
     const clustered = this.shouldCluster(pkg, visible.length)
       ? this.drawMarkerClusters(context, visible, width, height, selectedId)
@@ -3052,7 +3139,7 @@ export class LayerMapUI {
       region?.name ?? '',
       gridText ?? '',
       marker.sourceId ? `来源 id ${marker.sourceId}` : '',
-      pkg.source === 'mapgenie' ? 'Map Genie 本地快照' : 'Fandom 本地导入',
+      pkg.sourceLabel || (pkg.source === 'mapgenie' ? 'Map Genie 本地快照' : 'Fandom 本地导入'),
     ]
       .filter(Boolean)
       .join(' · ')

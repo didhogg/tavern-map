@@ -872,7 +872,10 @@ export class LayerImportUI {
       fact('有说明', formatCount(stats.descriptionCount)),
       fact('有链接', formatCount(stats.linkMarkerCount)),
     )
-    if (pkg.kind === 'tiles') facts.append(fact('区域', formatCount(stats.regionCount)))
+    if (pkg.kind === 'tiles') {
+      facts.append(fact('区域', formatCount(stats.regionCount)))
+      if (stats.streetCount) facts.append(fact('街道', formatCount(stats.streetCount)))
+    }
     if (pkg.kind === 'image') facts.append(fact('画布', `${formatCount(pkg.width)}×${formatCount(pkg.height)}`))
     this.previewEl.append(facts)
     const meta = element('div', 'tml-preview-meta')
@@ -1094,6 +1097,14 @@ export class LayerImportUI {
           'p',
           'tml-hint',
           `顺序 ${stats.order === 'zxy' ? '{z}/{x}/{y}' : stats.order === 'zyx' ? '{z}/{y}/{x}' : '未检测'} · ${stats.hasBounds ? '有 bounds' : '无 bounds，按 WebMercator'} · 瓦片组「${stats.setName}」`,
+        ),
+      )
+    } else if (preview.pkg.tile?.template) {
+      section.append(
+        element(
+          'p',
+          'tml-hint',
+          '使用在线瓦片模板；导入后需要联网加载底图。也可以再选择本地瓦片文件夹做离线备份。',
         ),
       )
     } else {

@@ -6,8 +6,10 @@ import type {
   LayerMapPackage,
   LayerMarker,
   LayerRegion,
+  LayerStreet,
   LayerTileConfig,
   LayerTileOrder,
+  LayerView,
 } from './layer-types'
 
 const PALETTE = [
@@ -513,6 +515,7 @@ export type MapGenieImportOptions = {
   tileStats?: { expected: number; missing: number }
   sourceKey?: string
   sourceUrl?: string
+  sourceLabel?: string
 }
 
 export function parseMapGeniePackage(
@@ -525,6 +528,7 @@ export function parseMapGeniePackage(
   const locationsRaw = array(root.locations)
   if (locationsRaw.length === 0) throw new Error('没有找到 locations 数组')
   const regionsRaw = array(root.regions)
+  const streetsRaw = array(root.streets)
   const map = record(root.map)
   const mapConfig = record(root.mapConfig)
   const groupsRaw = array(root.groups)
@@ -625,7 +629,19 @@ export function parseMapGeniePackage(
       }
     }
   }
-  tile.worldBounds = xyBounds(worldPoints)
+  const streets = parseStreetFeatures(streetsRaw)
+  for (const street of streets) {
+    for (const point of street.points) worldPoints.push(point)
+  }
+  const explicitWorldBounds = record(root.worldBounds)
+  const worldMinX = numberValue(explicitWorldBounds?.minX)
+  const worldMinY = numberValue(explicitWorldBounds?.minY)
+  const worldMaxX = numberValue(explicitWorldBounds?.maxX)
+  const worldMaxY = numberValue(explicitWorldBounds?.maxY)
+  tile.worldBounds =
+    worldMinX != null && worldMinY != null && worldMaxX != null && worldMaxY != null
+      ? { minX: worldMinX, minY: worldMinY, maxX: worldMaxX, maxY: worldMaxY }
+      : xyBounds(worldPoints)
   const regionFeatures: LayerRegion[] = []
   regionsRaw.forEach((item, index) => {
     const value = record(item)
@@ -636,10 +652,15 @@ export function parseMapGeniePackage(
     const polygons = features.flatMap((feature) =>
       feature.polygons.map((ring) => ring.map(([lng, lat]) => mercatorPoint(lng, lat))),
     )
+    const labelLng = numberValue(value.label_longitude) ?? numberValue(value.labelLongitude)
+    const labelLat = numberValue(value.label_latitude) ?? numberValue(value.labelLatitude)
+    const label = labelLng != null && labelLat != null ? mercatorPoint(labelLng, labelLat) : undefined
     regionFeatures.push({
       id: `mapgenie-region:${sourceId}`,
       name: text(value.title) || `区域 ${sourceId}`,
       parentId: idValue(value.parent_region_id) || undefined,
+      labelX: label?.[0],
+      labelY: label?.[1],
       polygons,
     })
   })
@@ -701,6 +722,8 @@ export function parseMapGeniePackage(
     name: options.name || title,
     kind: 'tiles',
     source: 'mapgenie',
+    sourceLabel: options.sourceLabel || text(root.sourceLabel) || undefined,
+    defaultView: parseLayerView(root.defaultView),
     sourceKey,
     sourceUrl: options.sourceUrl,
     width: 1,
@@ -711,15 +734,68 @@ export function parseMapGeniePackage(
     groups,
     markers,
     regions: regionFeatures,
-    dataBytes: dataBytes({ categories, groups, markers, regions: regionFeatures }),
-    attribution: 'Map Genie / 用户本地快照',
+    streets: streets.length > 0 ? streets : undefined,
+    dataBytes: dataBytes({ categories, groups, markers, regions: regionFeatures, streets }),
+    attribution: text(root.attribution) || 'Map Genie / 用户本地快照',
     createdAt: now,
     updatedAt: now,
   }
 }
 
+function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
+  const result: LayerStreet[] = []
+  raw.forEach((item, featureIndex) => {
+    const feature = record(item)
+    if (!feature) return
+    const properties = record(feature.properties)
+    const name = cleanSourceText(properties?.Name ?? properties?.name)
+    if (!name) return
+    const type = text(properties?.Type ?? properties?.type) || undefined
+    const geometry = record(feature.geometry)
+    const geometryType = text(geometry?.type)
+    if (!geometry || (geometryType !== 'LineString' && geometryType !== 'MultiLineString')) {
+      return
+    }
+    const lines =
+      geometryType === 'LineString'
+        ? [geometry.coordinates]
+        : array(geometry.coordinates)
+    const sourceId = idValue(properties?.fid) || String(featureIndex)
+    lines.forEach((lineRaw, lineIndex) => {
+      const points: Array<[number, number]> = []
+      for (const pointRaw of array(lineRaw)) {
+        const point = array(pointRaw)
+        const lng = numberValue(point[0])
+        const lat = numberValue(point[1])
+        if (lng != null && lat != null) points.push(mercatorPoint(lng, lat))
+      }
+      if (points.length < 2) return
+      result.push({
+        id: `mapgenie-street:${sourceId}:${lineIndex}`,
+        name,
+        type,
+        points,
+      })
+    })
+  })
+  return result
+}
+
 type ParsedRegionFeature = {
   polygons: Array<Array<[number, number]>>
+}
+
+function parseLayerView(value: unknown): LayerView | undefined {
+  const view = record(value)
+  const cx = numberValue(view?.cx)
+  const cy = numberValue(view?.cy)
+  const zoom = numberValue(view?.zoom)
+  if (cx == null || cy == null || zoom == null) return undefined
+  return {
+    cx: Math.min(1, Math.max(0, cx)),
+    cy: Math.min(1, Math.max(0, cy)),
+    zoom: Math.max(0, zoom),
+  }
 }
 
 function parseRegionFeatures(value: RawRecord): ParsedRegionFeature[] {

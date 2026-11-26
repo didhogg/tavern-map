@@ -63,12 +63,20 @@ function packageDataBytes(pkg: LayerMapPackage): number {
   if (typeof pkg.dataBytes === 'number' && Number.isFinite(pkg.dataBytes) && pkg.dataBytes > 0) {
     return pkg.dataBytes
   }
-  if (!pkg.markers.length && !pkg.categories.length && !pkg.regions.length) return 0
+  if (
+    !pkg.markers.length &&
+    !pkg.categories.length &&
+    !pkg.regions.length &&
+    !pkg.streets?.length
+  ) {
+    return 0
+  }
   return encodedBytes({
     categories: pkg.categories,
     groups: pkg.groups,
     markers: pkg.markers,
     regions: pkg.regions,
+    streets: pkg.streets,
   })
 }
 
@@ -125,6 +133,8 @@ export function layerMeta(pkg: LayerMapPackage): LayerPackageMeta {
     sourceKey: pkg.sourceKey,
     markerCount: pkg.markers.length,
     regionCount: pkg.regions.length,
+    sourceLabel: pkg.sourceLabel,
+    remoteTiles: Boolean(pkg.tile?.template),
     categoryCount: pkg.categories.length,
     descriptionCount,
     linkCount,
