@@ -32,6 +32,8 @@ export const DEFAULT_SETTINGS: Settings = {
   layerNearbyDirection: true,
   layerNearbyCoords: true,
   layerNearbyNotes: false,
+  layerNearbySource: false,
+  layerNearbyWiki: false,
   layerNearbyMax: 8,
   layerFavoritesAI: false,
   layerFavoriteType: true,
@@ -105,6 +107,8 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     layerNearbyDirection: value.layerNearbyDirection !== false,
     layerNearbyCoords: value.layerNearbyCoords !== false,
     layerNearbyNotes: value.layerNearbyNotes === true,
+    layerNearbySource: value.layerNearbySource === true,
+    layerNearbyWiki: value.layerNearbyWiki === true,
     layerNearbyMax: Math.round(
       number(value.layerNearbyMax, DEFAULT_SETTINGS.layerNearbyMax, 1, 50),
     ),

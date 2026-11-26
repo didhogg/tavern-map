@@ -93,6 +93,12 @@ export function buildLayerContext(state: LayerChatState): string {
     lines.push(`Nearby (nearest ${snapshot.nearby.length}, ${scope}):`)
     for (const place of snapshot.nearby) {
       lines.push(placeLine(place, snapshot.grid, snapshot.nearbyCoords !== false))
+      if (place.sourceMaterial) {
+        lines.push(`  Source material: ${clean(place.sourceMaterial)}`)
+      }
+      for (const wiki of place.wikiTexts ?? []) {
+        lines.push(`  Wiki text (${clean(wiki.title)}): ${clean(wiki.text)}`)
+      }
     }
   }
   if (snapshot.favorites?.length) {

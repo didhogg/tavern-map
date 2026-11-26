@@ -194,6 +194,8 @@ export type Settings = {
   layerNearbyDirection: boolean
   layerNearbyCoords: boolean
   layerNearbyNotes: boolean
+  layerNearbySource: boolean
+  layerNearbyWiki: boolean
   layerNearbyMax: number
   layerFavoritesAI: boolean
   layerFavoriteType: boolean

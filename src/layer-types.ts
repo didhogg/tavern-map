@@ -276,6 +276,8 @@ export type LayerNearbyPlace = {
   direction: string
   distancePercent: number
   note?: string
+  sourceMaterial?: string
+  wikiTexts?: Array<{ title: string; text: string }>
 }
 
 export type LayerContextSnapshot = {
@@ -554,6 +556,18 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
           direction: item.direction,
           distancePercent: item.distancePercent,
           note: typeof item.note === 'string' ? item.note : undefined,
+          sourceMaterial:
+            typeof item.sourceMaterial === 'string' && item.sourceMaterial.trim()
+              ? item.sourceMaterial
+              : undefined,
+          wikiTexts: Array.isArray(item.wikiTexts)
+            ? item.wikiTexts.filter(
+                (wiki): wiki is { title: string; text: string } =>
+                  Boolean(wiki) &&
+                  typeof wiki.title === 'string' &&
+                  typeof wiki.text === 'string',
+              )
+            : undefined,
         }))
     : undefined
   const grid = value.grid

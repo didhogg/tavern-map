@@ -4021,6 +4021,13 @@ export class LayerMapUI {
             settings.layerNearbyNotes && this.markerNoteValue(marker).trim()
               ? this.markerNoteValue(marker)
               : undefined,
+          sourceMaterial:
+            settings.layerNearbySource && this.markerSourceValue(marker).trim()
+              ? this.markerSourceValue(marker)
+              : undefined,
+          wikiTexts: settings.layerNearbyWiki
+            ? this.contextWikiTexts(marker, settings, true)
+            : undefined,
         }
       })
       .sort((a, b) => a.distancePercent - b.distancePercent)

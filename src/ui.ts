@@ -335,6 +335,8 @@ const SETTINGS_HTML = `
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyDirection"> 附带方位 / 距离</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyCoords"> 附带 XY / 网格坐标</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyNotes"> 附带笔记</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbySource"> 附带来源资料</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNearbyWiki"> 附带 Wiki 正文</label>
         <label class="tm-row">最多地点数<input type="number" data-layer-setting="layerNearbyMax" min="1" max="50" step="1"></label>
       </div>
 
