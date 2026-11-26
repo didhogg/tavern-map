@@ -11,6 +11,7 @@ import { buildContext, estimateTokens } from './context'
 import { buildLayerContext, buildMapContexts } from './layer-context'
 import { LayerMapUI } from './layer-map'
 import { LAYER_STATE_KEY, loadLayerState } from './layer-types'
+import { flushGlobalNotes, globalNote, setGlobalNote } from './notes-store'
 import { formatDistance, haversine, placeKey } from './geo'
 import { errorMessage } from './http'
 import {
@@ -440,6 +441,7 @@ export class MapUI {
     this.settings = loadSettings(ctx)
     this.state = loadState(ctx)
     this.state.enabled = this.settings.enabled
+    this.hydrateGlobalNotes()
     this.migrateSavedPlaceNotes()
     this.routeMode = this.state.itinerary?.profile ?? 'foot'
     this.mount()
@@ -1608,8 +1610,8 @@ export class MapUI {
     )
     head.append(title, actions)
 
-    const note = this.noteInput(page.note, (value) => {
-      page.note = value
+    const note = this.noteInput(this.wikiNoteValue(page, page.note), (value) => {
+      this.setWikiNote(page, value)
       this.sync()
       this.scheduleNoteSave()
     })
@@ -2576,6 +2578,77 @@ export class MapUI {
     if (this.radiusEl) this.radiusEl.value = String(this.settings.radiusM)
   }
 
+  private placeNoteKey(place: Place): string {
+    return `place:${placeKey(place)}`
+  }
+
+  private wikiNoteKey(page: { lang?: string; pageId?: number; title?: string }): string {
+    const lang = page.lang || 'en'
+    const identity =
+      page.pageId && page.pageId > 0
+        ? String(page.pageId)
+        : (page.title || '').trim().toLowerCase()
+    return `wiki:${lang}:${identity}`
+  }
+
+  private wikiNoteValue(
+    page: { lang?: string; pageId?: number; title?: string },
+    fallback?: string,
+  ): string {
+    const key = this.wikiNoteKey(page)
+    const global = globalNote(key)
+    if (global !== undefined) return global
+    if (fallback?.trim()) {
+      setGlobalNote(key, fallback)
+      return fallback
+    }
+    return ''
+  }
+
+  private setWikiNote(
+    page: { lang?: string; pageId?: number; title?: string; note?: string },
+    value: string,
+  ): void {
+    setGlobalNote(this.wikiNoteKey(page), value)
+    page.note = value
+  }
+
+  private hydrateGlobalNotes(): void {
+    const notes = this.state.placeNotes ?? (this.state.placeNotes = {})
+    for (const [key, entry] of Object.entries(notes)) {
+      const global = globalNote(`place:${key}`)
+      if (global !== undefined) entry.note = global
+      else if (entry.note.trim()) setGlobalNote(`place:${key}`, entry.note)
+    }
+    for (const place of this.state.savedPlaces) {
+      const key = this.placeNoteKey(place)
+      const global = globalNote(key)
+      if (global !== undefined) place.note = global
+      else if (place.note.trim()) setGlobalNote(key, place.note)
+    }
+    for (const star of this.state.stars) {
+      const key = this.wikiNoteKey(star)
+      const global = globalNote(key)
+      if (global !== undefined) star.note = global
+      else if (star.note.trim()) setGlobalNote(key, star.note)
+    }
+    if (this.state.place) {
+      const note = this.getPlaceNote(this.state.place)
+      const key = placeKey(this.state.place)
+      if (note.trim()) {
+        notes[key] = {
+          note,
+          name: this.state.place.name,
+          nameZh: this.state.place.nameZh,
+          lat: this.state.place.lat,
+          lng: this.state.place.lng,
+          updatedAt: Date.now(),
+        }
+      }
+    }
+    void flushGlobalNotes()
+  }
+
   private migrateSavedPlaceNotes(): void {
     for (const place of this.state.savedPlaces) {
       this.preservePlaceNote(place, place.note)
@@ -2586,6 +2659,9 @@ export class MapUI {
     if (!note.trim()) return
     const notes = this.state.placeNotes ?? (this.state.placeNotes = {})
     const key = placeKey(place)
+    const globalKey = this.placeNoteKey(place)
+    if (globalNote(globalKey) !== undefined) return
+    setGlobalNote(globalKey, note)
     if (notes[key]) return
     notes[key] = {
       note,
@@ -2610,12 +2686,18 @@ export class MapUI {
   }
 
   private getPlaceNote(place: Place): string {
+    const key = this.placeNoteKey(place)
+    const global = globalNote(key)
+    if (global !== undefined) return global
     const entry = this.state.placeNotes?.[placeKey(place)]
-    return entry?.note ?? this.findSavedPlace(place)?.note ?? ''
+    const legacy = entry?.note ?? this.findSavedPlace(place)?.note ?? ''
+    if (legacy.trim()) setGlobalNote(key, legacy)
+    return legacy
   }
 
   private setPlaceNote(place: Place, value: string): void {
     const key = placeKey(place)
+    setGlobalNote(this.placeNoteKey(place), value)
     const notes = this.state.placeNotes ?? (this.state.placeNotes = {})
     if (value.trim()) {
       notes[key] = {
@@ -3099,7 +3181,9 @@ export class MapUI {
     this.wikiNoteEl.placeholder = star
       ? '写下你想让 AI 记住的笔记…'
       : '点亮星标后可为这篇 Wiki 添加笔记…'
-    if (document.activeElement !== this.wikiNoteEl) this.wikiNoteEl.value = star?.note ?? ''
+    if (document.activeElement !== this.wikiNoteEl) {
+      this.wikiNoteEl.value = star ? this.wikiNoteValue(star, star.note) : ''
+    }
     this.wikiNoteStatusEl.textContent = star ? '自动保存' : ''
   }
 
@@ -3221,7 +3305,7 @@ export class MapUI {
     if (!page) return
     const star = this.findStar(page)
     if (!star) return
-    star.note = this.wikiNoteEl.value
+    this.setWikiNote(star, this.wikiNoteEl.value)
     this.sync()
     this.wikiNoteStatusEl.textContent = '保存中…'
     this.scheduleNoteSave()
@@ -3265,7 +3349,7 @@ export class MapUI {
     this.removeStar(current)
     this.state.stars.push({
       ...current,
-      note: '',
+      note: this.wikiNoteValue(current),
       savedAt: Date.now(),
       contextMode,
       fullText,
@@ -3407,6 +3491,7 @@ export class MapUI {
     this.settings = loadSettings(this.ctx)
     this.state = loadState(this.ctx)
     this.state.enabled = this.settings.enabled
+    this.hydrateGlobalNotes()
     this.layerUI?.handleChatChanged()
     this.pois = []
     this.poisById.clear()

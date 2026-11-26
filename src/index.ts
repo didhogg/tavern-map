@@ -3,6 +3,7 @@ import './style.css'
 
 import { setWorkerUrl } from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url&no-inline'
+import { initGlobalNotes } from './notes-store'
 import { MapUI } from './ui'
 import type { StContext } from './types'
 
@@ -46,12 +47,14 @@ function boot(attempt = 0): void {
   }
 
   target[BOOT_FLAG] = true
-  try {
-    target.__tavernMapUI = new MapUI(context)
-  } catch (error) {
-    target[BOOT_FLAG] = false
-    console.error('[tavern-map] failed to mount UI', error)
-  }
+  void initGlobalNotes().finally(() => {
+    try {
+      target.__tavernMapUI = new MapUI(context)
+    } catch (error) {
+      target[BOOT_FLAG] = false
+      console.error('[tavern-map] failed to mount UI', error)
+    }
+  })
 }
 
 if (document.readyState === 'loading') {

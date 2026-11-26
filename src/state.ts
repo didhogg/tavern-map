@@ -1,3 +1,4 @@
+import { flushGlobalNotes } from './notes-store'
 import type { MapState, RouteItinerary, StContext } from './types'
 
 function validItinerary(raw: unknown): RouteItinerary | undefined {
@@ -277,7 +278,14 @@ export function loadState(ctx: StContext): MapState {
 export function saveState(ctx: StContext, state: MapState): void {
   state.updatedAt = Date.now()
   if (!ctx.chatMetadata) return
-  ctx.chatMetadata['tavern-map'] = state
+  // Notes are global; do not copy them into the chat file.
+  ctx.chatMetadata['tavern-map'] = {
+    ...state,
+    placeNotes: {},
+    savedPlaces: state.savedPlaces.map((place) => ({ ...place, note: '' })),
+    stars: state.stars.map((star) => ({ ...star, note: '' })),
+  }
+  void flushGlobalNotes()
   if (ctx.saveMetadata) {
     try {
       const result = ctx.saveMetadata()

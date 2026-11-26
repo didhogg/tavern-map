@@ -44,6 +44,12 @@ import {
   type LayerRegion,
   type LayerView,
 } from './layer-types'
+import {
+  flushGlobalNotes,
+  globalNote,
+  globalNotesSnapshot,
+  setGlobalNote,
+} from './notes-store'
 import { LayerWindowController } from './layer-window'
 import type { StContext } from './types'
 
@@ -459,6 +465,7 @@ export class LayerMapUI {
   }
 
   handleChatChanged(): void {
+    void flushGlobalNotes()
     this.closeImagePanel()
     this.closeLightbox()
     if (this.aligning) this.cancelAlign()
@@ -489,6 +496,9 @@ export class LayerMapUI {
     this.importUI?.close()
     this.packagesUI?.close()
     this.state = structuredClone(DEFAULT_LAYER_STATE)
+    this.state.notes = Object.fromEntries(
+      Object.entries(globalNotesSnapshot()).filter(([key]) => key.startsWith('layer:')),
+    )
     this.state.updatedAt = Date.now()
     this.pkg = null
     this.image = null
@@ -756,6 +766,7 @@ export class LayerMapUI {
       this.lastRemovedImage = null
     }
     this.pkg = pkg
+    this.migrateLegacyNotes(pkg)
     if (
       this.state.selectedMarkerId &&
       !pkg.markers.some((marker) => marker.id === this.state.selectedMarkerId)
@@ -1817,20 +1828,15 @@ export class LayerMapUI {
       this.actionButton(current ? '取消当前区域' : '设为当前区域', () => this.toggleCurrentRegion(region), current),
     )
     wrap.append(head, meta, actions)
-    const noteKey = `region:${region.id}`
     const noteWrap = document.createElement('div')
     noteWrap.className = 'tml-note-section'
     const label = document.createElement('label')
     label.textContent = '区域笔记'
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写一段区域笔记…'
-    textarea.value = this.state.notes?.[noteKey] ?? ''
+    textarea.value = this.regionNoteValue(region)
     textarea.addEventListener('input', () => {
-      const notes = this.state.notes ?? (this.state.notes = {})
-      if (textarea.value.trim()) notes[noteKey] = textarea.value
-      else delete notes[noteKey]
-      this.refreshContext()
-      this.persist()
+      this.setRegionNote(region, textarea.value)
     })
     label.append(textarea)
     noteWrap.append(label)
@@ -2162,6 +2168,69 @@ export class LayerMapUI {
       .trim()
   }
 
+  private notePrefix(): string {
+    return `layer:${this.pkg?.id ?? ''}:`
+  }
+
+  private markerNoteKey(marker: LayerMarker): string {
+    return `${this.notePrefix()}${marker.id}`
+  }
+
+  private regionNoteKey(region: LayerRegion): string {
+    return `${this.notePrefix()}region:${region.id}`
+  }
+
+  private markerNoteValue(marker: LayerMarker): string {
+    const key = this.markerNoteKey(marker)
+    const global = globalNote(key)
+    if (global !== undefined) return global
+    return this.state.notes?.[key] ?? ''
+  }
+
+  private regionNoteValue(region: LayerRegion): string {
+    const key = this.regionNoteKey(region)
+    const global = globalNote(key)
+    if (global !== undefined) return global
+    return this.state.notes?.[key] ?? ''
+  }
+
+  private setNoteValue(key: string, value: string): void {
+    setGlobalNote(key, value)
+    const notes = this.state.notes ?? (this.state.notes = {})
+    if (value.trim()) notes[key] = value
+    else delete notes[key]
+    this.refreshContext()
+    this.persist()
+  }
+
+  private setMarkerNote(marker: LayerMarker, value: string): void {
+    this.setNoteValue(this.markerNoteKey(marker), value)
+  }
+
+  private setRegionNote(region: LayerRegion, value: string): void {
+    this.setNoteValue(this.regionNoteKey(region), value)
+  }
+
+  private migrateLegacyNotes(pkg: LayerMapPackage): void {
+    const notes = this.state.notes ?? (this.state.notes = {})
+    let changed = false
+    for (const [key, value] of Object.entries(notes)) {
+      if (key.startsWith('layer:') || key.startsWith('place:') || key.startsWith('wiki:')) continue
+      const target = `layer:${pkg.id}:${key}`
+      if (globalNote(target) === undefined) setGlobalNote(target, value)
+      delete notes[key]
+      changed = true
+    }
+    const global = globalNotesSnapshot()
+    for (const [key, value] of Object.entries(global)) {
+      if (key.startsWith(`layer:${pkg.id}:`)) notes[key] = value
+    }
+    if (changed) {
+      void flushGlobalNotes()
+      this.persist(true)
+    }
+  }
+
   private noteSection(marker: LayerMarker): HTMLElement {
     const section = document.createElement('div')
     section.className = 'tml-note-section'
@@ -2169,13 +2238,9 @@ export class LayerMapUI {
     label.textContent = '我的笔记（不限字数）'
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写下地点笔记，不设当前也会保存…'
-    textarea.value = this.state.notes?.[marker.id] ?? ''
+    textarea.value = this.markerNoteValue(marker)
     textarea.addEventListener('input', () => {
-      const notes = this.state.notes ?? (this.state.notes = {})
-      if (textarea.value.trim()) notes[marker.id] = textarea.value
-      else delete notes[marker.id]
-      this.refreshContext()
-      this.persist()
+      this.setMarkerNote(marker, textarea.value)
     })
     label.append(textarea)
     section.append(label)
@@ -2279,9 +2344,9 @@ export class LayerMapUI {
         : undefined
     const category = marker ? pkg.categories.find((item) => item.id === marker.categoryId) : undefined
     const note = marker
-      ? this.state.notes?.[marker.id]
+      ? this.markerNoteValue(marker)
       : region
-        ? this.state.notes?.[`region:${region.id}`]
+        ? this.regionNoteValue(region)
         : undefined
     const links = marker
       ? [
@@ -2350,7 +2415,7 @@ export class LayerMapUI {
       .filter((marker) => {
         const category = categoryById.get(marker.categoryId)?.name ?? ''
         const region = this.regionForMarker(marker)?.name ?? ''
-        const note = this.state.notes?.[marker.id] ?? ''
+        const note = this.markerNoteValue(marker)
         return (
           marker.name.toLowerCase().includes(query) ||
           category.toLowerCase().includes(query) ||
@@ -3144,6 +3209,7 @@ export class LayerMapUI {
   }
 
   dispose(): void {
+    void flushGlobalNotes()
     this.windowController?.dispose()
     this.importUI?.dispose()
     this.packagesUI?.dispose()

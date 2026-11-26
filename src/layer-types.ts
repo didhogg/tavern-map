@@ -1,3 +1,4 @@
+import { flushGlobalNotes, globalNotesSnapshot } from './notes-store'
 import type { StContext } from './types'
 
 export type LayerMapKind = 'image' | 'tiles'
@@ -316,7 +317,12 @@ export function loadLayerState(ctx: StContext): LayerChatState {
       : [],
     showLabels: typeof value.showLabels === 'boolean' ? value.showLabels : true,
     showRegions: typeof value.showRegions === 'boolean' ? value.showRegions : true,
-    notes,
+    notes: {
+      ...Object.fromEntries(
+        Object.entries(globalNotesSnapshot()).filter(([key]) => key.startsWith('layer:')),
+      ),
+      ...notes,
+    },
     links,
     sourceLinkText,
     context: validContext(value.context),
@@ -357,7 +363,9 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
 export function saveLayerState(ctx: StContext, state: LayerChatState): void {
   state.updatedAt = Date.now()
   if (!ctx.chatMetadata) return
-  ctx.chatMetadata[LAYER_STATE_KEY] = state
+  // Notes are global; chat metadata keeps only chat-scoped view/selection/link state.
+  ctx.chatMetadata[LAYER_STATE_KEY] = { ...state, notes: {} }
+  void flushGlobalNotes()
   if (ctx.saveMetadata) {
     try {
       const result = ctx.saveMetadata()

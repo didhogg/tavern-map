@@ -8,8 +8,9 @@
 
 - MapLibre GL JS 地图，默认 OpenFreeMap `liberty` 样式（不需要 API key）
 - **图层地图模式**：把地图切换为本地图片底图或本地瓦片地图，支持地点、分类过滤、区域面、搜索、地点详情、笔记和多来源链接；不放在 iframe，也不混入 OSM 坐标
-- **本地地图包导入（0.4.1）**：一个 `.zip` / 文件夹 / 单独 JSON+图片一次导入；自动识别 Fandom `markers` 与 Map Genie `mapData`，自动找 `mapImage`、瓦片和 `map.title`，自动判断 `{z}/{y}/{x}` 与 `{z}/{x}/{y}`；导入前显示预览、进度、瓦片覆盖/缺失，支持取消。重新导入按稳定 `sourceKey` 更新，不重复建地点，并保留本地笔记、链接和手动换过的底图。
+- **本地地图包导入（0.4.2）**：一个 `.zip` / 文件夹 / 单独 JSON+图片一次导入；自动识别 Fandom `markers` 与 Map Genie `mapData`，自动找 `mapImage`、瓦片和 `map.title`，自动判断 `{z}/{y}/{x}` 与 `{z}/{x}/{y}`；导入前显示预览、进度、瓦片覆盖/缺失，支持取消。重新导入按稳定 `sourceKey` 更新，不重复建地点，并保留本地笔记、链接和手动换过的底图。
 - **底图生命周期**：导入预览可换图、移除、从包内多图里选择；地图顶栏的“底图”浮层随时更换/移除（可撤销）/查看大图；换图保留地点、笔记和链接；可用“对齐底图”拖动、缩放图片来对齐点位。也支持只导入底图、只导入点位，之后再关联 JSON。
+- **全局笔记**：图层地点/区域、真实地点、Wiki 笔记统一写入全局 `tavern-map-notes` IndexedDB；切换聊天、刷新、清空聊天都不会按聊天隔离或删除；全文保存，不截断。
 - **窗口与移动端**：标题栏可拖动、八向缩放、双击复位，位置和大小保存；窗口宽度小于 820px 自动切紧凑布局，手机视口全屏；导入弹窗自身滚动。移动端 FAB 在 SillyTavern 的 fixed body 布局下也能保持可见。
 - **图层地图性能**：瓦片并发加载 + 解码缓存 LRU；marker 空间索引与视口裁剪；标签按屏幕空间避让；渲染合并到 `requestAnimationFrame`。不限制瓦片数量、文件大小或地点数量，也不截断导入描述/笔记/搜索/分类；只回收已解码的内存缓存，源文件与地图包数据完整保留
 - **AI 上下文模式隔离**：扩展设置里分别勾选“现实地图上下文 / 图层地图上下文”；二选一或都不选，避免两个场景块混在一起
@@ -24,10 +25,10 @@
 - 路线规划支持**步行 / 驾车 / 所有公共交通**：地点卡和行程页都有方式选择；步行/驾车用公共 OSRM，公共交通用 Transitous/MOTIS（公交、地铁、区域铁路、长途铁路、轮渡等）；显示距离/时间/逐段行程、道路名、换乘点、等待时间和**按步骤归属的沿途 POI**，可复制、注入 AI、开始移动
 - 路线卡有“显示沿途 POI”勾选（默认开）和范围滑块（25–500m，默认 100m），设置持久保存；范围与地图当前地点半径完全独立；POI 显示名称、分类、菜系、距本段和距段首
 - 步行无名步道/B2F/B3F 逐段用 Photon 反向地理编码反查道路名（优先 `type=street` 或 `street` 字段）；反查失败才用最近有名路段/当前街道，第一步优先当前街道，到达步骤优先目的地街道
-- 未收藏的地点也可以直接写笔记：地点笔记独立保存在 `placeNotes`，不要求先点亮星标；当前地点笔记会进入 `Where` 下方，收藏后笔记会随之进入收藏
+- 未收藏的地点也可以直接写笔记：地点笔记写入全局 `tavern-map-notes`，不要求先点亮星标，也不随聊天隔离；当前地点笔记会进入 `Where` 下方
 - “开始移动”让地图上的人物图标沿路线移动，到达后自动刷新场景；任意方式不可用时退化为直线估计并明确标注
 - FAB 和面板都可以拖动；面板位置、FAB 位置保存在 `localStorage`
-- 重新打开时恢复上次地图视角、最后打开的 Wiki、Wiki 模式、收藏和笔记
+- 重新打开时恢复上次地图视角、最后打开的 Wiki、Wiki 模式、收藏；笔记始终从全局存储读取
 - Photon 反向地理编码；失败时回退到 BigDataCloud；OSM 有 `name:zh` 时地点栏和详情同时显示中文名
 - Overpass 周边地点（两个公共镜像、小半径、限时请求），1.2 秒后并行启动 OSM API 回退，谁先返回用谁
 - Wikipedia GeoSearch + 条目简介/全文，可同时勾选英文/日文/中文，多语言候选合并显示
@@ -39,7 +40,7 @@
 - “收藏”页统一管理收藏地点和 Wiki，支持收藏、移除、写自己的笔记（不限字数，完整注入，不省略）
 - 收藏地点、Wiki 星标和笔记都会进入场景块；当前地点的笔记会显示在 `Where` 下方
 - 通过 `setExtensionPrompt` 注入 `IN_CHAT`，默认 depth 2、SYSTEM role
-- 按聊天保存地图状态、收藏、笔记、行程和上次打开状态；全局设置保存在 `extensionSettings`
+- 按聊天保存地图视角、选中地点、收藏/星标和行程；**所有笔记（图层地点/区域、真实地点、Wiki）保存在全局 IndexedDB，与聊天记录无关**，不会被截断；全局设置保存在 `extensionSettings`
 - AI 上下文预览、token 估算（只显示估算，不按预算裁剪任何内容）
 - 独立的 `dev.html` mock 环境，不需要启动 SillyTavern 就能测 UI 和数据链路
 
@@ -288,13 +289,13 @@ setExtensionPrompt(key, value, position, depth, scan, role, filter)
 - Overpass 公共实例经常超时或 406；现在 1.2 秒后并行启动 OSM API 回退，谁先返回用谁。地点、周边、Wiki、POI 图层分别到达并刷新 UI。
 - OSM API 回退会下载整个 bbox 的 XML（含建筑节点），密集城区可能 1–2 MB。
 - 桌面面板可拖动；<=640px 时真实地图面板和图层地图面板固定全屏，FAB 仍可拖动。
-- Fandom 底图直链可能被 Cloudflare/CORS 拦截。0.4.1 会先读取 JSON/说明/链接，再尝试图片；失败时明确提示“JSON 已读取，底图需要本地选择”，不会把数据导入判为失败。
+- Fandom 底图直链可能被 Cloudflare/CORS 拦截。0.4.2 会先读取 JSON/说明/链接，再尝试图片；失败时明确提示“JSON 已读取，底图需要本地选择”，不会把数据导入判为失败。
 - Map Genie 的网页 URL 不直接解析；请使用本地 `mapdata.json` 或包含它的地图包。
 - ZIP 读取支持 store/deflate 和基础 ZIP64；加密包或不支持的压缩算法会给出具体错误，不会静默导入一半。
 - 地图包的真实上限是浏览器 IndexedDB 配额和内存；导入前会预检配额，不足时明确提示。
-- 本地 Fandom 包没有记录 Wiki 域名；0.4.1 按 manifest、绝对链接、包名关键词、默认 Forgotten Realms 的顺序推断，可在导入预览的高级选项里修正。
+- 本地 Fandom 包没有记录 Wiki 域名；0.4.2 按 manifest、绝对链接、包名关键词、默认 Forgotten Realms 的顺序推断，可在导入预览的高级选项里修正。
 - 重新打开时恢复最后 Wiki 的前提是关闭面板时 Wiki 抽屉仍然开着；主动关闭 Wiki 后不会强制恢复。
-- 0.1.0 已在真实 SillyTavern 实机运行；0.4.1 已在真实 SillyTavern 1.19.1 干净安装中验证导入按钮、实际文件选择器、8 套样本、Fandom 页面 URL、窗口拖动/缩放/复位、刷新恢复和 390×844 布局。外部 Overpass/Wikia 请求仍可能产生网络 502/CORS 日志。
+- 0.1.0 已在真实 SillyTavern 实机运行；0.4.2 已在真实 SillyTavern 1.19.1 干净安装中验证导入按钮、实际文件选择器、8 套样本、Fandom 页面 URL、窗口拖动/缩放/复位、刷新恢复、全局笔记和 390×844 布局。外部 Overpass/Wikia 请求仍可能产生网络 502/CORS 日志。
 - `maplibre-gl` 被打进 `dist/index.js`，产物较大；如果后续在意加载体积，可以改成 CDN/ESM external。
 - 地图状态没有迁移器；`MapState.version` 目前固定为 1。
 
@@ -313,6 +314,7 @@ src/
   layer-image.ts 图片探测、缩略图、比例、显示矩形
   layer-zip.ts   自包含 ZIP 读取器（store/deflate/ZIP64）
   layer-store.ts IndexedDB 地图包、稳定 sourceKey、配额、图片/瓦片更新
+  notes-store.ts 全局笔记 IndexedDB，不按聊天隔离、不截断
   layer-types.ts 图层地图状态与地图包类型
   search.ts      Photon forward geocoding（国家/城市/地点搜索）
   poi.ts         Overpass/OSM POI 图层数据、分类、营业时间/网站/菜系、OSM API 回退
@@ -346,12 +348,12 @@ manifest.json    ST 扩展清单
 
 - [Toril 适配模式构建文档](docs/toril-mode-build.md)：2D 平面地图、本地点库、区域路径、FR Wiki、中文副名、Huiji 译名导入与路线能力边界。该文档是规划草案，尚未实现。
 - [2D 自制地图模式构建文档](docs/custom-2d-map-mode-build.md)：高清图片底图、点/线/面编辑、悬浮编辑器、网格/比例尺、街道图 A* 与局部网格寻路。该文档是设计方案，尚未实现。
-- [图层地图 0.4.1 导入与底图生命周期](docs/layer-map-import-0.4.1.md)：一个包一次导入、Fandom 页面 URL、图片替换/移除/撤销、对齐、窗口和包管理。
+- [图层地图 0.4.2 导入与底图生命周期](docs/layer-map-import-0.4.1.md)：一个包一次导入、Fandom 页面 URL、图片替换/移除/撤销、对齐、窗口和包管理。
 - [图层地图模式 ASCII 界面与交互预览](docs/layer-map-ui-preview.md)：Map Genie 瓦片地图与 Fandom 图片地图的双样本界面、导入向导、分类过滤、地点笔记、多来源链接与 AI 上下文交互稿。该文档的界面与核心交互已落地（图片/瓦片底图、导入、分类、搜索、地点详情、笔记、多来源链接、AI 上下文）；绘制/网格/路线仍属后续。
 
 ## 下一步
 
-1. 继续在真实 SillyTavern 里回归 0.4.1 的边界情况：超大瓦片包、超长链接正文、多个底图候选、低配额设备、不同主题下的按钮对比度。
+1. 继续在真实 SillyTavern 里回归 0.4.2 的边界情况：超大瓦片包、超长链接正文、多个底图候选、低配额设备、不同主题下的按钮对比度。
 2. 视需要把自绘搜索框换成 `@maplibre/maplibre-gl-geocoder` 或其它现成 map UI kit；当前自绘是为了绕开 Nominatim 的浏览器 CORS 限制并直接接 Photon。
 3. 评估把地图状态、收藏和笔记移植到 TRPG assistant 的哪一层。
 4. 如确实需要 Google 数据，单独做 Google adapter，不和 OSM 混图。
