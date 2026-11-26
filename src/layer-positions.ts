@@ -1,11 +1,12 @@
 import type { StContext } from './types'
-import type { LayerUserPosition } from './layer-types'
+import type { LayerUserPosition, LayerView } from './layer-types'
 
 const STORAGE_KEY = 'tavern-map:layer-positions:v1'
 const REAL_STORAGE_KEY = 'tavern-map:real-positions:v1'
 
 type PositionStore = {
   positions: Record<string, Record<string, LayerUserPosition>>
+  views?: Record<string, Record<string, LayerView>>
   lastPackage: Record<string, string>
 }
 
@@ -18,6 +19,10 @@ function loadStore(): PositionStore {
       positions:
         value.positions && typeof value.positions === 'object'
           ? (value.positions as Record<string, Record<string, LayerUserPosition>>)
+          : {},
+      views:
+        value.views && typeof value.views === 'object'
+          ? (value.views as Record<string, Record<string, LayerView>>)
           : {},
       lastPackage:
         value.lastPackage && typeof value.lastPackage === 'object'
@@ -88,9 +93,33 @@ export function saveStoredLayerPosition(ctx: StContext, packageId: string, posit
   saveStore(store)
 }
 
+export function storedLayerView(ctx: StContext, packageId: string): LayerView | undefined {
+  const chatKey = layerPositionChatKey(ctx)
+  const store = loadStore()
+  const specific = store.views?.[chatKey]?.[packageId]
+  const fallback = store.views?.['*']?.[packageId]
+  const value = specific ?? fallback
+  if (!value || !Number.isFinite(value.cx) || !Number.isFinite(value.cy) || !Number.isFinite(value.zoom)) {
+    return undefined
+  }
+  return { cx: value.cx, cy: value.cy, zoom: value.zoom }
+}
+
+export function saveStoredLayerView(ctx: StContext, packageId: string, view: LayerView): void {
+  const store = loadStore()
+  const chatKey = layerPositionChatKey(ctx)
+  const views = store.views ?? (store.views = {})
+  views[chatKey] ??= {}
+  views[chatKey][packageId] = { cx: view.cx, cy: view.cy, zoom: view.zoom }
+  views['*'] ??= {}
+  views['*'][packageId] = { cx: view.cx, cy: view.cy, zoom: view.zoom }
+  saveStore(store)
+}
+
 export function removeStoredLayerPackage(_ctx: StContext, packageId: string): void {
   const store = loadStore()
   for (const positions of Object.values(store.positions)) delete positions[packageId]
+  for (const views of Object.values(store.views ?? {})) delete views[packageId]
   for (const [chatKey, last] of Object.entries(store.lastPackage)) {
     if (last === packageId) delete store.lastPackage[chatKey]
   }

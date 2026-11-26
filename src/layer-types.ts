@@ -297,6 +297,8 @@ export type LayerChatState = {
   packageId?: string
   /** Per-map-package scene positions; switching packages must not erase them. */
   positionsByPackage?: Record<string, LayerUserPosition>
+  /** Per-map-package camera view; switching packages must not erase it. */
+  viewsByPackage?: Record<string, LayerView>
   view?: LayerView
   selectedMarkerId?: string
   currentMarkerId?: string
@@ -432,6 +434,25 @@ export function loadLayerState(ctx: StContext): LayerChatState {
                         : undefined,
                   },
                 ]
+              }),
+          )
+        : undefined,
+    viewsByPackage:
+      value.viewsByPackage && typeof value.viewsByPackage === 'object'
+        ? Object.fromEntries(
+            Object.entries(value.viewsByPackage)
+              .filter(
+                ([key, entry]) =>
+                  typeof key === 'string' &&
+                  Boolean(entry) &&
+                  typeof entry === 'object' &&
+                  Number.isFinite((entry as LayerView).cx) &&
+                  Number.isFinite((entry as LayerView).cy) &&
+                  Number.isFinite((entry as LayerView).zoom),
+              )
+              .map(([key, entry]) => {
+                const view = entry as LayerView
+                return [key, { cx: view.cx, cy: view.cy, zoom: view.zoom }]
               }),
           )
         : undefined,

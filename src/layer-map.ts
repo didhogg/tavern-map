@@ -69,8 +69,10 @@ import { LayerWindowController } from './layer-window'
 import {
   removeStoredLayerPackage,
   saveStoredLayerPosition,
+  saveStoredLayerView,
   storedLastLayerPackage,
   storedLayerPosition,
+  storedLayerView,
 } from './layer-positions'
 import type { Settings, StContext } from './types'
 
@@ -439,6 +441,7 @@ export class LayerMapUI {
   private maplibreEl!: HTMLElement
   private maplibreMap: MapLibreMap | null = null
   private maplibreReady: Promise<void> | null = null
+  private tileViewPackageId = ''
   private placingUser = false
   private gridPanelOpen = false
   private gridSaveTimer: number | undefined
@@ -663,6 +666,7 @@ export class LayerMapUI {
           this.closeImagePanel()
           if (this.state.packageId === id) this.state.packageId = undefined
           if (this.state.positionsByPackage) delete this.state.positionsByPackage[id]
+          if (this.state.viewsByPackage) delete this.state.viewsByPackage[id]
           removeStoredLayerPackage(this.ctx, id)
           this.state.selectedMarkerId = undefined
           this.state.currentMarkerId = undefined
@@ -1202,6 +1206,11 @@ export class LayerMapUI {
     }
     const changed = this.state.packageId !== pkg.id
     if (changed) {
+      this.tileViewPackageId = ''
+      if (this.saveTimer !== undefined) {
+        window.clearTimeout(this.saveTimer)
+        this.saveTimer = undefined
+      }
       this.rememberUserPosition()
       this.state.packageId = pkg.id
       this.state.selectedMarkerId = undefined
@@ -1261,7 +1270,7 @@ export class LayerMapUI {
     this.packageSelectEl.value = pkg.id
     if (pkg.kind === 'tiles') {
       this.clearImageResources()
-      await this.loadTileMap(pkg, changed)
+      await this.loadTileMap(pkg)
     } else {
       this.setTileMapVisible(false)
       this.view = this.resolveView(pkg, this.state.view)
@@ -1617,10 +1626,11 @@ export class LayerMapUI {
     map.setPaintProperty('tml-bg', 'background-color', tile.backgroundColor ?? '#0a0f14')
   }
 
-  private async loadTileMap(pkg: LayerMapPackage, changed: boolean): Promise<void> {
+  private async loadTileMap(pkg: LayerMapPackage): Promise<void> {
     this.setTileMapVisible(true)
     await this.applyTileSource(pkg)
-    if (changed || !this.state.view || !this.canRestoreTileView(pkg)) {
+    this.tileViewPackageId = pkg.id
+    if (!this.state.view || !this.canRestoreTileView(pkg)) {
       await this.fitTileMap(pkg)
     } else {
       this.applyStoredTileView()
@@ -1672,7 +1682,7 @@ export class LayerMapUI {
 
   private syncViewFromMap(): void {
     const map = this.maplibreMap
-    if (!map) return
+    if (!map || this.pkg?.kind !== 'tiles' || this.tileViewPackageId !== this.pkg.id) return
     const center = map.getCenter()
     const normalized = this.lngLatToNormalized(center.lng, center.lat)
     this.view = {
@@ -1686,12 +1696,12 @@ export class LayerMapUI {
   }
 
   private onTileMapMove(): void {
-    if (!this.maplibreMap) return
+    if (!this.maplibreMap || this.pkg?.kind !== 'tiles' || this.tileViewPackageId !== this.pkg.id) return
     this.syncViewFromMap()
   }
 
   private onTileMapMoveEnd(): void {
-    if (!this.maplibreMap) return
+    if (!this.maplibreMap || this.pkg?.kind !== 'tiles' || this.tileViewPackageId !== this.pkg.id) return
     this.syncViewFromMap()
     this.persist()
     this.refreshContext()
@@ -1703,6 +1713,7 @@ export class LayerMapUI {
     originalEvent?: MouseEvent
   }): void {
     if (!this.pkg) return
+    if (this.pkg.kind !== 'tiles') return
     if (this.placingUser) {
       const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
       this.setUserPosition(point.x, point.y, undefined, !event.originalEvent?.altKey)
@@ -4286,6 +4297,11 @@ export class LayerMapUI {
   private rememberUserPosition(): void {
     const pkgId = this.state.packageId
     if (!pkgId) return
+    if (this.view) {
+      const views = this.state.viewsByPackage ?? (this.state.viewsByPackage = {})
+      views[pkgId] = { cx: this.view.cx, cy: this.view.cy, zoom: this.view.zoom }
+      saveStoredLayerView(this.ctx, pkgId, this.view)
+    }
     const positions = this.state.positionsByPackage ?? (this.state.positionsByPackage = {})
     const user = this.state.userPosition
     if (!user) {
@@ -4304,6 +4320,13 @@ export class LayerMapUI {
   }
 
   private restoreUserPosition(pkgId: string): void {
+    const savedView = this.state.viewsByPackage?.[pkgId] ?? storedLayerView(this.ctx, pkgId)
+    if (savedView) {
+      this.state.viewsByPackage ??= {}
+      this.state.viewsByPackage[pkgId] = savedView
+      this.state.view = savedView
+      this.view = { cx: savedView.cx, cy: savedView.cy, zoom: savedView.zoom }
+    }
     const saved = this.state.positionsByPackage?.[pkgId] ?? storedLayerPosition(this.ctx, pkgId)
     if (!saved) {
       this.state.userPosition = undefined
