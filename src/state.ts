@@ -1,4 +1,9 @@
 import { flushGlobalNotes } from './notes-store'
+import {
+  layerPositionChatKey,
+  saveStoredRealPosition,
+  storedRealPosition,
+} from './layer-positions'
 import type { MapState, RouteItinerary, StContext } from './types'
 
 function validItinerary(raw: unknown): RouteItinerary | undefined {
@@ -105,10 +110,23 @@ export const DEFAULT_STATE: MapState = {
 export function loadState(ctx: StContext): MapState {
   const base = structuredClone(DEFAULT_STATE)
   const raw = ctx.chatMetadata?.['tavern-map']
-  if (!raw || typeof raw !== 'object' || (raw as MapState).version !== 1) return base
+  const fallback = storedRealPosition(ctx)
+  if (!raw || typeof raw !== 'object' || (raw as MapState).version !== 1) {
+    if (fallback) {
+      base.center = { lat: fallback.lat, lng: fallback.lng }
+      if (fallback.zoom != null) base.zoom = fallback.zoom
+      base.centerUpdatedAt = fallback.updatedAt
+    }
+    return base
+  }
 
   const value = raw as Partial<MapState>
-  const center = value.center
+  const useFallback = Boolean(
+    fallback &&
+      (layerPositionChatKey(ctx) === 'default' ||
+        (fallback.updatedAt ?? 0) > (value.centerUpdatedAt ?? value.updatedAt ?? 0)),
+  )
+  const center = useFallback ? fallback : value.center
   return {
     ...base,
     ...value,
@@ -117,7 +135,17 @@ export function loadState(ctx: StContext): MapState {
       center && Number.isFinite(center.lat) && Number.isFinite(center.lng)
         ? { lat: center.lat, lng: center.lng }
         : base.center,
-    zoom: typeof value.zoom === 'number' && Number.isFinite(value.zoom) ? value.zoom : base.zoom,
+    zoom:
+      useFallback && fallback?.zoom != null
+        ? fallback.zoom
+        : typeof value.zoom === 'number' && Number.isFinite(value.zoom)
+          ? value.zoom
+          : base.zoom,
+    centerUpdatedAt: useFallback
+      ? fallback?.updatedAt
+      : typeof value.centerUpdatedAt === 'number' && Number.isFinite(value.centerUpdatedAt)
+        ? value.centerUpdatedAt
+        : undefined,
     place:
       value.place && typeof value.place.name === 'string' && Number.isFinite(value.place.lat) && Number.isFinite(value.place.lng)
         ? value.place
@@ -277,6 +305,14 @@ export function loadState(ctx: StContext): MapState {
 
 export function saveState(ctx: StContext, state: MapState): void {
   state.updatedAt = Date.now()
+  if (state.centerUpdatedAt) {
+    saveStoredRealPosition(ctx, {
+      lat: state.center.lat,
+      lng: state.center.lng,
+      zoom: state.zoom,
+      updatedAt: state.centerUpdatedAt,
+    })
+  }
   if (!ctx.chatMetadata) return
   // Notes are global; do not copy them into the chat file.
   ctx.chatMetadata['tavern-map'] = {

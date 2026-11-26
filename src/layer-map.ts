@@ -33,6 +33,7 @@ import {
   DEFAULT_LAYER_STATE,
   loadLayerState,
   saveLayerState,
+  type LayerCategory,
   type LayerChatState,
   type LayerContextSnapshot,
   type LayerImageFit,
@@ -44,6 +45,7 @@ import {
   type LayerMapPackage,
   type LayerMarker,
   type LayerNearbyPlace,
+  type LayerUserPosition,
   type LayerPackageMeta,
   type LayerRegion,
   type LayerView,
@@ -64,6 +66,12 @@ import {
   type FavoritePlace,
 } from './favorites-store'
 import { LayerWindowController } from './layer-window'
+import {
+  removeStoredLayerPackage,
+  saveStoredLayerPosition,
+  storedLastLayerPackage,
+  storedLayerPosition,
+} from './layer-positions'
 import type { Settings, StContext } from './types'
 
 const PANEL_ID = 'tm-layer'
@@ -72,6 +80,7 @@ const LABEL_IMAGE_ZOOM = 1.7
 const LABEL_TILE_ZOOM = 11
 const MARKER_HIT_RADIUS = 12
 const REGION_HIT_MIN_ZOOM = 8
+const REGION_LABEL_MIN_ZOOM = 8
 const MARKER_INDEX_CELL = 0.025
 const LABEL_CELL_PX = 48
 const IMAGE_PANEL_WIDTH = 340
@@ -275,7 +284,12 @@ const PANEL_HTML = `
       <div id="tml-viewport" class="tml-viewport">
         <div id="tml-maplibre" class="tml-maplibre" hidden></div>
         <canvas id="tml-canvas"></canvas>
-        <button type="button" id="tml-user-stamp" class="tml-user-stamp" hidden title="拖动我">我</button>
+        <button type="button" id="tml-user-stamp" class="tml-user-stamp" hidden title="拖动我" aria-label="我在的位置">
+          <svg viewBox="0 0 24 34" aria-hidden="true">
+            <path d="M12 1C6.5 1 2 5.5 2 11c0 7.6 10 22 10 22s10-14.4 10-22c0-5.5-4.5-10-10-10Z" fill="currentColor"></path>
+            <circle cx="12" cy="11" r="3.4" fill="#fff"></circle>
+          </svg>
+        </button>
         <button type="button" id="tml-grid-origin" class="tml-grid-handle tml-grid-origin" hidden aria-label="拖动网格原点">0,0</button>
         <button type="button" id="tml-grid-scale" class="tml-grid-handle tml-grid-scale" hidden aria-label="拖动缩放网格">↘</button>
         <div id="tml-place-bar" class="tml-place-bar" hidden>
@@ -431,6 +445,9 @@ export class LayerMapUI {
   private userDrag: { startX: number; startY: number; originX: number; originY: number } | null = null
   private userStampEl!: HTMLButtonElement
   private favoriteMarkerIds = new Set<string>()
+  private iconFontPackageId = ''
+  private iconFontFamily = ''
+  private readonly markerIconCache = new Map<string, HTMLCanvasElement>()
   private gridHandleDrag: {
     mode: 'origin' | 'scale'
     startX: number
@@ -453,6 +470,7 @@ export class LayerMapUI {
   private readonly tileCache = new Map<string, HTMLImageElement | 'loading' | 'error'>()
   private readonly tileFileUrls = new Map<string, string>()
   private readonly markerRegionCache = new Map<string, LayerRegion | undefined>()
+  private readonly regionLabelCache = new Map<string, { x: number; y: number; area: number }>()
   private readonly markerIndex = new Map<string, LayerMarker[]>()
   private readonly labelCells = new Set<string>()
   private tileCacheBytes = 0
@@ -640,6 +658,8 @@ export class LayerMapUI {
           tileProtocolPackages.delete(id)
           this.closeImagePanel()
           if (this.state.packageId === id) this.state.packageId = undefined
+          if (this.state.positionsByPackage) delete this.state.positionsByPackage[id]
+          removeStoredLayerPackage(this.ctx, id)
           this.state.selectedMarkerId = undefined
           this.state.currentMarkerId = undefined
           this.state.selectedRegionId = undefined
@@ -692,10 +712,13 @@ export class LayerMapUI {
     this.state = loadLayerState(this.ctx)
     this.panelEl.style.zIndex = '10000'
     await this.refreshPackages()
+    const storedLast = storedLastLayerPackage(this.ctx)
     const wanted =
       (this.state.packageId && this.metas.some((meta) => meta.id === this.state.packageId)
         ? this.state.packageId
-        : this.metas[0]?.id) ?? undefined
+        : storedLast && this.metas.some((meta) => meta.id === storedLast)
+          ? storedLast
+          : this.metas[0]?.id) ?? undefined
     if (wanted) {
       await this.loadPackage(wanted)
     } else {
@@ -1175,6 +1198,7 @@ export class LayerMapUI {
     }
     const changed = this.state.packageId !== pkg.id
     if (changed) {
+      this.rememberUserPosition()
       this.state.packageId = pkg.id
       this.state.selectedMarkerId = undefined
       this.state.currentMarkerId = undefined
@@ -1187,9 +1211,17 @@ export class LayerMapUI {
       this.linkDraftVisible = false
       this.lastRemovedImage = null
     }
+    if (changed || !this.state.userPosition) this.restoreUserPosition(pkg.id)
+    if (
+      this.state.atPlaceId &&
+      !pkg.markers.some((marker) => marker.id === this.state.atPlaceId)
+    ) {
+      this.state.atPlaceId = undefined
+    }
     if (this.pkg && this.pkg.id !== pkg.id) tileProtocolPackages.delete(this.pkg.id)
     this.pkg = pkg
     this.migrateLegacyNotes(pkg)
+    await this.ensureIconFont(pkg)
     if (
       this.state.selectedMarkerId &&
       !pkg.markers.some((marker) => marker.id === this.state.selectedMarkerId)
@@ -1218,6 +1250,7 @@ export class LayerMapUI {
     this.emptyMessage = ''
     this.emptyEl.hidden = true
     this.markerRegionCache.clear()
+    this.regionLabelCache.clear()
     this.buildMarkerIndex()
     this.clearTileCaches()
     this.packageSelectEl.value = pkg.id
@@ -1732,6 +1765,7 @@ export class LayerMapUI {
     this.drawGrid(context, width, height)
     this.drawRegions(context, width, height)
     this.drawMarkers(context, width, height)
+    this.drawRegionLabels(context, width, height)
     this.drawUserRadius(context, width, height)
     this.updateUserStamp()
     this.updateGridHandles()
@@ -2010,6 +2044,124 @@ export class LayerMapUI {
     })
   }
 
+  private regionLabelPoint(region: LayerRegion): { x: number; y: number; area: number } | undefined {
+    const cached = this.regionLabelCache.get(region.id)
+    if (cached) return cached
+    let best: { x: number; y: number; area: number } | undefined
+    for (const ring of region.polygons) {
+      if (ring.length < 3) continue
+      let twiceArea = 0
+      let cx = 0
+      let cy = 0
+      for (let index = 0; index < ring.length; index += 1) {
+        const [x0, y0] = ring[index]
+        const [x1, y1] = ring[(index + 1) % ring.length]
+        const cross = x0 * y1 - x1 * y0
+        twiceArea += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+      }
+      const area = Math.abs(twiceArea / 2)
+      if (area < 1e-9) continue
+      const point = {
+        x: cx / (3 * twiceArea),
+        y: cy / (3 * twiceArea),
+        area,
+      }
+      if (!best || point.area > best.area) best = point
+    }
+    if (best) this.regionLabelCache.set(region.id, best)
+    return best
+  }
+
+  private drawRegionLabels(
+    context: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ): void {
+    const pkg = this.pkg
+    if (!pkg || this.state.showRegions === false || pkg.regions.length === 0) return
+    if (this.view.zoom < REGION_LABEL_MIN_ZOOM) return
+    const zoom = this.view.zoom
+    const size = pkg.kind === 'tiles' ? Math.max(11, Math.min(17, 10 + (zoom - 7) * 1.15)) : 12
+    for (const region of pkg.regions) {
+      const point = this.regionLabelPoint(region)
+      if (!point || point.x < -0.1 || point.x > 1.1 || point.y < -0.1 || point.y > 1.1) continue
+      const [x, y] = this.project(point.x, point.y, width, height)
+      if (x < -100 || y < -30 || x > width + 100 || y > height + 30) continue
+      const selected = region.id === this.state.selectedRegionId
+      context.save()
+      context.font = `${selected ? 700 : 600} ${size}px system-ui, sans-serif`
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      const metrics = context.measureText(region.name)
+      const boxWidth = metrics.width + 8
+      const boxHeight = size + 4
+      const cells = this.labelCellKeys(x - boxWidth / 2, y - boxHeight / 2, boxWidth, boxHeight)
+      if (!selected && cells.some((cell) => this.labelCells.has(cell))) {
+        context.restore()
+        continue
+      }
+      for (const cell of cells) this.labelCells.add(cell)
+      context.lineWidth = Math.max(2, size / 5)
+      context.strokeStyle = 'rgba(0, 0, 0, 0.72)'
+      context.strokeText(region.name, x, y)
+      context.fillStyle = selected ? '#f3c87f' : 'rgba(255, 255, 255, 0.9)'
+      context.fillText(region.name, x, y)
+      context.restore()
+    }
+  }
+
+  private async ensureIconFont(pkg: LayerMapPackage): Promise<void> {
+    if (this.iconFontPackageId === pkg.id) return
+    this.iconFontPackageId = ''
+    this.iconFontFamily = ''
+    this.markerIconCache.clear()
+    if (!pkg.iconFont) return
+    try {
+      const face = new FontFace(pkg.iconFont.family, await pkg.iconFont.data.arrayBuffer())
+      await face.load()
+      document.fonts.add(face)
+      this.iconFontPackageId = pkg.id
+      this.iconFontFamily = pkg.iconFont.family
+      this.markerIconCache.clear()
+      this.requestDraw()
+    } catch (error) {
+      console.warn('[tavern-map] Map Genie icon font load failed', error)
+    }
+  }
+
+  private markerIconFor(category: LayerCategory | undefined): HTMLCanvasElement | undefined {
+    const pkg = this.pkg
+    if (!pkg?.iconFont || !this.iconFontFamily || !category?.icon) return undefined
+    const glyph = pkg.iconFont.glyphs[category.icon]
+    if (!glyph) return undefined
+    const cached = this.markerIconCache.get(category.id)
+    if (cached) return cached
+    const cssSize = 30
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(cssSize * dpr)
+    canvas.height = Math.round(cssSize * dpr)
+    const context = canvas.getContext('2d')
+    if (!context) return undefined
+    context.setTransform(dpr, 0, 0, dpr, 0, 0)
+    context.beginPath()
+    context.arc(cssSize / 2, cssSize / 2, 11, 0, Math.PI * 2)
+    context.fillStyle = category.color || '#e6b56a'
+    context.fill()
+    context.lineWidth = 1.2
+    context.strokeStyle = 'rgba(255,255,255,0.82)'
+    context.stroke()
+    context.font = `400 15px "${this.iconFontFamily}"`
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillStyle = '#fff'
+    context.fillText(glyph, cssSize / 2, cssSize / 2 + 0.5)
+    this.markerIconCache.set(category.id, canvas)
+    return canvas
+  }
+
   private drawMarkers(context: CanvasRenderingContext2D, width: number, height: number): void {
     const pkg = this.pkg
     if (!pkg) return
@@ -2028,16 +2180,31 @@ export class LayerMapUI {
       const category = categories.get(marker.categoryId)
       const selected = marker.id === selectedId
       const current = false
+      const icon = this.markerIconFor(category)
       context.save()
-      context.beginPath()
-      context.arc(x, y, current ? 8 : selected ? 7.5 : 4.5, 0, Math.PI * 2)
-      context.fillStyle = category?.color ?? '#e6b56a'
-      context.globalAlpha = current || selected ? 1 : 0.9
-      context.fill()
-      context.globalAlpha = 1
-      context.lineWidth = current ? 3 : selected ? 2.5 : 1.2
-      context.strokeStyle = current ? '#ffffff' : selected ? '#f3c87f' : 'rgba(255,255,255,0.8)'
-      context.stroke()
+      if (icon) {
+        const size = selected ? 36 : 28
+        context.globalAlpha = selected ? 1 : 0.95
+        context.drawImage(icon, x - size / 2, y - size / 2, size, size)
+        context.globalAlpha = 1
+        if (selected) {
+          context.beginPath()
+          context.arc(x, y, 17, 0, Math.PI * 2)
+          context.strokeStyle = '#f3c87f'
+          context.lineWidth = 2
+          context.stroke()
+        }
+      } else {
+        context.beginPath()
+        context.arc(x, y, current ? 8 : selected ? 7.5 : 4.5, 0, Math.PI * 2)
+        context.fillStyle = category?.color ?? '#e6b56a'
+        context.globalAlpha = current || selected ? 1 : 0.9
+        context.fill()
+        context.globalAlpha = 1
+        context.lineWidth = current ? 3 : selected ? 2.5 : 1.2
+        context.strokeStyle = current ? '#ffffff' : selected ? '#f3c87f' : 'rgba(255,255,255,0.8)'
+        context.stroke()
+      }
       if (favoriteIds.has(marker.id)) {
         context.font = '600 10px system-ui, sans-serif'
         context.fillStyle = '#ffd98f'
@@ -3455,19 +3622,29 @@ export class LayerMapUI {
     const pkg = this.pkg
     if (!pkg || !settings.layerNearbyAI || settings.layerNearbyMax <= 0) return []
     const radius = this.state.nearbyRadius ?? 0.08
+    const width = this.viewportEl.clientWidth || this.canvasEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || this.canvasEl.clientHeight || 1
+    const [anchorX, anchorY] = this.project(anchor.x, anchor.y, width, height)
+    const [edgeX] = this.project(anchor.x + radius, anchor.y, width, height)
+    const [, edgeY] = this.project(anchor.x, anchor.y + radius, width, height)
+    const radiusPx = Math.abs(edgeX - anchorX)
+    const radiusYPx = Math.abs(edgeY - anchorY)
+    if (radiusPx < 1 || radiusYPx < 1) return []
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const categories = new Map(pkg.categories.map((category) => [category.id, category]))
     return pkg.markers
       .filter((marker) => {
         if (marker.id === excludeId) return false
         if (hidden.has(marker.categoryId)) return false
-        const dx = marker.x - anchor.x
-        const dy = marker.y - anchor.y
-        return Math.hypot(dx, dy) <= radius
+        const screenX = anchorX + (marker.x - anchor.x) * (radiusPx / radius)
+        const screenY = anchorY + (marker.y - anchor.y) * (radiusYPx / radius)
+        return Math.hypot(screenX - anchorX, screenY - anchorY) <= radiusPx
       })
       .map((marker) => {
         const dx = marker.x - anchor.x
         const dy = marker.y - anchor.y
+        const screenDx = dx * (radiusPx / radius)
+        const screenDy = dy * (radiusYPx / radius)
         const category = categories.get(marker.categoryId)?.name
         return {
           id: marker.id,
@@ -3475,8 +3652,10 @@ export class LayerMapUI {
           category: settings.layerNearbyType ? category : undefined,
           x: marker.x,
           y: marker.y,
-          direction: settings.layerNearbyDirection ? this.directionFor(dx, dy) : '',
-          distancePercent: Math.hypot(dx, dy) * 100,
+          direction: settings.layerNearbyDirection
+            ? this.directionFor(screenDx, screenDy)
+            : '',
+          distancePercent: (Math.hypot(screenDx, screenDy) / radiusPx) * radius * 100,
           note:
             settings.layerNearbyNotes && this.markerNoteValue(marker).trim()
               ? this.markerNoteValue(marker)
@@ -3825,18 +4004,16 @@ export class LayerMapUI {
     const radius = Math.min(0.8, Math.max(0.001, this.state.nearbyRadius ?? 0.08))
     const [cx, cy] = this.project(user.x, user.y, width, height)
     const [rx] = this.project(user.x + radius, user.y, width, height)
-    const [, ry] = this.project(user.x, user.y + radius, width, height)
     const xRadius = Math.abs(rx - cx)
-    const yRadius = Math.abs(ry - cy)
-    if (xRadius < 4 || yRadius < 4) return
+    if (xRadius < 4) return
     context.save()
     context.beginPath()
-    context.ellipse(cx, cy, xRadius, yRadius, 0, 0, Math.PI * 2)
-    context.fillStyle = 'rgba(57, 181, 255, 0.11)'
+    context.arc(cx, cy, xRadius, 0, Math.PI * 2)
+    context.fillStyle = 'rgba(217, 83, 79, 0.10)'
     context.fill()
-    context.setLineDash([6, 5])
+    context.setLineDash([7, 5])
     context.lineWidth = 1.6
-    context.strokeStyle = 'rgba(57, 181, 255, 0.9)'
+    context.strokeStyle = 'rgba(230, 91, 84, 0.95)'
     context.stroke()
     context.restore()
   }
@@ -3933,7 +4110,43 @@ export class LayerMapUI {
     this.requestDraw()
   }
 
+  private rememberUserPosition(): void {
+    const pkgId = this.state.packageId
+    if (!pkgId) return
+    const positions = this.state.positionsByPackage ?? (this.state.positionsByPackage = {})
+    const user = this.state.userPosition
+    if (!user) {
+      delete positions[pkgId]
+      saveStoredLayerPosition(this.ctx, pkgId)
+      return
+    }
+    const position: LayerUserPosition = {
+      x: user.x,
+      y: user.y,
+      atPlaceId: this.state.atPlaceId,
+      nearbyRadius: this.state.nearbyRadius,
+    }
+    positions[pkgId] = position
+    saveStoredLayerPosition(this.ctx, pkgId, position)
+  }
+
+  private restoreUserPosition(pkgId: string): void {
+    const saved = this.state.positionsByPackage?.[pkgId] ?? storedLayerPosition(this.ctx, pkgId)
+    if (!saved) {
+      this.state.userPosition = undefined
+      this.state.atPlaceId = undefined
+      saveStoredLayerPosition(this.ctx, pkgId)
+      return
+    }
+    this.state.positionsByPackage ??= {}
+    this.state.positionsByPackage[pkgId] = saved
+    this.state.userPosition = { x: saved.x, y: saved.y }
+    this.state.atPlaceId = saved.atPlaceId
+    if (saved.nearbyRadius != null) this.state.nearbyRadius = saved.nearbyRadius
+  }
+
   private persist(immediate = false): void {
+    this.rememberUserPosition()
     if (this.saveTimer !== undefined) window.clearTimeout(this.saveTimer)
     this.state.view = this.view
     if (immediate) {
@@ -3948,6 +4161,7 @@ export class LayerMapUI {
 
   private saveNow(): void {
     this.state.view = this.view
+    this.rememberUserPosition()
     saveLayerState(this.ctx, this.state)
   }
 

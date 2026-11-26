@@ -78,6 +78,8 @@ export type WikiRef = {
 export type MapView = {
   center: LatLng
   zoom: number
+  /** Timestamp of the last user-initiated marker move; map panning must not overwrite it. */
+  centerUpdatedAt?: number
 }
 
 export type ItineraryStep = {
@@ -136,6 +138,8 @@ export type MapState = {
   enabled: boolean
   center: LatLng
   zoom: number
+  /** Timestamp of the last user-initiated marker move; map panning must not overwrite it. */
+  centerUpdatedAt?: number
   /** Last map camera position, which can differ from the selected marker. */
   view?: MapView
   place?: Place

@@ -26,6 +26,7 @@ import { nearbyPlaces, reverseGeocode, reverseStreet } from './providers'
 import { routeBetween, type Route, type RouteStep } from './route'
 import { searchPlaces, type SearchResult } from './search'
 import { loadState, saveState } from './state'
+import { storedRealPosition } from './layer-positions'
 import { loadSettings, saveSettings, WIKI_LANGS } from './settings'
 import type {
   MapState,
@@ -495,6 +496,7 @@ export class MapUI {
     this.settings = loadSettings(ctx)
     this.state = loadState(ctx)
     this.state.enabled = this.settings.enabled
+    this.restoreStoredRealPosition()
     this.hydrateGlobalNotes()
     this.migrateSavedPlaceNotes()
     this.routeMode = this.state.itinerary?.profile ?? 'foot'
@@ -881,8 +883,23 @@ export class MapUI {
     else this.closePanel()
   }
 
+  private restoreStoredRealPosition(): void {
+    const stored = storedRealPosition(this.ctx)
+    if (!stored || (stored.updatedAt ?? 0) < (this.state.centerUpdatedAt ?? 0)) return
+    this.state.center = { lat: stored.lat, lng: stored.lng }
+    this.state.centerUpdatedAt = stored.updatedAt
+    if (stored.zoom != null) this.state.zoom = stored.zoom
+    this.state.view = {
+      center: { lat: stored.lat, lng: stored.lng },
+      zoom: stored.zoom ?? this.state.zoom,
+    }
+    this.marker?.setLngLat([stored.lng, stored.lat])
+  }
+
   private openPanel(): void {
     this.layerUI?.close()
+    this.ctx = this.liveContext()
+    this.restoreStoredRealPosition()
     this.panelEl.hidden = false
     this.tab = this.state.lastTab ?? 'nearby'
     this.applyPanelGeometry()
@@ -937,7 +954,7 @@ export class MapUI {
     element.className = 'tm-person-marker'
     element.title = '你在这里'
     element.innerHTML =
-      '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.1"></circle><path d="M6.2 21c.35-4.1 2.6-6.3 5.8-6.3s5.45 2.2 5.8 6.3"></path></svg>'
+      '<svg viewBox="0 0 24 34" aria-hidden="true"><path d="M12 1C6.5 1 2 5.5 2 11c0 7.6 10 22 10 22s10-14.4 10-22c0-5.5-4.5-10-10-10Z" fill="currentColor"></path><circle cx="12" cy="11" r="3.4" fill="#fff"></circle></svg>'
     return element
   }
 
@@ -963,7 +980,7 @@ export class MapUI {
     const map = this.map
     map.touchZoomRotate.disableRotation()
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
-    this.marker = new Marker({ element: this.personMarkerElement(), draggable: true, anchor: 'center' })
+    this.marker = new Marker({ element: this.personMarkerElement(), draggable: true, anchor: 'bottom' })
       .setLngLat([this.state.center.lng, this.state.center.lat])
       .addTo(map)
     this.marker.on('dragend', () => {
@@ -1255,6 +1272,7 @@ export class MapUI {
     this.fullSeq += 1
     this.clearRouteLine()
     this.state.center = { lat, lng }
+    this.state.centerUpdatedAt = Date.now()
     this.state.zoom = this.map?.getZoom() ?? this.state.zoom
     this.state.place = undefined
     this.state.nearby = []
@@ -2583,6 +2601,7 @@ export class MapUI {
 
     this.clearRouteLine()
     this.state.center = { lat: result.lat, lng: result.lng }
+    this.state.centerUpdatedAt = Date.now()
     this.state.place = result
     this.state.nearby = []
     this.state.wiki = []
@@ -3605,6 +3624,7 @@ export class MapUI {
     this.settings = loadSettings(this.ctx)
     this.state = loadState(this.ctx)
     this.state.enabled = this.settings.enabled
+    this.restoreStoredRealPosition()
     this.hydrateGlobalNotes()
     this.layerUI?.handleChatChanged()
     this.pois = []

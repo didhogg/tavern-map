@@ -34,7 +34,18 @@ export type LayerCategory = {
   name: string
   groupId?: string
   color: string
+  /** Original Map Genie icon slug, e.g. `atms` or `weapon_shop`. */
+  icon?: string
   order?: number
+}
+
+export type LayerIconFont = {
+  family: string
+  /** Original Map Genie icon font, stored locally after import. */
+  data: Blob
+  /** CSS icon slug -> private-use glyph character. */
+  glyphs: Record<string, string>
+  source?: string
 }
 
 export type LayerCategoryGroup = {
@@ -161,6 +172,8 @@ export type LayerMapPackage = {
   groups: LayerCategoryGroup[]
   markers: LayerMarker[]
   regions: LayerRegion[]
+  /** Optional original Map Genie icon font for marker symbols. */
+  iconFont?: LayerIconFont
   attribution?: string
   createdAt: number
   updatedAt: number
@@ -254,9 +267,18 @@ export type LayerContextSnapshot = {
   updatedAt: number
 }
 
+export type LayerUserPosition = {
+  x: number
+  y: number
+  atPlaceId?: string
+  nearbyRadius?: number
+}
+
 export type LayerChatState = {
   version: 1
   packageId?: string
+  /** Per-map-package scene positions; switching packages must not erase them. */
+  positionsByPackage?: Record<string, LayerUserPosition>
   view?: LayerView
   selectedMarkerId?: string
   currentMarkerId?: string
@@ -364,6 +386,37 @@ export function loadLayerState(ctx: StContext): LayerChatState {
     ...value,
     version: 1,
     packageId: typeof value.packageId === 'string' ? value.packageId : undefined,
+    positionsByPackage:
+      value.positionsByPackage && typeof value.positionsByPackage === 'object'
+        ? Object.fromEntries(
+            Object.entries(value.positionsByPackage)
+              .filter(
+                ([key, entry]) =>
+                  typeof key === 'string' &&
+                  Boolean(entry) &&
+                  typeof entry === 'object' &&
+                  Number.isFinite((entry as LayerUserPosition).x) &&
+                  Number.isFinite((entry as LayerUserPosition).y),
+              )
+              .map(([key, entry]) => {
+                const position = entry as LayerUserPosition
+                return [
+                  key,
+                  {
+                    x: Math.min(1, Math.max(0, position.x)),
+                    y: Math.min(1, Math.max(0, position.y)),
+                    atPlaceId:
+                      typeof position.atPlaceId === 'string' ? position.atPlaceId : undefined,
+                    nearbyRadius:
+                      typeof position.nearbyRadius === 'number' &&
+                      Number.isFinite(position.nearbyRadius)
+                        ? Math.min(0.8, Math.max(0.001, position.nearbyRadius))
+                        : undefined,
+                  },
+                ]
+              }),
+          )
+        : undefined,
     view: validView,
     selectedMarkerId:
       typeof value.selectedMarkerId === 'string' ? value.selectedMarkerId : undefined,

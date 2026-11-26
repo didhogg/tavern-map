@@ -230,18 +230,11 @@
 
 .tm-person-marker {
   position: relative;
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: linear-gradient(145deg, #f0c884, #cf9550);
-  box-shadow:
-    0 5px 16px rgba(0, 0, 0, 0.42),
-    0 0 0 4px rgba(230, 181, 106, 0.18);
-  color: #21180a;
+  width: 30px;
+  height: 40px;
+  color: #d94b45;
   cursor: grab;
+  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.5));
 }
 
 .tm-person-marker:active {
@@ -249,19 +242,10 @@
 }
 
 .tm-person-marker svg {
-  width: 22px;
-  height: 22px;
+  display: block;
+  width: 30px;
+  height: 40px;
   fill: currentColor;
-}
-
-.tm-person-marker::after {
-  content: "";
-  position: absolute;
-  inset: -8px;
-  border: 1px solid rgba(230, 181, 106, 0.45);
-  border-radius: 50%;
-  animation: tm-pulse 2.4s ease-out infinite;
-  pointer-events: none;
 }
 
 @keyframes tm-pulse {
@@ -5299,52 +5283,35 @@
 .tml-user-stamp {
   position: absolute;
   z-index: 5;
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 30px;
+  height: 40px;
   padding: 0;
-  border: 3px solid #f3c87f;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 38% 30%, rgba(255,255,255,0.32), transparent 38%),
-    rgba(42, 88, 128, 0.94);
-  box-shadow:
-    0 3px 0 rgba(0, 0, 0, 0.25),
-    0 8px 18px rgba(0, 0, 0, 0.42),
-    inset 0 0 0 3px rgba(255, 255, 255, 0.12);
-  color: #fff;
-  font: 700 13px/1 system-ui, sans-serif;
+  border: 0;
+  background: transparent;
+  color: #d94b45;
   cursor: grab;
   touch-action: none;
-  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.5));
+  transform: translate(-50%, -100%);
+  transform-origin: 50% 100%;
 }
 
-.tml-user-stamp::after {
-  content: "";
-  position: absolute;
-  inset: -6px;
-  border: 1px dashed rgba(57, 181, 255, 0.7);
-  border-radius: 50%;
-  pointer-events: none;
+.tml-user-stamp svg {
+  display: block;
+  width: 30px;
+  height: 40px;
+  fill: currentColor;
 }
 
 .tml-user-stamp:hover,
 .tml-user-stamp:focus-visible {
-  outline: 2px solid #8fe0ff;
-  outline-offset: 3px;
-  background:
-    radial-gradient(circle at 38% 30%, rgba(255,255,255,0.4), transparent 38%),
-    rgba(48, 104, 150, 0.98);
+  outline: 2px solid rgba(255, 160, 150, 0.9);
+  outline-offset: 2px;
 }
 
 .tml-user-stamp.dragging {
   cursor: grabbing;
-  transform: translate(-50%, -50%) scale(1.08);
-  box-shadow:
-    0 4px 0 rgba(0, 0, 0, 0.2),
-    0 12px 24px rgba(0, 0, 0, 0.5),
-    inset 0 0 0 3px rgba(255, 255, 255, 0.2);
+  transform: translate(-50%, -100%) scale(1.08);
 }
 
 .tml-user-stamp[hidden] {

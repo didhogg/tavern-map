@@ -555,6 +555,7 @@ export function parseMapGeniePackage(
       name,
       groupId: idValue(value?.group_id) || undefined,
       color: normalizeColor(value?.color, colorFor(index)),
+      icon: text(value?.icon) || undefined,
       order: numberValue(value?.order) ?? index,
     })
   })
@@ -667,6 +668,7 @@ export function parseMapGeniePackage(
         name: text(categoryValue?.title) || categoryId || '未分类',
         groupId: idValue(categoryValue?.group_id) || undefined,
         color: normalizeColor(categoryValue?.color, colorFor(categories.length)),
+        icon: text(categoryValue?.icon) || undefined,
         order: categories.length,
       })
     }

@@ -6,6 +6,7 @@ import {
   formatCount,
 } from './layer-image'
 import type { LayerMapPackage } from './layer-types'
+import { downloadMapGenieIconFont } from './mapgenie-icons'
 import {
   analyzeBundle,
   bundleFromDrop,
@@ -1258,7 +1259,18 @@ export class LayerImportUI {
     this.subEl.textContent = '正在写入地图包'
     this.reportProgress({ step: '准备写入 IndexedDB', detail: '检查浏览器存储空间…' })
     try {
-      await ensureLayerStorage(preview.stats.sizeBytes)
+      if (pkg.source === 'mapgenie' && pkg.categories.some((category) => category.icon)) {
+        this.reportProgress({
+          step: '下载标记图标',
+          detail: '读取 Map Genie 原始分类图标；失败时保留彩色圆点。',
+        })
+        const iconFont = await downloadMapGenieIconFont(pkg, this.abort.signal)
+        if (iconFont) {
+          pkg.iconFont = iconFont
+          pkg.dataBytes = (pkg.dataBytes ?? 0) + iconFont.data.size
+        }
+      }
+      await ensureLayerStorage(preview.stats.sizeBytes + (pkg.iconFont?.data.size ?? 0))
       if (this.abort.signal.aborted) throw new DOMException('导入已取消', 'AbortError')
       this.reportProgress({
         step: '写入 IndexedDB',

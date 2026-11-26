@@ -335,6 +335,10 @@ export async function saveImportedPackage(
       pkg.nameLocked = true
     }
     if (existing.grid) pkg.grid = existing.grid
+    if (existing.iconFont && !pkg.iconFont) {
+      pkg.iconFont = existing.iconFont
+      pkg.dataBytes = (pkg.dataBytes ?? 0) + existing.iconFont.data.size
+    }
     if (existing.imageLocked) {
       pkg.image = existing.image
       pkg.imageType = existing.imageType
