@@ -473,6 +473,7 @@ export class LayerMapUI {
   private readonly regionLabelCache = new Map<string, { x: number; y: number; area: number }>()
   private readonly markerIndex = new Map<string, LayerMarker[]>()
   private readonly labelCells = new Set<string>()
+  private clusterHitAreas: Array<{ x: number; y: number; radius: number; nx: number; ny: number }> = []
   private tileCacheBytes = 0
   private tileLoads = 0
   private readonly tileQueue: Array<() => void> = []
@@ -2162,6 +2163,89 @@ export class LayerMapUI {
     return canvas
   }
 
+  private shouldCluster(pkg: LayerMapPackage, visibleCount: number): boolean {
+    if (visibleCount < 500) return false
+    return pkg.kind === 'image' ? this.view.zoom < 1.55 : this.view.zoom < 10.8
+  }
+
+  private drawMarkerClusters(
+    context: CanvasRenderingContext2D,
+    markers: LayerMarker[],
+    width: number,
+    height: number,
+    selectedId: string | undefined,
+  ): Set<string> {
+    const cell = 36
+    const groups = new Map<string, LayerMarker[]>()
+    for (const marker of markers) {
+      if (marker.id === selectedId) continue
+      const [x, y] = this.project(marker.x, marker.y, width, height)
+      const key = `${Math.floor(x / cell)}:${Math.floor(y / cell)}`
+      const bucket = groups.get(key)
+      if (bucket) bucket.push(marker)
+      else groups.set(key, [marker])
+    }
+    const clustered = new Set<string>()
+    for (const group of groups.values()) {
+      if (group.length < 2) continue
+      let sumX = 0
+      let sumY = 0
+      let nx = 0
+      let ny = 0
+      for (const marker of group) {
+        const [x, y] = this.project(marker.x, marker.y, width, height)
+        sumX += x
+        sumY += y
+        nx += marker.x
+        ny += marker.y
+        clustered.add(marker.id)
+      }
+      const x = sumX / group.length
+      const y = sumY / group.length
+      const radius = Math.min(18, 8 + Math.log2(group.length) * 2.2)
+      context.save()
+      context.beginPath()
+      context.arc(x, y, radius, 0, Math.PI * 2)
+      context.fillStyle = 'rgba(230, 181, 106, 0.9)'
+      context.fill()
+      context.lineWidth = 1.5
+      context.strokeStyle = 'rgba(255, 247, 226, 0.95)'
+      context.stroke()
+      context.font = '700 10px system-ui, sans-serif'
+      context.fillStyle = '#21180a'
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      context.fillText(String(group.length), x, y + 0.5)
+      context.restore()
+      this.clusterHitAreas.push({
+        x,
+        y,
+        radius,
+        nx: nx / group.length,
+        ny: ny / group.length,
+      })
+    }
+    return clustered
+  }
+
+  private zoomIntoCluster(nx: number, ny: number): void {
+    if (this.pkg?.kind === 'tiles' && this.maplibreMap) {
+      this.maplibreMap.easeTo({
+        center: this.normalizedToLngLat(nx, ny),
+        zoom: Math.min(25, this.maplibreMap.getZoom() + 1.4),
+        duration: 220,
+      })
+      return
+    }
+    this.view.cx = nx
+    this.view.cy = ny
+    this.view.zoom = Math.min(8, this.view.zoom * 1.8)
+    this.clampView()
+    this.state.view = this.view
+    this.persist()
+    this.requestDraw()
+  }
+
   private drawMarkers(context: CanvasRenderingContext2D, width: number, height: number): void {
     const pkg = this.pkg
     if (!pkg) return
@@ -2175,7 +2259,12 @@ export class LayerMapUI {
       (marker) => !hidden.has(marker.categoryId),
     )
     this.labelCells.clear()
+    this.clusterHitAreas = []
+    const clustered = this.shouldCluster(pkg, visible.length)
+      ? this.drawMarkerClusters(context, visible, width, height, selectedId)
+      : new Set<string>()
     for (const marker of visible) {
+      if (clustered.has(marker.id) && marker.id !== selectedId) continue
       const [x, y] = this.project(marker.x, marker.y, width, height)
       const category = categories.get(marker.categoryId)
       const selected = marker.id === selectedId
@@ -2532,6 +2621,13 @@ export class LayerMapUI {
     const rect = this.canvasEl.getBoundingClientRect()
     const sx = clientX - rect.left
     const sy = clientY - rect.top
+    const cluster = this.clusterHitAreas.find(
+      (area) => Math.hypot(area.x - sx, area.y - sy) <= area.radius,
+    )
+    if (cluster) {
+      this.zoomIntoCluster(cluster.nx, cluster.ny)
+      return
+    }
     const marker = this.hitMarker(sx, sy)
     if (marker) {
       this.selectMarker(marker)
@@ -4412,8 +4508,8 @@ export class LayerMapUI {
         ? cellW * (pkg.width / pkg.height)
         : cellW
     return {
-      originX: span.x,
-      originY: span.y,
+      originX: this.view.cx,
+      originY: this.view.cy,
       cellW,
       cellH,
       unitValue: 1,
@@ -4490,9 +4586,35 @@ export class LayerMapUI {
     this.requestDraw()
   }
 
+  private migrateLegacyGridOrigin(): void {
+    const pkg = this.pkg
+    const grid = pkg?.grid
+    if (!pkg || !grid) return
+    const span = this.mapSpan(pkg)
+    const defaultCellW = span.w / 10
+    const defaultCellH =
+      pkg.kind === 'image' && pkg.width > 0 && pkg.height > 0
+        ? defaultCellW * (pkg.width / pkg.height)
+        : defaultCellW
+    const legacy =
+      Math.abs(grid.originX - span.x) < 1e-9 &&
+      Math.abs(grid.originY - span.y) < 1e-9 &&
+      Math.abs(grid.cellW - defaultCellW) < 1e-9 &&
+      Math.abs(grid.cellH - defaultCellH) < 1e-9 &&
+      grid.unitValue === 1 &&
+      grid.unitLabel === '格' &&
+      grid.visible !== true
+    if (!legacy) return
+    grid.originX = this.view.cx
+    grid.originY = this.view.cy
+    this.syncGridInputs()
+    this.scheduleGridSave()
+  }
+
   private openGridPanel(): void {
     if (!this.pkg) return
     this.ensureGrid()
+    this.migrateLegacyGridOrigin()
     this.gridPanelOpen = true
     this.panelEl.classList.add('tml-grid-mode')
     const compact = this.panelEl.classList.contains('tml-compact') || this.panelEl.classList.contains('tml-mobile')

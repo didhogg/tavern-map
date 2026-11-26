@@ -40243,6 +40243,7 @@ var iV = `
 	regionLabelCache = /* @__PURE__ */ new Map();
 	markerIndex = /* @__PURE__ */ new Map();
 	labelCells = /* @__PURE__ */ new Set();
+	clusterHitAreas = [];
 	tileCacheBytes = 0;
 	tileLoads = 0;
 	tileQueue = [];
@@ -41011,18 +41012,56 @@ var iV = `
 		let o = a.getContext("2d");
 		if (o) return o.setTransform(i, 0, 0, i, 0, 0), o.beginPath(), o.arc(15, 15, 11, 0, Math.PI * 2), o.fillStyle = e.color || "#e6b56a", o.fill(), o.lineWidth = 1.2, o.strokeStyle = "rgba(255,255,255,0.82)", o.stroke(), o.font = `400 15px "${this.iconFontFamily}"`, o.textAlign = "center", o.textBaseline = "middle", o.fillStyle = "#fff", o.fillText(n, 15, 15.5), this.markerIconCache.set(e.id, a), a;
 	}
+	shouldCluster(e, t) {
+		return t < 500 ? !1 : e.kind === "image" ? this.view.zoom < 1.55 : this.view.zoom < 10.8;
+	}
+	drawMarkerClusters(e, t, n, r, i) {
+		let a = /* @__PURE__ */ new Map();
+		for (let e of t) {
+			if (e.id === i) continue;
+			let [t, o] = this.project(e.x, e.y, n, r), s = `${Math.floor(t / 36)}:${Math.floor(o / 36)}`, c = a.get(s);
+			c ? c.push(e) : a.set(s, [e]);
+		}
+		let o = /* @__PURE__ */ new Set();
+		for (let t of a.values()) {
+			if (t.length < 2) continue;
+			let i = 0, a = 0, s = 0, c = 0;
+			for (let e of t) {
+				let [t, l] = this.project(e.x, e.y, n, r);
+				i += t, a += l, s += e.x, c += e.y, o.add(e.id);
+			}
+			let l = i / t.length, u = a / t.length, d = Math.min(18, 8 + Math.log2(t.length) * 2.2);
+			e.save(), e.beginPath(), e.arc(l, u, d, 0, Math.PI * 2), e.fillStyle = "rgba(230, 181, 106, 0.9)", e.fill(), e.lineWidth = 1.5, e.strokeStyle = "rgba(255, 247, 226, 0.95)", e.stroke(), e.font = "700 10px system-ui, sans-serif", e.fillStyle = "#21180a", e.textAlign = "center", e.textBaseline = "middle", e.fillText(String(t.length), l, u + .5), e.restore(), this.clusterHitAreas.push({
+				x: l,
+				y: u,
+				radius: d,
+				nx: s / t.length,
+				ny: c / t.length
+			});
+		}
+		return o;
+	}
+	zoomIntoCluster(e, t) {
+		this.pkg?.kind === "tiles" && this.maplibreMap ? this.maplibreMap.easeTo({
+			center: this.normalizedToLngLat(e, t),
+			zoom: Math.min(25, this.maplibreMap.getZoom() + 1.4),
+			duration: 220
+		}) : (this.view.cx = e, this.view.cy = t, this.view.zoom = Math.min(8, this.view.zoom * 1.8), this.clampView(), this.state.view = this.view, this.persist(), this.requestDraw());
+	}
 	drawMarkers(e, t, n) {
 		let r = this.pkg;
 		if (!r) return;
 		let i = new Set(this.state.hiddenCategories ?? []), a = new Map(r.categories.map((e) => [e.id, e])), o = this.state.selectedMarkerId, s = this.favoriteMarkerIds, c = r.kind === "image" ? NB : PB, l = this.state.showLabels !== !1 && this.view.zoom >= c, u = this.markersInView(t, n).filter((e) => !i.has(e.categoryId));
-		this.labelCells.clear();
+		this.labelCells.clear(), this.clusterHitAreas = [];
+		let d = this.shouldCluster(r, u.length) ? this.drawMarkerClusters(e, u, t, n, o) : /* @__PURE__ */ new Set();
 		for (let r of u) {
-			let [i, c] = this.project(r.x, r.y, t, n), u = a.get(r.categoryId), d = r.id === o, f = this.markerIconFor(u);
-			if (e.save(), f) {
-				let t = d ? 36 : 28;
-				e.globalAlpha = d ? 1 : .95, e.drawImage(f, i - t / 2, c - t / 2, t, t), e.globalAlpha = 1, d && (e.beginPath(), e.arc(i, c, 17, 0, Math.PI * 2), e.strokeStyle = "#f3c87f", e.lineWidth = 2, e.stroke());
-			} else e.beginPath(), e.arc(i, c, d ? 7.5 : 4.5, 0, Math.PI * 2), e.fillStyle = u?.color ?? "#e6b56a", e.globalAlpha = d ? 1 : .9, e.fill(), e.globalAlpha = 1, e.lineWidth = d ? 2.5 : 1.2, e.strokeStyle = d ? "#f3c87f" : "rgba(255,255,255,0.8)", e.stroke();
-			s.has(r.id) && (e.font = "600 10px system-ui, sans-serif", e.fillStyle = "#ffd98f", e.textAlign = "center", e.textBaseline = "middle", e.fillText("★", i + 7, c - 8)), e.restore(), (d || l) && c > 14 && c < n - 6 && this.drawLabel(e, r, i, c, d || !1);
+			if (d.has(r.id) && r.id !== o) continue;
+			let [i, c] = this.project(r.x, r.y, t, n), u = a.get(r.categoryId), f = r.id === o, p = this.markerIconFor(u);
+			if (e.save(), p) {
+				let t = f ? 36 : 28;
+				e.globalAlpha = f ? 1 : .95, e.drawImage(p, i - t / 2, c - t / 2, t, t), e.globalAlpha = 1, f && (e.beginPath(), e.arc(i, c, 17, 0, Math.PI * 2), e.strokeStyle = "#f3c87f", e.lineWidth = 2, e.stroke());
+			} else e.beginPath(), e.arc(i, c, f ? 7.5 : 4.5, 0, Math.PI * 2), e.fillStyle = u?.color ?? "#e6b56a", e.globalAlpha = f ? 1 : .9, e.fill(), e.globalAlpha = 1, e.lineWidth = f ? 2.5 : 1.2, e.strokeStyle = f ? "#f3c87f" : "rgba(255,255,255,0.8)", e.stroke();
+			s.has(r.id) && (e.font = "600 10px system-ui, sans-serif", e.fillStyle = "#ffd98f", e.textAlign = "center", e.textBaseline = "middle", e.fillText("★", i + 7, c - 8)), e.restore(), (f || l) && c > 14 && c < n - 6 && this.drawLabel(e, r, i, c, f || !1);
 		}
 	}
 	drawLabel(e, t, n, r, i) {
@@ -41168,13 +41207,18 @@ var iV = `
 		this.pkg && !this.aligning && (this.pkg.kind === "tiles" && this.maplibreMap ? this.fitTileMap(this.pkg) : (this.view = this.defaultView(this.pkg), this.state.view = this.view, this.persist(), this.requestDraw(), this.pkg.kind === "image" && this.refreshContext()));
 	}
 	pickAt(e, t) {
-		let n = this.canvasEl.getBoundingClientRect(), r = e - n.left, i = t - n.top, a = this.hitMarker(r, i);
+		let n = this.canvasEl.getBoundingClientRect(), r = e - n.left, i = t - n.top, a = this.clusterHitAreas.find((e) => Math.hypot(e.x - r, e.y - i) <= e.radius);
 		if (a) {
-			this.selectMarker(a);
+			this.zoomIntoCluster(a.nx, a.ny);
 			return;
 		}
-		let o = this.hitRegion(r, i);
-		o ? (this.state.selectedRegionId = o.id, this.state.selectedMarkerId = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw()) : (this.state.selectedMarkerId = void 0, this.state.selectedRegionId = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw());
+		let o = this.hitMarker(r, i);
+		if (o) {
+			this.selectMarker(o);
+			return;
+		}
+		let s = this.hitRegion(r, i);
+		s ? (this.state.selectedRegionId = s.id, this.state.selectedMarkerId = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw()) : (this.state.selectedMarkerId = void 0, this.state.selectedRegionId = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw());
 	}
 	buildMarkerIndex() {
 		this.markerIndex.clear();
@@ -42149,12 +42193,12 @@ var iV = `
 		t && (t.textContent = e ? "展开" : "收起"), this.updateGridHandles();
 	}
 	defaultGrid(e) {
-		let t = this.mapSpan(e), n = t.w / 10, r = e.kind === "image" && e.width > 0 && e.height > 0 ? n * (e.width / e.height) : n;
+		let t = this.mapSpan(e).w / 10, n = e.kind === "image" && e.width > 0 && e.height > 0 ? t * (e.width / e.height) : t;
 		return {
-			originX: t.x,
-			originY: t.y,
-			cellW: n,
-			cellH: r,
+			originX: this.view.cx,
+			originY: this.view.cy,
+			cellW: t,
+			cellH: n,
 			unitValue: 1,
 			unitLabel: "格",
 			visible: !1
@@ -42199,9 +42243,15 @@ var iV = `
 	applyGridInputs() {
 		this.readGridInputs() && (this.scheduleGridSave(), this.refreshContext(), this.requestDraw());
 	}
+	migrateLegacyGridOrigin() {
+		let e = this.pkg, t = e?.grid;
+		if (!e || !t) return;
+		let n = this.mapSpan(e), r = n.w / 10, i = e.kind === "image" && e.width > 0 && e.height > 0 ? r * (e.width / e.height) : r;
+		Math.abs(t.originX - n.x) < 1e-9 && Math.abs(t.originY - n.y) < 1e-9 && Math.abs(t.cellW - r) < 1e-9 && Math.abs(t.cellH - i) < 1e-9 && t.unitValue === 1 && t.unitLabel === "格" && t.visible !== !0 && (t.originX = this.view.cx, t.originY = this.view.cy, this.syncGridInputs(), this.scheduleGridSave());
+	}
 	openGridPanel() {
 		if (!this.pkg) return;
-		this.ensureGrid(), this.gridPanelOpen = !0, this.panelEl.classList.add("tml-grid-mode");
+		this.ensureGrid(), this.migrateLegacyGridOrigin(), this.gridPanelOpen = !0, this.panelEl.classList.add("tml-grid-mode");
 		let e = this.panelEl.classList.contains("tml-compact") || this.panelEl.classList.contains("tml-mobile");
 		this.panelEl.classList.toggle("tml-grid-collapsed", e);
 		let t = this.gridPanelEl.querySelector("[data-grid-action=\"collapse\"]");
