@@ -2478,6 +2478,382 @@
   color: var(--tm-faint);
 }
 
+.tml-route-stops {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.tml-route-stop {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1.5px solid rgba(243, 200, 127, 0.9);
+  border-radius: 50%;
+  background: rgba(9, 14, 19, 0.94);
+  box-shadow: 0 3px 9px rgba(0, 0, 0, 0.45);
+  color: #f3c87f;
+  font: 700 10px/1 "PingFang SC", "Microsoft YaHei", sans-serif;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.tml-route-stop.is-start {
+  border-color: #78c6c0;
+  color: #bfeee9;
+}
+
+.tml-route-stop.is-end {
+  border-color: #e07a72;
+  color: #ffd0cb;
+}
+
+.tml-route-stop.is-editing {
+  cursor: grab;
+}
+
+.tml-route-stop:hover,
+.tml-route-stop:focus-visible {
+  outline: 2px solid rgba(243, 200, 127, 0.72);
+  outline-offset: 2px;
+}
+
+.tml-route-stop[hidden] {
+  display: none !important;
+}
+
+.tml-route-shelf {
+  position: absolute;
+  right: 10px;
+  bottom: 32px;
+  left: 10px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  max-height: min(52%, 380px);
+  overflow: hidden;
+  border: 1px solid rgba(230, 181, 106, 0.3);
+  border-radius: 12px;
+  background: rgba(8, 13, 18, 0.95);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.48);
+  color: var(--tm-text);
+  font-size: 10px;
+}
+
+.tml-route-shelf[hidden] {
+  display: none !important;
+}
+
+.tml-route-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px 7px 11px;
+  border-bottom: 1px solid var(--tm-line);
+}
+
+.tml-route-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tml-route-heading strong {
+  color: var(--tm-brass-strong);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.tml-route-summary {
+  overflow: hidden;
+  color: var(--tm-muted);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tml-route-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.tml-route-action {
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--tm-line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--tm-muted);
+  font: inherit;
+  font-size: 9.5px;
+  cursor: pointer;
+}
+
+.tml-route-action:hover:not(:disabled) {
+  border-color: rgba(230, 181, 106, 0.3);
+  color: var(--tm-text);
+}
+
+.tml-route-action.tml-primary {
+  border-color: rgba(230, 181, 106, 0.45);
+  background: rgba(230, 181, 106, 0.14);
+  color: var(--tm-brass-strong);
+}
+
+.tml-route-action:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.tml-route-action:focus-visible,
+.tml-route-poi:focus-visible,
+.tml-route-stop-select:focus-visible,
+.tml-route-remove:focus-visible,
+.tml-route-leg:focus-visible {
+  outline: 2px solid rgba(243, 200, 127, 0.76);
+  outline-offset: 1px;
+}
+
+.tml-route-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 7px 11px 9px;
+  scrollbar-width: thin;
+}
+
+.tml-route-start-here {
+  margin-top: 7px;
+}
+
+.tml-route-empty {
+  padding: 8px 2px 9px;
+  color: var(--tm-faint);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.tml-route-current {
+  margin-bottom: 6px;
+  padding: 5px 7px;
+  border: 1px solid rgba(120, 198, 192, 0.22);
+  border-radius: 6px;
+  background: rgba(120, 198, 192, 0.07);
+  color: #b9e2dc;
+  font-size: 9.5px;
+}
+
+.tml-route-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tml-route-stop-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.tml-route-badge {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border: 1px solid rgba(230, 181, 106, 0.58);
+  border-radius: 50%;
+  color: var(--tm-brass-strong);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.tml-route-stop-row.is-start .tml-route-badge {
+  border-color: rgba(120, 198, 192, 0.7);
+  color: #b9e2dc;
+}
+
+.tml-route-stop-row.is-end .tml-route-badge {
+  border-color: rgba(224, 122, 114, 0.7);
+  color: #ffd0cb;
+}
+
+.tml-route-stop-info {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tml-route-stop-info strong {
+  overflow: hidden;
+  color: var(--tm-text);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tml-route-stop-info small {
+  color: var(--tm-faint);
+  font-size: 9px;
+}
+
+.tml-route-stop-select {
+  flex: 0 0 auto;
+  min-width: 20px;
+  border: 0;
+  background: transparent;
+  color: var(--tm-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tml-route-stop-select:hover {
+  color: var(--tm-brass-strong);
+}
+
+.tml-route-remove {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(224, 122, 114, 0.24);
+  border-radius: 5px;
+  background: rgba(224, 122, 114, 0.06);
+  color: #e69a94;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tml-route-leg {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 1px 0 3px 28px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tm-muted);
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tml-route-leg:hover,
+.tml-route-leg.is-open {
+  border-color: rgba(230, 181, 106, 0.2);
+  background: rgba(230, 181, 106, 0.07);
+  color: var(--tm-text);
+}
+
+.tml-route-leg.is-current {
+  border-color: rgba(243, 200, 127, 0.28);
+  color: var(--tm-brass-strong);
+}
+
+.tml-route-leg::after {
+  content: "⌄";
+  color: var(--tm-faint);
+}
+
+.tml-route-leg.is-open::after {
+  content: "⌃";
+}
+
+.tml-route-pois {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 5px 34px;
+  padding: 2px 0 3px;
+  border-left: 1px solid rgba(230, 181, 106, 0.2);
+}
+
+.tml-route-poi,
+.tml-route-poi-empty {
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--tm-muted);
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+}
+
+.tml-route-poi {
+  cursor: pointer;
+}
+
+.tml-route-poi:hover {
+  background: rgba(230, 181, 106, 0.08);
+  color: var(--tm-text);
+}
+
+.tml-route-poi-empty {
+  color: var(--tm-faint);
+}
+
+.tml-route-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--tm-line);
+}
+
+.tml-route-ai {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--tm-muted);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.tml-route-ai input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--tm-brass);
+}
+
+.tml-route-hint {
+  color: var(--tm-faint);
+  font-size: 8.5px;
+  text-align: right;
+}
+
+.tml-user-stamp.is-route-snap {
+  filter: drop-shadow(0 0 5px rgba(243, 200, 127, 0.85));
+}
+
 .tml-inspector {
   min-height: 0;
   overflow: auto;
@@ -5132,13 +5508,65 @@
   .tml-nearby {
     margin: 8px;
   }
+
+  .tml-route-shelf {
+    right: 8px;
+    bottom: 31px;
+    left: 8px;
+    max-height: 56%;
+  }
+
+  .tml-route-head {
+    align-items: flex-start;
+    padding: 7px 8px 6px 9px;
+  }
+
+  .tml-route-actions {
+    max-width: 61%;
+  }
+
+  .tml-route-action {
+    min-height: 27px;
+    padding: 3px 6px;
+    font-size: 9px;
+  }
+
+  .tml-route-body {
+    padding: 6px 9px 8px;
+  }
+
+  .tml-route-stop {
+    width: 29px;
+    height: 29px;
+    font-size: 11px;
+  }
+
+  .tml-route-leg {
+    margin-left: 27px;
+  }
+
+  .tml-route-pois {
+    margin-left: 33px;
+  }
+
+  .tml-route-foot {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .tml-route-hint {
+    text-align: left;
+  }
 }
 
 .tml-maplibre[hidden],
 .tml-grid-panel[hidden],
 .tml-grid-drag[hidden],
 .tml-place-bar[hidden],
-.tml-nearby[hidden] {
+.tml-nearby[hidden],
+.tml-route-shelf[hidden],
+.tml-route-stops[hidden] {
   display: none !important;
 }
 

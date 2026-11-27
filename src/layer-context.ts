@@ -83,6 +83,39 @@ export function buildLayerContext(state: LayerChatState): string {
   } else if (snapshot.region && !snapshot.position?.region) {
     lines.push(`Area: ${clean(snapshot.region)}`)
   }
+  if (snapshot.itinerary) {
+    const itinerary = snapshot.itinerary
+    lines.push('Itinerary (current, completed):')
+    lines.push(`Start: ${clean(itinerary.start)}`)
+    lines.push(`Destination: ${clean(itinerary.destination)}`)
+    lines.push(`Stops: ${itinerary.stops.length}`)
+    lines.push(`Total: ${clean(itinerary.total)}`)
+    if (itinerary.current) {
+      const current = itinerary.current
+      lines.push(
+        `Current: leg ${current.legIndex + 1}/${itinerary.legs.length} · ${Math.round(current.progress)}% traveled`,
+      )
+      lines.push(
+        `Current leg: ${clean(current.from)} → ${clean(current.to)} · ${clean(itinerary.legs[current.legIndex]?.distance ?? '')} · remaining ${clean(current.remaining)}`,
+      )
+    } else if (itinerary.nextStop) {
+      lines.push('Current: not started')
+    } else {
+      lines.push('Current: at destination')
+    }
+    if (itinerary.nextStop) lines.push(`Next stop: ${clean(itinerary.nextStop)}`)
+    for (const [index, leg] of itinerary.legs.entries()) {
+      lines.push(
+        `${index + 1}. ${clean(leg.from)} → ${clean(leg.to)} · ${clean(leg.distance)}${leg.current ? ' [current]' : ''}`,
+      )
+      for (const poi of leg.pois) {
+        const category = poi.category ? ` (${clean(poi.category)})` : ''
+        const along = poi.along ? ` · ${clean(poi.along)} from leg start` : ''
+        const offset = poi.offset ? ` · ${clean(poi.offset)} from route` : ''
+        lines.push(`   - ${clean(poi.name)}${category}${along}${offset}`)
+      }
+    }
+  }
   if (snapshot.nearby?.length) {
     const scope =
       snapshot.nearbyScope === 'map'

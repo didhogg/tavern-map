@@ -42,6 +42,9 @@ import {
   type LayerImageFit,
   type LayerImageRect,
   type LayerGridConfig,
+  type LayerItinerary,
+  type LayerItineraryContext,
+  type LayerItineraryStop,
   type LayerFavoritePlace,
   type LayerLink,
   type LayerLinkKind,
@@ -123,6 +126,21 @@ const CUSTOM_PIN_GROUP: LayerCategoryGroup = {
   id: CUSTOM_PIN_GROUP_ID,
   name: '我的',
   order: 9998,
+}
+
+type ItineraryLegView = {
+  fromStop: LayerItineraryStop
+  toStop: LayerItineraryStop
+  from: { x: number; y: number }
+  to: { x: number; y: number }
+  length: number
+}
+
+type ItineraryPoiView = {
+  marker: LayerMarker
+  along: number
+  offset: number
+  projected: { x: number; y: number }
 }
 function linkTextKey(url: string): string {
   return `layer-linktext:${url}`
@@ -312,6 +330,7 @@ const PANEL_HTML = `
           <button type="button" class="tml-tool active" data-action="labels" aria-pressed="true">标签</button>
           <button type="button" class="tml-tool active" data-action="regions" aria-pressed="true">区域</button>
           <button type="button" class="tml-tool tml-add-pin" data-action="add-pin" title="在地图上添加自己的图钉" aria-label="添加图钉">＋ 图钉</button>
+          <button type="button" class="tml-tool tml-route-tool" data-action="itinerary" title="规划或查看行程" aria-label="行程">行程</button>
           <button type="button" class="tml-tool tml-history-tool" data-action="undo-pin" title="撤销选中图钉的移动" aria-label="撤销图钉移动" disabled>↶</button>
           <button type="button" class="tml-tool tml-history-tool" data-action="redo-pin" title="重做选中图钉的移动" aria-label="重做图钉移动" disabled>↷</button>
           <button type="button" class="tml-tool" data-action="locate" title="回到我的位置；未设置时放置" aria-label="回到我的位置">◎ 回到我</button>
@@ -325,6 +344,7 @@ const PANEL_HTML = `
       <div id="tml-viewport" class="tml-viewport">
         <div id="tml-maplibre" class="tml-maplibre" hidden></div>
         <canvas id="tml-canvas"></canvas>
+        <div id="tml-route-stops" class="tml-route-stops" aria-live="polite"></div>
         <button type="button" id="tml-user-stamp" class="tml-user-stamp" hidden title="拖动我" aria-label="我在的位置">
           <svg viewBox="0 0 24 34" aria-hidden="true">
             <path d="M12 1C6.5 1 2 5.5 2 11c0 7.6 10 22 10 22s10-14.4 10-22c0-5.5-4.5-10-10-10Z" fill="currentColor"></path>
@@ -376,6 +396,7 @@ const PANEL_HTML = `
           </div>
         </div>
         <div id="tml-empty" class="tml-empty" hidden></div>
+        <div id="tml-route-shelf" class="tml-route-shelf" role="region" aria-label="行程" hidden></div>
         <div id="tml-align-bar" class="tml-align-bar" hidden>
           <span>拖动图片对齐地点，滚轮缩放；地点标记固定不动。</span>
           <div class="tml-align-actions">
@@ -478,6 +499,23 @@ export class LayerMapUI {
   private metas: LayerPackageMeta[] = []
   private pinEdits: LayerPinEdits = emptyPinEdits()
   private placeAIFlags: Record<string, LayerPlaceAIFlags> = {}
+  private itinerary: LayerItinerary | null = null
+  private itineraryDraft: LayerItinerary | null = null
+  private itineraryEdit = false
+  private routeShelfOpen = false
+  private routeExpandedLeg = 0
+  private routeHover: { x: number; y: number } | null = null
+  private routeStopDrag: {
+    stopId: string
+    pointerId: number
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    originMarkerId?: string
+    moved: boolean
+  } | null = null
+  private readonly routeStopButtons = new Map<string, HTMLButtonElement>()
   private effectiveMarkerList: LayerMarker[] = []
   private effectiveCategoryList: LayerCategory[] = []
   private effectiveGroupList: LayerCategoryGroup[] = []
@@ -506,7 +544,13 @@ export class LayerMapUI {
   } | null = null
   private gridPanelOpen = false
   private gridSaveTimer: number | undefined
-  private userDrag: { startX: number; startY: number; originX: number; originY: number } | null = null
+  private userDrag: {
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    snapRoute: boolean
+  } | null = null
   private userStampEl!: HTMLButtonElement
   private favoriteMarkerIds = new Set<string>()
   private iconFontPackageId = ''
@@ -627,6 +671,8 @@ export class LayerMapUI {
   private nearbyEl!: HTMLElement
   private placeBarEl!: HTMLElement
   private placeTextEl!: HTMLElement
+  private routeStopsEl!: HTMLElement
+  private routeShelfEl!: HTMLElement
   private gridPanelEl!: HTMLElement
   private gridOriginHandleEl!: HTMLButtonElement
   private gridScaleHandleEl!: HTMLButtonElement
@@ -751,6 +797,7 @@ export class LayerMapUI {
       onDeleted: (id) => {
         removePinEdits(id)
         removePlaceAIFlags(id)
+        if (this.state.itinerariesByPackage) delete this.state.itinerariesByPackage[id]
         if (this.pkg?.id === id) {
           tileProtocolPackages.delete(id)
           this.closeImagePanel()
@@ -766,6 +813,10 @@ export class LayerMapUI {
           this.persist(true)
           this.pkg = null
           this.placeAIFlags = {}
+          this.itinerary = null
+          this.itineraryDraft = null
+          this.itineraryEdit = false
+          this.routeShelfOpen = false
           this.image = null
           this.setTileMapVisible(false)
           this.clearTileCaches()
@@ -774,6 +825,8 @@ export class LayerMapUI {
           this.renderCategories()
           this.renderFavorites()
           this.renderDetail()
+          this.renderItineraryShelf()
+          this.renderRouteStopHandles()
           this.requestDraw()
         }
         void this.refreshPackages()
@@ -799,6 +852,7 @@ export class LayerMapUI {
     this.ctx = this.liveContext()
     if (!this.pkg) return
     this.renderDetail()
+    this.renderItineraryShelf()
     this.refreshContext()
   }
 
@@ -844,6 +898,7 @@ export class LayerMapUI {
     this.closeImagePanel()
     this.closeLightbox()
     this.cancelPlacements()
+    if (this.itineraryEdit) this.cancelItineraryEditing()
     if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
@@ -873,6 +928,10 @@ export class LayerMapUI {
     this.pkg = null
     this.pinEdits = emptyPinEdits()
     this.placeAIFlags = {}
+    this.itinerary = null
+    this.itineraryDraft = null
+    this.itineraryEdit = false
+    this.routeShelfOpen = false
     this.rebuildEffectiveMarkers()
     this.clearImageResources()
     this.setTileMapVisible(false)
@@ -902,6 +961,10 @@ export class LayerMapUI {
     this.pkg = null
     this.pinEdits = emptyPinEdits()
     this.placeAIFlags = {}
+    this.itinerary = null
+    this.itineraryDraft = null
+    this.itineraryEdit = false
+    this.routeShelfOpen = false
     this.rebuildEffectiveMarkers()
     this.image = null
     this.imageUrl = null
@@ -956,6 +1019,8 @@ export class LayerMapUI {
     this.nearbyEl = document.getElementById('tml-nearby') as HTMLElement
     this.placeBarEl = document.getElementById('tml-place-bar') as HTMLElement
     this.placeTextEl = document.getElementById('tml-place-text') as HTMLElement
+    this.routeStopsEl = document.getElementById('tml-route-stops') as HTMLElement
+    this.routeShelfEl = document.getElementById('tml-route-shelf') as HTMLElement
     this.gridPanelEl = document.getElementById('tml-grid-panel') as HTMLElement
     this.userStampEl = document.getElementById('tml-user-stamp') as HTMLButtonElement
     this.gridOriginHandleEl = document.getElementById('tml-grid-origin') as HTMLButtonElement
@@ -998,12 +1063,18 @@ export class LayerMapUI {
 
   private bind(): void {
     this.panelEl.addEventListener('click', (event) => this.onPanelClick(event))
+    this.routeShelfEl.addEventListener('click', (event) => this.onRouteShelfClick(event))
     this.canvasEl.addEventListener('pointerdown', (event) => this.onPointerDown(event))
     this.canvasEl.addEventListener('pointermove', (event) => this.onPointerMove(event))
     this.canvasEl.addEventListener('pointerup', (event) => this.onPointerUp(event))
     this.canvasEl.addEventListener('pointercancel', (event) => this.onPointerUp(event))
     this.canvasEl.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
     this.canvasEl.addEventListener('dblclick', (event) => this.onDoubleClick(event))
+    this.canvasEl.addEventListener('pointerleave', () => {
+      if (!this.itineraryEdit) return
+      this.routeHover = null
+      this.requestDraw()
+    })
     this.userStampEl.addEventListener('pointerdown', (event) => this.onUserStampDown(event))
     this.userStampEl.addEventListener('pointermove', (event) => this.onUserStampMove(event))
     this.userStampEl.addEventListener('pointerup', (event) => this.onUserStampUp(event))
@@ -1196,6 +1267,9 @@ export class LayerMapUI {
         if (this.placingPin === 'add') this.cancelPinPlacement()
         else this.startPinPlacement('add')
         break
+      case 'itinerary':
+        this.toggleItineraryShelf()
+        break
       case 'undo-pin': {
         const selected = this.selectedMarker()
         if (selected) this.undoPin(selected.id)
@@ -1218,12 +1292,14 @@ export class LayerMapUI {
       case 'show-all':
         this.state.hiddenCategories = []
         this.renderCategories()
+        this.refreshContext()
         this.persist()
         this.requestDraw()
         break
       case 'hide-all':
         this.state.hiddenCategories = this.effectiveCategoryList.map((category) => category.id)
         this.renderCategories()
+        this.refreshContext()
         this.persist()
         this.requestDraw()
         break
@@ -1289,6 +1365,12 @@ export class LayerMapUI {
     locate?.classList.toggle('active', this.placingUser || Boolean(this.state.userPosition))
     const addPin = this.panelEl.querySelector<HTMLElement>('[data-action="add-pin"]')
     addPin?.classList.toggle('active', this.placingPin === 'add')
+    const routeTool = this.panelEl.querySelector<HTMLElement>('[data-action="itinerary"]')
+    if (routeTool) {
+      const count = this.itinerary?.stops.length ?? this.itineraryDraft?.stops.length ?? 0
+      routeTool.textContent = count > 0 ? `行程 ${count}` : '行程'
+      routeTool.classList.toggle('active', this.itineraryEdit || this.routeShelfOpen)
+    }
     const selected = this.selectedMarker()
     const history = selected ? this.pinHistoryFor(selected.id) : undefined
     const undo = this.panelEl.querySelector<HTMLButtonElement>('[data-action="undo-pin"]')
@@ -1380,6 +1462,10 @@ export class LayerMapUI {
       this.pkg = null
       this.pinEdits = emptyPinEdits()
       this.placeAIFlags = {}
+      this.itinerary = null
+      this.itineraryDraft = null
+      this.itineraryEdit = false
+      this.routeShelfOpen = false
       this.rebuildEffectiveMarkers()
       this.clearImageResources()
       this.setTileMapVisible(false)
@@ -1389,6 +1475,7 @@ export class LayerMapUI {
       this.renderCategories()
       this.renderFavorites()
       this.renderDetail()
+      this.renderItineraryShelf()
       this.requestDraw()
       return
     }
@@ -1423,6 +1510,11 @@ export class LayerMapUI {
     this.pkg = pkg
     this.pinEdits = loadPinEdits(pkg.id)
     this.placeAIFlags = loadPlaceAIFlags(pkg.id)
+    this.itinerary = this.state.itinerariesByPackage?.[pkg.id] ?? null
+    this.itineraryDraft = null
+    this.itineraryEdit = false
+    this.routeShelfOpen = false
+    this.routeExpandedLeg = 0
     this.rebuildEffectiveMarkers()
     this.migrateLegacyNotes(pkg)
     await this.ensureIconFont(pkg)
@@ -1472,11 +1564,13 @@ export class LayerMapUI {
     this.refreshFavoriteMarkerIds()
     this.renderFavorites()
     this.renderDetail()
+    this.renderItineraryShelf()
     this.syncToolButtons()
     this.updatePackageInfo()
     this.syncHeaderImage()
     if (this.imagePanelOpen) this.renderImagePanel()
     this.refreshContext()
+    this.renderItineraryShelf()
     this.requestDraw()
     if (pkg.kind === 'tiles') {
       this.clearImageResources()
@@ -1720,6 +1814,17 @@ export class LayerMapUI {
     map.on('move', () => this.onTileMapMove())
     map.on('moveend', () => this.onTileMapMoveEnd())
     map.on('click', (event) => this.onTileMapClick(event))
+    map.on('mousemove', (event) => {
+      if (!this.itineraryEdit || this.itineraryDraft?.stops.length === 0) return
+      const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
+      this.routeHover = point
+      this.requestDraw()
+    })
+    map.on('mouseout', () => {
+      if (!this.itineraryEdit) return
+      this.routeHover = null
+      this.requestDraw()
+    })
     this.maplibreReady = new Promise<void>((resolve) => {
       map.once('load', () => resolve())
     })
@@ -1944,6 +2049,11 @@ export class LayerMapUI {
     if (!this.pkg) return
     if (this.pkg.kind !== 'tiles') return
     const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
+    if (this.itineraryEdit) {
+      const marker = this.hitMarker(event.point.x, event.point.y)
+      this.addItineraryStop(point.x, point.y, marker)
+      return
+    }
     if (this.placingPin) {
       const mode = this.placingPin
       const id = this.placingPinId
@@ -2075,12 +2185,15 @@ export class LayerMapUI {
     }
     this.drawGrid(context, width, height)
     this.drawRegions(context, width, height)
+    this.drawItineraryLine(context, width, height)
     this.labelCells.clear()
     this.drawRegionLabels(context, width, height)
     this.drawStreetLabels(context, width, height)
     this.drawMarkers(context, width, height)
+    this.drawItineraryPoiRings(context, width, height)
     this.drawUserRadius(context, width, height)
     this.updateUserStamp()
+    this.positionRouteStopHandles()
     this.updateGridHandles()
     this.updateStatus()
   }
@@ -2844,6 +2957,130 @@ export class LayerMapUI {
     context.restore()
   }
 
+  private drawItineraryLine(
+    context: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ): void {
+    const route = this.activeItinerary()
+    if (!route || route.stops.length < 2) return
+    const legs = this.itineraryLegs(route)
+    const position =
+      this.itineraryEdit || this.itinerary !== route
+        ? undefined
+        : this.itineraryPosition(route)
+    const activeLeg =
+      position?.onRoute && !position.atFinal ? position.legIndex : undefined
+    const drawLeg = (leg: ItineraryLegView, current: boolean): void => {
+      const [x1, y1] = this.project(leg.from.x, leg.from.y, width, height)
+      const [x2, y2] = this.project(leg.to.x, leg.to.y, width, height)
+      context.beginPath()
+      context.moveTo(x1, y1)
+      context.lineTo(x2, y2)
+      if (current) {
+        context.strokeStyle = 'rgba(8, 13, 18, 0.9)'
+        context.lineWidth = 8
+        context.setLineDash([])
+        context.stroke()
+        context.strokeStyle = '#f3c87f'
+        context.lineWidth = 4
+        context.stroke()
+        return
+      }
+      context.strokeStyle = 'rgba(8, 13, 18, 0.72)'
+      context.lineWidth = this.itineraryEdit ? 5 : 5.5
+      context.setLineDash(this.itineraryEdit ? [8, 6] : [])
+      context.stroke()
+      context.strokeStyle = this.itineraryEdit
+        ? 'rgba(243, 200, 127, 0.82)'
+        : 'rgba(230, 181, 106, 0.68)'
+      context.lineWidth = this.itineraryEdit ? 2.5 : 3
+      context.setLineDash(this.itineraryEdit ? [8, 6] : [])
+      context.stroke()
+    }
+    context.save()
+    context.lineCap = 'round'
+    context.lineJoin = 'round'
+    for (const [index, leg] of legs.entries()) {
+      if (index === activeLeg) continue
+      drawLeg(leg, false)
+    }
+    if (activeLeg !== undefined) drawLeg(legs[activeLeg], true)
+    context.setLineDash([])
+    if (activeLeg !== undefined) {
+      const leg = legs[activeLeg]
+      const [x1, y1] = this.project(leg.from.x, leg.from.y, width, height)
+      const [x2, y2] = this.project(leg.to.x, leg.to.y, width, height)
+      const mx = x1 + (x2 - x1) * 0.56
+      const my = y1 + (y2 - y1) * 0.56
+      const angle = Math.atan2(y2 - y1, x2 - x1)
+      context.save()
+      context.translate(mx, my)
+      context.rotate(angle)
+      context.beginPath()
+      context.moveTo(7, 0)
+      context.lineTo(-4, -4.5)
+      context.lineTo(-4, 4.5)
+      context.closePath()
+      context.fillStyle = '#f3c87f'
+      context.fill()
+      context.restore()
+    }
+    if (this.itineraryEdit && this.routeHover && route.stops.length > 0) {
+      const last = this.itineraryStopPoint(route.stops[route.stops.length - 1])
+      const [x1, y1] = this.project(last.x, last.y, width, height)
+      const [x2, y2] = this.project(this.routeHover.x, this.routeHover.y, width, height)
+      context.strokeStyle = 'rgba(243, 200, 127, 0.8)'
+      context.lineWidth = 1.5
+      context.setLineDash([4, 4])
+      context.beginPath()
+      context.moveTo(x1, y1)
+      context.lineTo(x2, y2)
+      context.stroke()
+      context.setLineDash([])
+      const label = `≈ ${this.itineraryDistanceLabel(last, this.routeHover)}`
+      context.font = '600 10px "PingFang SC", "Microsoft YaHei", sans-serif'
+      const textWidth = context.measureText(label).width
+      const left = Math.min(width - textWidth - 14, Math.max(8, x2 + 10))
+      const top = Math.min(height - 26, Math.max(8, y2 - 28))
+      context.fillStyle = 'rgba(8, 13, 18, 0.9)'
+      context.fillRect(left - 5, top - 12, textWidth + 10, 18)
+      context.fillStyle = '#f3c87f'
+      context.fillText(label, left, top)
+    }
+    context.restore()
+  }
+
+  private drawItineraryPoiRings(
+    context: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ): void {
+    const route = this.activeItinerary()
+    if (!route || route.stops.length < 2) return
+    const pois = this.itineraryPois(route)
+    const position = this.itineraryEdit ? undefined : this.itineraryPosition(route)
+    const legIndex =
+      position?.onRoute && !position.atFinal
+        ? position.legIndex
+        : this.routeExpandedLeg >= 0
+          ? this.routeExpandedLeg
+          : undefined
+    if (legIndex === undefined) return
+    const items = pois.get(legIndex) ?? []
+    if (items.length === 0) return
+    context.save()
+    context.strokeStyle = 'rgba(243, 200, 127, 0.8)'
+    context.lineWidth = 1.5
+    for (const poi of items) {
+      const [x, y] = this.project(poi.marker.x, poi.marker.y, width, height)
+      context.beginPath()
+      context.arc(x, y, 10, 0, Math.PI * 2)
+      context.stroke()
+    }
+    context.restore()
+  }
+
   private drawLabel(
     context: CanvasRenderingContext2D,
     marker: LayerMarker,
@@ -2992,7 +3229,7 @@ export class LayerMapUI {
       this.canvasEl.style.cursor = 'move'
       return
     }
-    if (!this.placingUser && !this.placingPin) {
+    if (!this.placingUser && !this.placingPin && !this.itineraryEdit) {
       const rect = this.canvasEl.getBoundingClientRect()
       const marker = this.hitMarker(event.clientX - rect.left, event.clientY - rect.top)
       if (marker && marker.id === this.state.selectedMarkerId) {
@@ -3046,6 +3283,20 @@ export class LayerMapUI {
         x: this.alignStartRect.x + dx / (this.pkg.width * scale),
         y: this.alignStartRect.y + dy / (this.pkg.height * scale),
       })
+      this.requestDraw()
+      return
+    }
+    if (this.itineraryEdit && !this.dragging) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      const width = this.canvasEl.clientWidth || 1
+      const height = this.canvasEl.clientHeight || 1
+      const [x, y] = this.unproject(
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        width,
+        height,
+      )
+      this.routeHover = { x, y }
       this.requestDraw()
       return
     }
@@ -3174,6 +3425,20 @@ export class LayerMapUI {
       this.canvasEl.releasePointerCapture(event.pointerId)
     }
     this.canvasEl.style.cursor = 'grab'
+    if (this.itineraryEdit && !this.moved) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      const width = this.canvasEl.clientWidth || 1
+      const height = this.canvasEl.clientHeight || 1
+      const [x, y] = this.unproject(
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        width,
+        height,
+      )
+      const marker = this.hitMarker(event.clientX - rect.left, event.clientY - rect.top)
+      this.addItineraryStop(x, y, marker)
+      return
+    }
     if (!this.moved && !this.suppressClick) {
       this.pickAt(event.clientX, event.clientY)
     }
@@ -4636,6 +4901,1010 @@ export class LayerMapUI {
       })
   }
 
+  private activeItinerary(): LayerItinerary | null {
+    return this.itineraryEdit ? this.itineraryDraft : this.itinerary
+  }
+
+  private cloneItinerary(route: LayerItinerary): LayerItinerary {
+    return {
+      ...route,
+      stops: route.stops.map((stop) => ({ ...stop })),
+    }
+  }
+
+  private itineraryStopPoint(stop: LayerItineraryStop): { x: number; y: number } {
+    const marker = stop.markerId ? this.markerById(stop.markerId) : undefined
+    return marker ? { x: marker.x, y: marker.y } : { x: stop.x, y: stop.y }
+  }
+
+  private itineraryStopName(stop: LayerItineraryStop): string {
+    const marker = stop.markerId ? this.markerById(stop.markerId) : undefined
+    return marker?.name ?? stop.name
+  }
+
+  private itineraryLegs(route: LayerItinerary): ItineraryLegView[] {
+    const points = route.stops.map((stop) => ({
+      stop,
+      point: this.itineraryStopPoint(stop),
+    }))
+    const legs: ItineraryLegView[] = []
+    for (let index = 1; index < points.length; index += 1) {
+      const from = points[index - 1]
+      const to = points[index]
+      legs.push({
+        fromStop: from.stop,
+        toStop: to.stop,
+        from: from.point,
+        to: to.point,
+        length: Math.hypot(to.point.x - from.point.x, to.point.y - from.point.y),
+      })
+    }
+    return legs
+  }
+
+  private itineraryFormatCellDistance(cells: number, units: number, grid: LayerGridConfig): string {
+    const cellText = `${cells.toFixed(1)} 格`
+    if (grid.unitLabel.trim() === '格') return cellText
+    return `${cellText} ≈ ${units.toFixed(1)} ${grid.unitLabel}`
+  }
+
+  private itineraryDistanceLabel(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+  ): string {
+    const grid = this.gridConfig()
+    if (grid) {
+      const cells = Math.hypot(
+        (to.x - from.x) / grid.cellW,
+        (to.y - from.y) / grid.cellH,
+      )
+      return this.itineraryFormatCellDistance(cells, cells * grid.unitValue, grid)
+    }
+    const span = this.mapSpan()
+    const percent = Math.hypot(
+      (to.x - from.x) / Math.max(1e-8, span.w),
+      (to.y - from.y) / Math.max(1e-8, span.h),
+    ) * 100
+    return `${percent < 0.1 ? percent.toFixed(3) : percent.toFixed(1)}% 地图`
+  }
+
+  private itineraryTotalLabel(route: LayerItinerary, legs = this.itineraryLegs(route)): string {
+    const grid = this.gridConfig()
+    if (grid) {
+      let cells = 0
+      for (const leg of legs) {
+        cells += Math.hypot(
+          (leg.to.x - leg.from.x) / grid.cellW,
+          (leg.to.y - leg.from.y) / grid.cellH,
+        )
+      }
+      return this.itineraryFormatCellDistance(cells, cells * grid.unitValue, grid)
+    }
+    const span = this.mapSpan()
+    let percent = 0
+    for (const leg of legs) {
+      percent += Math.hypot(
+        (leg.to.x - leg.from.x) / Math.max(1e-8, span.w),
+        (leg.to.y - leg.from.y) / Math.max(1e-8, span.h),
+      ) * 100
+    }
+    return `${percent < 0.1 ? percent.toFixed(3) : percent.toFixed(1)}% 地图`
+  }
+
+  private projectOnSegment(
+    point: { x: number; y: number },
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+  ): { point: { x: number; y: number }; t: number; distance: number } {
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const lengthSquared = dx * dx + dy * dy
+    const t =
+      lengthSquared <= 1e-12
+        ? 0
+        : Math.min(1, Math.max(0, ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared))
+    const projected = { x: from.x + dx * t, y: from.y + dy * t }
+    return {
+      point: projected,
+      t,
+      distance: Math.hypot(point.x - projected.x, point.y - projected.y),
+    }
+  }
+
+  private itineraryProjection(
+    route: LayerItinerary,
+    point: { x: number; y: number },
+  ):
+    | {
+        legIndex: number
+        t: number
+        point: { x: number; y: number }
+        distance: number
+        along: number
+        leg: ItineraryLegView
+      }
+    | undefined {
+    let best:
+      | {
+          legIndex: number
+          t: number
+          point: { x: number; y: number }
+          distance: number
+          along: number
+          leg: ItineraryLegView
+        }
+      | undefined
+    for (const [legIndex, leg] of this.itineraryLegs(route).entries()) {
+      const projected = this.projectOnSegment(point, leg.from, leg.to)
+      if (!best || projected.distance < best.distance) {
+        best = {
+          legIndex,
+          t: projected.t,
+          point: projected.point,
+          distance: projected.distance,
+          along: projected.t * leg.length,
+          leg,
+        }
+      }
+    }
+    return best
+  }
+
+  private itineraryPosition(route: LayerItinerary):
+    | {
+        onRoute: boolean
+        atFinal: boolean
+        legIndex?: number
+        progress: number
+        point: { x: number; y: number }
+        nextStopIndex?: number
+      }
+    | undefined {
+    const legs = this.itineraryLegs(route)
+    if (legs.length === 0) return undefined
+    const user = this.state.userPosition
+    if (!user) {
+      return { onRoute: false, atFinal: false, progress: 0, point: legs[0].from, nextStopIndex: 0 }
+    }
+    const width = this.viewportEl.clientWidth || this.canvasEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || this.canvasEl.clientHeight || 1
+    const [ux, uy] = this.project(user.x, user.y, width, height)
+    for (const [index, stop] of route.stops.entries()) {
+      const point = this.itineraryStopPoint(stop)
+      const [sx, sy] = this.project(point.x, point.y, width, height)
+      if (Math.hypot(sx - ux, sy - uy) > 22) continue
+      if (index === route.stops.length - 1) {
+        return {
+          onRoute: true,
+          atFinal: true,
+          progress: 1,
+          point,
+        }
+      }
+      return {
+        onRoute: true,
+        atFinal: false,
+        legIndex: index,
+        progress: 0,
+        point,
+        nextStopIndex: index + 1,
+      }
+    }
+    const projection = this.itineraryProjection(route, user)
+    if (!projection) return undefined
+    const [px, py] = this.project(projection.point.x, projection.point.y, width, height)
+    if (Math.hypot(px - ux, py - uy) > 20) {
+      return { onRoute: false, atFinal: false, progress: 0, point: user, nextStopIndex: 0 }
+    }
+    if (projection.legIndex >= legs.length - 1 && projection.t >= 0.999) {
+      return {
+        onRoute: true,
+        atFinal: true,
+        progress: 1,
+        point: projection.point,
+      }
+    }
+    return {
+      onRoute: true,
+      atFinal: false,
+      legIndex: projection.legIndex,
+      progress: projection.t,
+      point: projection.point,
+      nextStopIndex:
+        projection.legIndex + 1 < route.stops.length ? projection.legIndex + 1 : undefined,
+    }
+  }
+
+  private itineraryPois(route: LayerItinerary): Map<number, ItineraryPoiView[]> {
+    const result = new Map<number, ItineraryPoiView[]>()
+    const legs = this.itineraryLegs(route)
+    if (legs.length === 0) return result
+    const settings = loadSettings(this.liveContext())
+    const radius = Math.min(0.4, Math.max(0.01, settings.layerItineraryPoiRadius || 0.08))
+    const max = Math.min(30, Math.max(1, settings.layerItineraryPoiMax || 8))
+    const hidden = new Set(this.state.hiddenCategories ?? [])
+    const span = this.mapSpan()
+    const stopMarkerIds = new Set(
+      route.stops.map((stop) => stop.markerId).filter((id): id is string => Boolean(id)),
+    )
+    const stopPoints = legs.flatMap((leg) => [leg.from, leg.to])
+    const candidates: Array<{ marker: LayerMarker; legIndex: number; along: number; offset: number; projected: { x: number; y: number } }> = []
+    for (const marker of this.effectiveMarkerList) {
+      if (hidden.has(marker.categoryId) || stopMarkerIds.has(marker.id)) continue
+      if (
+        stopPoints.some(
+          (point) =>
+            Math.hypot(
+              (point.x - marker.x) / Math.max(1e-8, span.w),
+              (point.y - marker.y) / Math.max(1e-8, span.h),
+            ) <= 0.01,
+        )
+      ) {
+        continue
+      }
+      let best:
+        | { legIndex: number; along: number; offset: number; projected: { x: number; y: number } }
+        | undefined
+      for (const [legIndex, leg] of legs.entries()) {
+        const projected = this.projectOnSegment(marker, leg.from, leg.to)
+        if (!best || projected.distance < best.offset) {
+          best = {
+            legIndex,
+            along: projected.t * leg.length,
+            offset: projected.distance,
+            projected: projected.point,
+          }
+        }
+      }
+      if (best) {
+        const offsetMap = Math.hypot(
+          (marker.x - best.projected.x) / Math.max(1e-8, span.w),
+          (marker.y - best.projected.y) / Math.max(1e-8, span.h),
+        )
+        if (offsetMap <= radius) {
+          candidates.push({ marker, ...best, offset: offsetMap })
+        }
+      }
+    }
+    for (const item of candidates) {
+      const bucket = result.get(item.legIndex) ?? []
+      bucket.push({
+        marker: item.marker,
+        along: item.along,
+        offset: item.offset,
+        projected: item.projected,
+      })
+      result.set(item.legIndex, bucket)
+    }
+    for (const [legIndex, bucket] of result) {
+      result.set(
+        legIndex,
+        bucket
+          .sort((a, b) => a.along - b.along || a.offset - b.offset)
+          .slice(0, max),
+      )
+    }
+    return result
+  }
+
+  private itineraryContext(route: LayerItinerary): LayerItineraryContext | undefined {
+    if (!route.showToAI || route.stops.length < 2) return undefined
+    const legs = this.itineraryLegs(route)
+    const position = this.itineraryPosition(route)
+    const pois = this.itineraryPois(route)
+    const names = route.stops.map((stop) => this.itineraryStopName(stop))
+    const currentLeg = position?.onRoute && !position.atFinal ? position.legIndex : undefined
+    const current =
+      currentLeg !== undefined
+        ? (() => {
+            const leg = legs[currentLeg]
+            return {
+              legIndex: currentLeg,
+              progress: (position?.progress ?? 0) * 100,
+              from: this.itineraryStopName(leg.fromStop),
+              to: this.itineraryStopName(leg.toStop),
+              remaining: this.itineraryDistanceLabel(position?.point ?? leg.from, leg.to),
+            }
+          })()
+        : undefined
+    const nextStop =
+      position?.atFinal
+        ? undefined
+        : names[position?.nextStopIndex ?? 0] ?? undefined
+    return {
+      start: names[0],
+      destination: names[names.length - 1],
+      total: this.itineraryTotalLabel(route, legs),
+      stops: names,
+      current,
+      nextStop,
+      legs: legs.map((leg, index) => ({
+        from: this.itineraryStopName(leg.fromStop),
+        to: this.itineraryStopName(leg.toStop),
+        distance: this.itineraryDistanceLabel(leg.from, leg.to),
+        current: currentLeg === index ? true : undefined,
+        pois: (pois.get(index) ?? []).map((poi) => ({
+          name: poi.marker.name,
+          category: this.categoryById(poi.marker.categoryId)?.name,
+          along: this.itineraryDistanceLabel(leg.from, poi.projected),
+          offset: this.itineraryDistanceLabel(poi.marker, poi.projected),
+        })),
+      })),
+    }
+  }
+
+  private saveItineraryToState(route: LayerItinerary): void {
+    if (!this.pkg) return
+    const routes =
+      this.state.itinerariesByPackage ?? (this.state.itinerariesByPackage = {})
+    routes[this.pkg.id] = this.cloneItinerary(route)
+    this.state.updatedAt = Date.now()
+    this.persist()
+    this.refreshContext()
+  }
+
+  private toggleItineraryShelf(): void {
+    if (!this.pkg) {
+      this.toast('先导入或选择一个地图包')
+      return
+    }
+    if (this.itineraryEdit) {
+      this.routeShelfOpen = true
+      this.renderItineraryShelf()
+      return
+    }
+    if (!this.itinerary) {
+      this.routeShelfOpen = !this.routeShelfOpen
+      this.renderItineraryShelf()
+      this.syncToolButtons()
+      return
+    }
+    this.routeShelfOpen = !this.routeShelfOpen
+    this.renderItineraryShelf()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private startItineraryEditing(): void {
+    if (!this.pkg) {
+      this.toast('先导入或选择一个地图包')
+      return
+    }
+    const now = Date.now()
+    this.itineraryDraft = this.itinerary
+      ? this.cloneItinerary(this.itinerary)
+      : {
+          version: 1,
+          packageId: this.pkg.id,
+          stops: [],
+          showToAI: true,
+          createdAt: now,
+          updatedAt: now,
+        }
+    this.itineraryDraft.packageId = this.pkg.id
+    this.itineraryEdit = true
+    this.routeShelfOpen = true
+    this.routeExpandedLeg = 0
+    this.routeHover = null
+    this.cancelPlacements()
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.requestDraw()
+    this.syncToolButtons()
+    this.toast(
+      this.itineraryDraft.stops.length > 0
+        ? '编辑行程：完成前不会进入 AI'
+        : '点击地图添加第一站',
+    )
+  }
+
+  private finishItineraryEditing(): void {
+    const draft = this.itineraryDraft
+    if (!draft) return
+    if (draft.stops.length < 2) {
+      this.toast('至少需要起点和终点两个站')
+      return
+    }
+    draft.updatedAt = Date.now()
+    this.itinerary = this.cloneItinerary(draft)
+    this.itineraryEdit = false
+    this.itineraryDraft = null
+    this.routeShelfOpen = false
+    this.routeExpandedLeg = 0
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.saveItineraryToState(this.itinerary)
+    this.requestDraw()
+    this.syncToolButtons()
+    this.toast('行程已完成；AI 已更新')
+  }
+
+  private cancelItineraryEditing(): void {
+    this.itineraryEdit = false
+    this.itineraryDraft = null
+    this.routeHover = null
+    this.routeShelfOpen = false
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private clearItinerary(): void {
+    if (!this.itinerary && !this.itineraryDraft) return
+    if (typeof window !== 'undefined' && !window.confirm('清除当前行程？')) return
+    if (this.pkg && this.state.itinerariesByPackage) {
+      delete this.state.itinerariesByPackage[this.pkg.id]
+    }
+    this.itinerary = null
+    this.itineraryDraft = null
+    this.itineraryEdit = false
+    this.routeShelfOpen = false
+    this.routeHover = null
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.persist()
+    this.refreshContext()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private addItineraryStop(
+    x: number,
+    y: number,
+    marker?: LayerMarker,
+  ): void {
+    const draft = this.itineraryDraft
+    if (!draft || !this.itineraryEdit) return
+    if (marker && draft.stops.some((stop) => stop.markerId === marker.id)) {
+      this.toast(`${marker.name} 已经在行程里`)
+      return
+    }
+    const now = Date.now()
+    const region = this.regionForPoint(x, y)?.name
+    const fallbackName = region
+      ? `${region} · 经停点 ${draft.stops.length + 1}`
+      : `经停点 ${draft.stops.length + 1}`
+    draft.stops.push({
+      id: `stop:${now}:${Math.random().toString(36).slice(2, 7)}`,
+      markerId: marker?.id,
+      name: marker?.name ?? fallbackName,
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y)),
+    })
+    draft.updatedAt = now
+    this.routeExpandedLeg = Math.max(0, draft.stops.length - 2)
+    this.routeHover = null
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private removeItineraryStop(stopId: string): void {
+    if (!this.itineraryDraft || !this.itineraryEdit) return
+    this.itineraryDraft.stops = this.itineraryDraft.stops.filter(
+      (stop) => stop.id !== stopId,
+    )
+    this.itineraryDraft.updatedAt = Date.now()
+    this.routeExpandedLeg = Math.min(
+      this.routeExpandedLeg,
+      Math.max(0, this.itineraryDraft.stops.length - 2),
+    )
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private undoLastItineraryStop(): void {
+    const draft = this.itineraryDraft
+    if (!draft?.stops.length) return
+    this.removeItineraryStop(draft.stops[draft.stops.length - 1].id)
+  }
+
+  private selectItineraryStop(stop: LayerItineraryStop): void {
+    const marker = stop.markerId ? this.markerById(stop.markerId) : undefined
+    if (marker) {
+      this.selectMarker(marker, true)
+      return
+    }
+    this.centerOnPoint(this.itineraryStopPoint(stop))
+  }
+
+  private centerOnPoint(point: { x: number; y: number }): void {
+    if (this.pkg?.kind === 'tiles' && this.maplibreMap) {
+      this.maplibreMap.easeTo({
+        center: this.normalizedToLngLat(point.x, point.y),
+        duration: 260,
+      })
+      return
+    }
+    this.view.cx = point.x
+    this.view.cy = point.y
+    this.clampView()
+    this.state.view = this.view
+    this.persist()
+    this.requestDraw()
+  }
+
+  private itineraryNextStop(route: LayerItinerary): LayerItineraryStop | undefined {
+    const legs = this.itineraryLegs(route)
+    if (legs.length === 0) return undefined
+    const position = this.itineraryPosition(route)
+    if (position?.atFinal) return undefined
+    const index = position?.nextStopIndex ?? 0
+    return route.stops[index]
+  }
+
+  private itineraryNextLabel(route: LayerItinerary): string {
+    const position = this.itineraryPosition(route)
+    if (position?.atFinal) return '已到终点'
+    const next = this.itineraryNextStop(route)
+    if (!next) return '已到终点'
+    const number = route.stops.findIndex((stop) => stop.id === next.id) + 1
+    return position?.onRoute
+      ? `前往下一站：${number}`
+      : '前往起点：1'
+  }
+
+  private goToNextItineraryStop(): void {
+    const route = this.itinerary
+    if (!route) return
+    const next = this.itineraryNextStop(route)
+    if (!next) {
+      this.toast('已经到终点')
+      return
+    }
+    const point = this.itineraryStopPoint(next)
+    const marker = next.markerId ? this.markerById(next.markerId) : undefined
+    this.setUserPosition(point.x, point.y, marker?.id, false)
+    const nextIndex = route.stops.findIndex((stop) => stop.id === next.id)
+    if (nextIndex >= 0) this.routeExpandedLeg = Math.min(nextIndex, Math.max(0, route.stops.length - 2))
+    this.centerOnUserPosition()
+    this.renderItineraryShelf()
+    this.renderRouteStopHandles()
+    this.toast(`已到 ${this.itineraryStopName(next)}`)
+  }
+
+  private renderItineraryShelf(): void {
+    if (!this.routeShelfEl) return
+    const route = this.activeItinerary()
+    if (!this.pkg || (!route && !this.routeShelfOpen)) {
+      this.routeShelfEl.hidden = true
+      this.renderRouteStopHandles()
+      return
+    }
+    this.routeShelfEl.hidden = false
+    this.routeShelfEl.replaceChildren()
+    const legs = route ? this.itineraryLegs(route) : []
+    const position = route ? this.itineraryPosition(route) : undefined
+    const pois = route ? this.itineraryPois(route) : new Map<number, ItineraryPoiView[]>()
+    const head = document.createElement('header')
+    head.className = 'tml-route-head'
+    const titleWrap = document.createElement('div')
+    titleWrap.className = 'tml-route-heading'
+    const title = document.createElement('strong')
+    title.textContent = this.itineraryEdit ? '行程编辑' : '行程'
+    const summary = document.createElement('span')
+    summary.className = 'tml-route-summary'
+    summary.textContent = !route
+      ? '还没有行程'
+      : this.itineraryEdit
+        ? route.stops.length === 0
+          ? '点击地图添加第一站'
+          : `${route.stops.length} 站 · 点击地图添加下一站`
+        : `${route.stops.length} 站 · ${this.itineraryTotalLabel(route, legs)}`
+    titleWrap.append(title, summary)
+    head.append(titleWrap)
+    const actions = document.createElement('div')
+    actions.className = 'tml-route-actions'
+    if (this.itineraryEdit) {
+      const undo = this.routeActionButton('撤销上一站', 'undo-stop')
+      undo.disabled = !route?.stops.length
+      const finish = this.routeActionButton('完成', 'finish', true)
+      finish.disabled = (route?.stops.length ?? 0) < 2
+      actions.append(
+        undo,
+        finish,
+        this.routeActionButton('取消', 'cancel'),
+      )
+    } else if (route) {
+      const next = this.routeActionButton(this.itineraryNextLabel(route), 'next', true)
+      next.disabled = position?.atFinal === true
+      const nextStop = this.itineraryNextStop(route)
+      if (nextStop) next.title = this.itineraryStopName(nextStop)
+      actions.append(
+        next,
+        this.routeActionButton('编辑', 'edit'),
+        this.routeActionButton('清除', 'clear', false, 'tml-danger-text'),
+      )
+    } else {
+      actions.append(this.routeActionButton('规划行程', 'start', true))
+    }
+    const shelfToggle = this.routeActionButton(
+      this.routeShelfOpen ? '收起' : '展开',
+      'toggle',
+    )
+    shelfToggle.title = this.routeShelfOpen
+      ? '收起行程列表，查看地图和拖动站点'
+      : '展开行程列表和沿途地点'
+    actions.append(shelfToggle)
+    head.append(actions)
+    this.routeShelfEl.append(head)
+    if (!this.routeShelfOpen) {
+      this.renderRouteStopHandles()
+      return
+    }
+    const body = document.createElement('div')
+    body.className = 'tml-route-body'
+    if (!route) {
+      body.append(
+        textElement(
+          'div',
+          'tml-route-empty',
+          '点“规划行程”后，在地图上依次点击起点、经停点和终点；最后一个点就是终点。',
+        ),
+      )
+      if (this.state.userPosition) {
+        const startHere = this.routeActionButton(
+          '从我的位置开始',
+          'start-here',
+          true,
+        )
+        startHere.classList.add('tml-route-start-here')
+        body.append(startHere)
+      }
+      this.routeShelfEl.append(body)
+      this.renderRouteStopHandles()
+      return
+    }
+    if (route.stops.length === 0) {
+      body.append(
+        textElement(
+          'div',
+          'tml-route-empty',
+          '点击地图放第一站。点到地点图钉会用地点名称；点空白地图会生成自由经停点。',
+        ),
+      )
+    } else {
+      if (position && !this.itineraryEdit) {
+        const state = document.createElement('div')
+        state.className = 'tml-route-current'
+        if (position.atFinal) {
+          state.textContent = '已到终点'
+        } else if (!position.onRoute) {
+          state.textContent = '尚未在路线上 · 点“前往起点”开始'
+        } else {
+          const leg = legs[position.legIndex ?? 0]
+          state.textContent = `当前第 ${(position.legIndex ?? 0) + 1}/${legs.length} 段 · ${Math.round(position.progress * 100)}% · 剩余 ${this.itineraryDistanceLabel(position.point, leg.to)}`
+        }
+        body.append(state)
+      }
+      const list = document.createElement('ol')
+      list.className = 'tml-route-list'
+      for (const [index, stop] of route.stops.entries()) {
+        const row = document.createElement('li')
+        row.className = `tml-route-stop-row${index === 0 ? ' is-start' : index === route.stops.length - 1 ? ' is-end' : ''}`
+        const badge = document.createElement('span')
+        badge.className = 'tml-route-badge'
+        badge.textContent = String(index + 1)
+        const info = document.createElement('div')
+        info.className = 'tml-route-stop-info'
+        const name = document.createElement('strong')
+        name.textContent = this.itineraryStopName(stop)
+        const role = document.createElement('small')
+        role.textContent =
+          index === 0 ? '起点' : index === route.stops.length - 1 ? '终点' : '经停点'
+        info.append(name, role)
+        const select = document.createElement('button')
+        select.type = 'button'
+        select.className = 'tml-route-stop-select'
+        select.textContent = '›'
+        select.setAttribute('aria-label', `查看第 ${index + 1} 站 ${name.textContent}`)
+        select.addEventListener('click', () => this.selectItineraryStop(stop))
+        row.append(badge, info, select)
+        if (this.itineraryEdit) {
+          const remove = document.createElement('button')
+          remove.type = 'button'
+          remove.className = 'tml-route-remove'
+          remove.title = '移除这一站'
+          remove.setAttribute('aria-label', `移除第 ${index + 1} 站`)
+          remove.textContent = '×'
+          remove.addEventListener('click', () => this.removeItineraryStop(stop.id))
+          row.append(remove)
+        }
+        list.append(row)
+        const leg = legs[index]
+        if (!leg) continue
+        const legButton = this.routeActionButton(
+          `${this.itineraryDistanceLabel(leg.from, leg.to)} · 沿途 ${pois.get(index)?.length ?? 0} 个地点`,
+          'toggle-leg',
+        )
+        legButton.classList.add('tml-route-leg')
+        if (position?.onRoute && position.legIndex === index) {
+          legButton.classList.add('is-current')
+          legButton.setAttribute('aria-current', 'step')
+        }
+        if (this.routeExpandedLeg === index) {
+          legButton.classList.add('is-open')
+          legButton.setAttribute('aria-expanded', 'true')
+        }
+        legButton.dataset.legIndex = String(index)
+        list.append(legButton)
+        if (this.routeExpandedLeg === index) {
+          const poiList = document.createElement('div')
+          poiList.className = 'tml-route-pois'
+          const legPois = pois.get(index) ?? []
+          if (legPois.length === 0) {
+            poiList.append(
+              textElement('div', 'tml-route-poi-empty', '这段沿线暂无地点。'),
+            )
+          } else {
+            for (const poi of legPois) {
+              const poiButton = document.createElement('button')
+              poiButton.type = 'button'
+              poiButton.className = 'tml-route-poi'
+              poiButton.textContent = `${poi.marker.name}${this.categoryById(poi.marker.categoryId) ? ` · ${this.categoryById(poi.marker.categoryId)?.name}` : ''}`
+              poiButton.title = `沿程 ${this.itineraryDistanceLabel(leg.from, poi.projected)}`
+              poiButton.addEventListener('click', () => {
+                const marker = this.markerById(poi.marker.id)
+                if (marker) this.selectMarker(marker, true)
+              })
+              poiList.append(poiButton)
+            }
+          }
+          list.append(poiList)
+        }
+      }
+      body.append(list)
+    }
+    const footer = document.createElement('div')
+    footer.className = 'tml-route-foot'
+    const ai = document.createElement('label')
+    ai.className = 'tml-route-ai'
+    const aiCheckbox = document.createElement('input')
+    aiCheckbox.type = 'checkbox'
+    aiCheckbox.checked = route.showToAI
+    aiCheckbox.dataset.routeAction = 'toggle-ai'
+    aiCheckbox.setAttribute('aria-label', '把本次行程发给 AI')
+    aiCheckbox.addEventListener('change', () => {
+      const next = aiCheckbox.checked
+      if (this.itineraryEdit && this.itineraryDraft) {
+        this.itineraryDraft.showToAI = next
+        this.renderItineraryShelf()
+      } else if (this.itinerary) {
+        this.itinerary = { ...this.itinerary, showToAI: next }
+        this.saveItineraryToState(this.itinerary)
+        this.renderItineraryShelf()
+      }
+    })
+    ai.append(aiCheckbox, document.createTextNode('把本次行程发给 AI'))
+    const hint = document.createElement('span')
+    hint.className = 'tml-route-hint'
+    hint.textContent = this.itineraryEdit
+      ? '完成前是草稿，不会进入 AI；收起列表后可拖站点'
+      : `每段沿线 ±${Math.round((loadSettings(this.liveContext()).layerItineraryPoiRadius || 0.08) * 100)}% · 最多 ${loadSettings(this.liveContext()).layerItineraryPoiMax || 8} 个地点`
+    footer.append(ai, hint)
+    body.append(footer)
+    this.routeShelfEl.append(body)
+    this.renderRouteStopHandles()
+  }
+
+  private routeActionButton(
+    label: string,
+    action: string,
+    primary = false,
+    extraClass = '',
+  ): HTMLButtonElement {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `tml-route-action${primary ? ' tml-primary' : ''}${extraClass ? ` ${extraClass}` : ''}`
+    button.dataset.routeAction = action
+    button.textContent = label
+    return button
+  }
+
+  private onRouteShelfClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement
+    const action = target.closest<HTMLElement>('[data-route-action]')?.dataset.routeAction
+    if (!action) return
+    if (action === 'toggle') {
+      this.routeShelfOpen = !this.routeShelfOpen
+      this.renderItineraryShelf()
+      this.requestDraw()
+      return
+    }
+    if (action === 'start') {
+      this.startItineraryEditing()
+      return
+    }
+    if (action === 'start-here') {
+      this.startItineraryEditing()
+      const user = this.state.userPosition
+      if (user) {
+        const marker = this.state.atPlaceId
+          ? this.markerById(this.state.atPlaceId)
+          : undefined
+        this.addItineraryStop(user.x, user.y, marker)
+      }
+      return
+    }
+    if (action === 'edit') {
+      this.startItineraryEditing()
+      return
+    }
+    if (action === 'finish') {
+      this.finishItineraryEditing()
+      return
+    }
+    if (action === 'cancel') {
+      this.cancelItineraryEditing()
+      return
+    }
+    if (action === 'undo-stop') {
+      this.undoLastItineraryStop()
+      return
+    }
+    if (action === 'clear') {
+      this.clearItinerary()
+      return
+    }
+    if (action === 'next') {
+      this.goToNextItineraryStop()
+      return
+    }
+    if (action === 'toggle-leg') {
+      const index = Number(target.closest<HTMLElement>('[data-leg-index]')?.dataset.legIndex)
+      if (Number.isInteger(index)) {
+        this.routeExpandedLeg = this.routeExpandedLeg === index ? -1 : index
+        this.renderItineraryShelf()
+        this.requestDraw()
+      }
+    }
+  }
+
+  private renderRouteStopHandles(): void {
+    if (!this.routeStopsEl) return
+    const route = this.activeItinerary()
+    if (!route || !this.pkg) {
+      this.routeStopsEl.replaceChildren()
+      this.routeStopsEl.hidden = true
+      this.routeStopButtons.clear()
+      return
+    }
+    this.routeStopsEl.hidden = false
+    this.routeStopsEl.replaceChildren()
+    this.routeStopButtons.clear()
+    for (const [index, stop] of route.stops.entries()) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = `tml-route-stop${index === 0 ? ' is-start' : index === route.stops.length - 1 ? ' is-end' : ''}${this.itineraryEdit ? ' is-editing' : ''}`
+      button.dataset.routeStopId = stop.id
+      button.textContent = String(index + 1)
+      button.title = `${index + 1}. ${this.itineraryStopName(stop)}`
+      button.setAttribute('aria-label', `第 ${index + 1} 站：${this.itineraryStopName(stop)}`)
+      button.addEventListener('pointerdown', (event) =>
+        this.onRouteStopDown(event, stop.id),
+      )
+      button.addEventListener('pointermove', (event) =>
+        this.onRouteStopMove(event),
+      )
+      button.addEventListener('pointerup', (event) => this.onRouteStopUp(event))
+      button.addEventListener('pointercancel', (event) => this.onRouteStopUp(event))
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        if (!this.routeStopDrag) this.selectItineraryStop(stop)
+      })
+      this.routeStopButtons.set(stop.id, button)
+      this.routeStopsEl.append(button)
+    }
+    this.positionRouteStopHandles()
+  }
+
+  private positionRouteStopHandles(): void {
+    const route = this.activeItinerary()
+    if (!route) return
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    for (const stop of route.stops) {
+      const button = this.routeStopButtons.get(stop.id)
+      if (!button) continue
+      const point = this.itineraryStopPoint(stop)
+      const [x, y] = this.project(point.x, point.y, width, height)
+      button.style.left = `${x}px`
+      button.style.top = `${y}px`
+      button.hidden = x < -32 || y < -32 || x > width + 32 || y > height + 32
+    }
+  }
+
+  private onRouteStopDown(event: PointerEvent, stopId: string): void {
+    const stop = this.itineraryDraft?.stops.find((item) => item.id === stopId)
+    if (!stop || !this.itineraryEdit) {
+      event.stopPropagation()
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    const point = this.itineraryStopPoint(stop)
+    this.routeStopDrag = {
+      stopId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: point.x,
+      originY: point.y,
+      originMarkerId: stop.markerId,
+      moved: false,
+    }
+    event.currentTarget instanceof HTMLElement &&
+      event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  private onRouteStopMove(event: PointerEvent): void {
+    const drag = this.routeStopDrag
+    const route = this.itineraryDraft
+    if (!drag || !route || drag.pointerId !== event.pointerId) return
+    const dx = event.clientX - drag.startX
+    const dy = event.clientY - drag.startY
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return
+    event.preventDefault()
+    drag.moved = true
+    const rect = this.viewportEl.getBoundingClientRect()
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const [x, y] = this.unproject(
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+      width,
+      height,
+    )
+    const stop = route.stops.find((item) => item.id === drag.stopId)
+    if (!stop) return
+    let nx = Math.min(1, Math.max(0, x))
+    let ny = Math.min(1, Math.max(0, y))
+    const projection = this.itineraryProjection(route, { x: nx, y: ny })
+    if (projection) {
+      const [sx, sy] = this.project(nx, ny, width, height)
+      const [px, py] = this.project(projection.point.x, projection.point.y, width, height)
+      if (Math.hypot(sx - px, sy - py) <= 14) {
+        nx = projection.point.x
+        ny = projection.point.y
+      }
+    }
+    stop.x = nx
+    stop.y = ny
+    stop.markerId = undefined
+    route.updatedAt = Date.now()
+    this.positionRouteStopHandles()
+    this.requestDraw()
+  }
+
+  private onRouteStopUp(event: PointerEvent): void {
+    const drag = this.routeStopDrag
+    if (!drag || drag.pointerId !== event.pointerId) return
+    this.routeStopDrag = null
+    const button = this.routeStopButtons.get(drag.stopId)
+    if (button?.hasPointerCapture(event.pointerId)) {
+      button.releasePointerCapture(event.pointerId)
+    }
+    if (event.type === 'pointercancel') {
+      const stop = this.itineraryDraft?.stops.find((item) => item.id === drag.stopId)
+      if (stop) {
+        stop.x = drag.originX
+        stop.y = drag.originY
+        stop.markerId = drag.originMarkerId
+      }
+      this.renderItineraryShelf()
+      this.requestDraw()
+      return
+    }
+    if (drag.moved) {
+      this.renderItineraryShelf()
+      this.requestDraw()
+    }
+  }
+
   private refreshContext(renderPosition = true): void {
     const pkg = this.pkg
     if (!pkg) {
@@ -4653,6 +5922,7 @@ export class LayerMapUI {
     const user = this.state.userPosition
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
+    const itinerary = this.itinerary ? this.itineraryContext(this.itinerary) : undefined
     const note =
       settings.layerNoteAI && marker && this.placeAIPartAllowed(marker, 'note')
         ? this.markerNoteValue(marker)
@@ -4681,6 +5951,7 @@ export class LayerMapUI {
           : undefined,
       wikiTexts: marker ? this.contextWikiTexts(marker, settings) : undefined,
       favorites: favorites.length > 0 ? favorites : undefined,
+      itinerary,
       nearby: nearby.length > 0 ? nearby : undefined,
       nearbyAnchor: user ? 'my position' : undefined,
       nearbyScope: 'radius',
@@ -4699,6 +5970,7 @@ export class LayerMapUI {
       : '拖动“我”到地点，或调整附近范围后生成'
     if (renderPosition) this.renderPositionCard()
     this.renderNearby()
+    if (this.routeShelfEl) this.renderItineraryShelf()
     if (!this.contextModalEl.hidden) {
       this.renderContextControls()
       this.renderContextPreview()
@@ -5048,6 +6320,8 @@ export class LayerMapUI {
       title.textContent = pin.name
       this.savePinEditsForMap()
       this.rebuildEffectiveMarkers()
+      this.renderItineraryShelf()
+      this.refreshContext()
       this.requestDraw()
     })
     label.append(input)
@@ -5064,6 +6338,17 @@ export class LayerMapUI {
     clearGlobalNote(key)
     clearGlobalNote(sourceKey)
     delete this.state.notes?.[key]
+    for (const route of [this.itinerary, this.itineraryDraft]) {
+      if (!route) continue
+      for (const stop of route.stops) {
+        if (stop.markerId !== id) continue
+        stop.x = marker.x
+        stop.y = marker.y
+        stop.name = marker.name
+        stop.markerId = undefined
+      }
+    }
+    if (this.itinerary) this.saveItineraryToState(this.itinerary)
     this.pinEdits.customPins = this.pinEdits.customPins.filter((pin) => pin.id !== id)
     delete this.pinEdits.history[id]
     if (this.placeAIFlags[id]) {
@@ -5141,6 +6426,8 @@ export class LayerMapUI {
       this.userStampEl.hidden = true
       return
     }
+    this.userStampEl.title =
+      this.itinerary && !this.itineraryEdit ? '沿行程路线拖动我' : '拖动我'
     const width = this.viewportEl.clientWidth || 1
     const height = this.viewportEl.clientHeight || 1
     const [x, y] = this.project(user.x, user.y, width, height)
@@ -5183,8 +6470,10 @@ export class LayerMapUI {
       startY: event.clientY,
       originX: user.x,
       originY: user.y,
+      snapRoute: Boolean(this.itinerary && !this.itineraryEdit),
     }
     this.userStampEl.classList.add('dragging')
+    this.userStampEl.classList.toggle('is-route-snap', this.userDrag.snapRoute)
     this.userStampEl.setPointerCapture(event.pointerId)
   }
 
@@ -5201,10 +6490,16 @@ export class LayerMapUI {
       height,
     )
     const current = this.unproject(event.clientX - rect.left, event.clientY - rect.top, width, height)
-    this.state.userPosition = {
-      x: Math.min(1, Math.max(0, this.userDrag.originX + current[0] - start[0])),
-      y: Math.min(1, Math.max(0, this.userDrag.originY + current[1] - start[1])),
+    let nextX = Math.min(1, Math.max(0, this.userDrag.originX + current[0] - start[0]))
+    let nextY = Math.min(1, Math.max(0, this.userDrag.originY + current[1] - start[1]))
+    if (this.userDrag.snapRoute && this.itinerary) {
+      const projection = this.itineraryProjection(this.itinerary, { x: nextX, y: nextY })
+      if (projection) {
+        nextX = projection.point.x
+        nextY = projection.point.y
+      }
     }
+    this.state.userPosition = { x: nextX, y: nextY }
     this.state.atPlaceId = undefined
     this.updateUserStamp()
     this.requestDraw()
@@ -5212,8 +6507,10 @@ export class LayerMapUI {
 
   private onUserStampUp = (event: PointerEvent): void => {
     if (!this.userDrag) return
+    const wasRouteSnap = this.userDrag.snapRoute
     this.userDrag = null
     this.userStampEl.classList.remove('dragging')
+    this.userStampEl.classList.remove('is-route-snap')
     if (this.userStampEl.hasPointerCapture(event.pointerId)) {
       this.userStampEl.releasePointerCapture(event.pointerId)
     }
@@ -5223,6 +6520,7 @@ export class LayerMapUI {
       this.state.atPlaceId = marker?.id
       if (marker) this.toast(`我在 ${marker.name}`)
     }
+    if (wasRouteSnap) this.renderItineraryShelf()
     this.refreshContext()
     this.persist()
     this.requestDraw()

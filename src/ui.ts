@@ -342,6 +342,19 @@ const SETTINGS_HTML = `
       </div>
 
       <div class="tm-settings-group">
+        <div class="tm-settings-group-title">图层地图 · 行程</div>
+        <label class="tm-row">每段沿途地点范围
+          <input id="tm-set-itinerary-poi-radius" type="number" data-layer-setting="layerItineraryPoiRadius" min="1" max="40" step="1">
+          <span>% 地图宽</span>
+        </label>
+        <label class="tm-row">每段最多显示
+          <input id="tm-set-itinerary-poi-max" type="number" data-layer-setting="layerItineraryPoiMax" min="1" max="30" step="1">
+          <span>个</span>
+        </label>
+        <div class="tm-hint">行程面板里可以单独关闭本次行程的 AI 发送。</div>
+      </div>
+
+      <div class="tm-settings-group">
         <div class="tm-settings-group-title">图层地图 · 收藏地点</div>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoritesAI"> 把收藏地点发给 AI</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteType"> 附带类型</label>
@@ -3530,7 +3543,12 @@ export class MapUI {
       else if (input.type === 'number') {
         const value = Number(input.value)
         if (Number.isFinite(value)) {
-          result[key] = key === 'layerNearbyMax' ? Math.round(value) : value
+          result[key] =
+            key === 'layerNearbyMax' || key === 'layerItineraryPoiMax'
+              ? Math.round(value)
+              : key === 'layerItineraryPoiRadius'
+                ? value / 100
+                : value
         }
       }
     }
@@ -3543,7 +3561,11 @@ export class MapUI {
       if (!key) continue
       const value = this.settings[key]
       if (input.type === 'checkbox') input.checked = value === true
-      else if (input.type === 'number' && typeof value === 'number') input.value = String(value)
+      else if (input.type === 'number' && typeof value === 'number') {
+        input.value = String(
+          key === 'layerItineraryPoiRadius' ? Math.round(value * 1000) / 10 : value,
+        )
+      }
     }
   }
 
@@ -3569,6 +3591,14 @@ export class MapUI {
     this.settings.layerNearbyMax = Math.min(
       50,
       Math.max(1, Math.round(this.settings.layerNearbyMax || 8)),
+    )
+    this.settings.layerItineraryPoiRadius = Math.min(
+      0.4,
+      Math.max(0.01, this.settings.layerItineraryPoiRadius || 0.08),
+    )
+    this.settings.layerItineraryPoiMax = Math.min(
+      30,
+      Math.max(1, Math.round(this.settings.layerItineraryPoiMax || 8)),
     )
     saveSettings(this.ctx, this.settings)
     this.layerUI?.handleSettingsChanged()

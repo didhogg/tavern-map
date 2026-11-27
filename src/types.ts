@@ -197,6 +197,10 @@ export type Settings = {
   layerNearbySource: boolean
   layerNearbyWiki: boolean
   layerNearbyMax: number
+  /** Corridor width for each itinerary leg, as a fraction of map width. */
+  layerItineraryPoiRadius: number
+  /** Maximum number of corridor places shown per itinerary leg. */
+  layerItineraryPoiMax: number
   layerFavoritesAI: boolean
   layerFavoriteType: boolean
   layerFavoriteCoords: boolean

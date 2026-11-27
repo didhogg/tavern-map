@@ -35,6 +35,8 @@ export const DEFAULT_SETTINGS: Settings = {
   layerNearbySource: false,
   layerNearbyWiki: false,
   layerNearbyMax: 8,
+  layerItineraryPoiRadius: 0.08,
+  layerItineraryPoiMax: 8,
   layerFavoritesAI: false,
   layerFavoriteType: true,
   layerFavoriteCoords: true,
@@ -111,6 +113,15 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     layerNearbyWiki: value.layerNearbyWiki === true,
     layerNearbyMax: Math.round(
       number(value.layerNearbyMax, DEFAULT_SETTINGS.layerNearbyMax, 1, 50),
+    ),
+    layerItineraryPoiRadius: number(
+      value.layerItineraryPoiRadius,
+      DEFAULT_SETTINGS.layerItineraryPoiRadius,
+      0.01,
+      0.4,
+    ),
+    layerItineraryPoiMax: Math.round(
+      number(value.layerItineraryPoiMax, DEFAULT_SETTINGS.layerItineraryPoiMax, 1, 30),
     ),
     layerFavoritesAI: value.layerFavoritesAI === true,
     layerFavoriteType: value.layerFavoriteType !== false,

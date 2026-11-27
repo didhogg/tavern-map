@@ -322,6 +322,40 @@ export type LayerNearbyPlace = {
   wikiTexts?: Array<{ title: string; text: string }>
 }
 
+export type LayerItineraryContextPoi = {
+  name: string
+  category?: string
+  /** Distance along this leg from its start. */
+  along?: string
+  /** Perpendicular distance from the route centre line. */
+  offset?: string
+}
+
+export type LayerItineraryContextLeg = {
+  from: string
+  to: string
+  distance: string
+  current?: boolean
+  pois: LayerItineraryContextPoi[]
+}
+
+export type LayerItineraryContext = {
+  start: string
+  destination: string
+  total: string
+  stops: string[]
+  /** Present only when the user's position is on the route. */
+  current?: {
+    legIndex: number
+    progress: number
+    from: string
+    to: string
+    remaining: string
+  }
+  nextStop?: string
+  legs: LayerItineraryContextLeg[]
+}
+
 export type LayerContextSnapshot = {
   mapName: string
   /** Explicit "my position", only when the user placed it. */
@@ -342,11 +376,33 @@ export type LayerContextSnapshot = {
   wikiTexts?: Array<{ title: string; text: string }>
   nearby?: LayerNearbyPlace[]
   nearbyAnchor?: 'my position' | 'at place' | 'view center'
+  /** Completed itinerary and its current segment. Never a draft. */
+  itinerary?: LayerItineraryContext
   nearbyScope?: 'view' | 'map' | 'radius'
   nearbyCoords?: boolean
   favorites?: LayerFavoritePlace[]
   /** Present only after the user calibrated a grid on this map package. */
   grid?: LayerGridConfig
+  updatedAt: number
+}
+
+export type LayerItineraryStop = {
+  id: string
+  /** Present when the stop points at an existing place marker. */
+  markerId?: string
+  /** Snapshot name; live marker names take priority when the marker exists. */
+  name: string
+  x: number
+  y: number
+}
+
+export type LayerItinerary = {
+  version: 1
+  packageId: string
+  stops: LayerItineraryStop[]
+  /** Whether this completed route is allowed into the AI scene block. */
+  showToAI: boolean
+  createdAt: number
   updatedAt: number
 }
 
@@ -364,6 +420,8 @@ export type LayerChatState = {
   positionsByPackage?: Record<string, LayerUserPosition>
   /** Per-map-package camera view; switching packages must not erase it. */
   viewsByPackage?: Record<string, LayerView>
+  /** Completed routes, one per map package, scoped to this chat. */
+  itinerariesByPackage?: Record<string, LayerItinerary>
   view?: LayerView
   selectedMarkerId?: string
   currentMarkerId?: string
@@ -533,6 +591,7 @@ export function loadLayerState(ctx: StContext): LayerChatState {
         ? { x: value.userPosition.x, y: value.userPosition.y }
         : undefined,
     atPlaceId: typeof value.atPlaceId === 'string' ? value.atPlaceId : undefined,
+    itinerariesByPackage: validItineraries(value.itinerariesByPackage),
     nearbyRadius:
       typeof value.nearbyRadius === 'number' && Number.isFinite(value.nearbyRadius)
         ? Math.min(0.8, Math.max(0.001, value.nearbyRadius))
@@ -559,6 +618,135 @@ export function loadLayerState(ctx: StContext): LayerChatState {
       typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
         ? value.updatedAt
         : Date.now(),
+  }
+}
+
+function validItinerary(raw: unknown): LayerItinerary | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = raw as Partial<LayerItinerary>
+  if (
+    value.version !== 1 ||
+    typeof value.packageId !== 'string' ||
+    !value.packageId ||
+    !Array.isArray(value.stops) ||
+    value.stops.length < 2
+  ) {
+    return undefined
+  }
+  const stops: LayerItineraryStop[] = value.stops
+    .filter((item): item is LayerItineraryStop => {
+      if (!item || typeof item !== 'object') return false
+      const stop = item as Partial<LayerItineraryStop>
+      return (
+        typeof stop.id === 'string' &&
+        Boolean(stop.id) &&
+        typeof stop.name === 'string' &&
+        Boolean(stop.name.trim()) &&
+        Number.isFinite(stop.x) &&
+        Number.isFinite(stop.y)
+      )
+    })
+    .map((stop) => ({
+      id: stop.id,
+      markerId: typeof stop.markerId === 'string' ? stop.markerId : undefined,
+      name: stop.name.trim(),
+      x: Math.min(1, Math.max(0, stop.x)),
+      y: Math.min(1, Math.max(0, stop.y)),
+    }))
+  if (stops.length < 2) return undefined
+  return {
+    version: 1,
+    packageId: value.packageId,
+    stops,
+    showToAI: value.showToAI !== false,
+    createdAt:
+      typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
+        ? value.createdAt
+        : Date.now(),
+    updatedAt:
+      typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
+        ? value.updatedAt
+        : Date.now(),
+  }
+}
+
+function validItineraries(value: unknown): Record<string, LayerItinerary> | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const result: Record<string, LayerItinerary> = {}
+  for (const [packageId, raw] of Object.entries(value)) {
+    const itinerary = validItinerary(raw)
+    if (packageId && itinerary) {
+      result[packageId] = { ...itinerary, packageId }
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
+function validItineraryContext(raw: unknown): LayerItineraryContext | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = raw as Partial<LayerItineraryContext>
+  if (
+    typeof value.start !== 'string' ||
+    typeof value.destination !== 'string' ||
+    typeof value.total !== 'string' ||
+    !Array.isArray(value.stops) ||
+    !Array.isArray(value.legs)
+  ) {
+    return undefined
+  }
+  const stops = value.stops.filter((item): item is string => typeof item === 'string')
+  const legs: LayerItineraryContextLeg[] = value.legs
+    .filter((item): item is LayerItineraryContextLeg => {
+      if (!item || typeof item !== 'object') return false
+      return (
+        typeof item.from === 'string' &&
+        typeof item.to === 'string' &&
+        typeof item.distance === 'string'
+      )
+    })
+    .map((leg) => ({
+      from: leg.from,
+      to: leg.to,
+      distance: leg.distance,
+      current: leg.current === true ? true : undefined,
+      pois: Array.isArray(leg.pois)
+        ? leg.pois
+            .filter((poi): poi is LayerItineraryContextPoi => {
+              if (!poi || typeof poi !== 'object') return false
+              return typeof poi.name === 'string'
+            })
+            .map((poi) => ({
+              name: poi.name,
+              category: typeof poi.category === 'string' ? poi.category : undefined,
+              along: typeof poi.along === 'string' ? poi.along : undefined,
+              offset: typeof poi.offset === 'string' ? poi.offset : undefined,
+            }))
+        : [],
+    }))
+  if (legs.length === 0) return undefined
+  const current =
+    value.current &&
+    Number.isFinite(value.current.legIndex) &&
+    Number.isFinite(value.current.progress) &&
+    typeof value.current.from === 'string' &&
+    typeof value.current.to === 'string' &&
+    typeof value.current.remaining === 'string'
+      ? {
+          legIndex: value.current.legIndex,
+          progress: value.current.progress,
+          from: value.current.from,
+          to: value.current.to,
+          remaining: value.current.remaining,
+        }
+      : undefined
+  return {
+    start: value.start,
+    destination: value.destination,
+    total: value.total,
+    stops,
+    current,
+    nextStop: typeof value.nextStop === 'string' ? value.nextStop : undefined,
+    legs,
   }
 }
 
@@ -650,6 +838,7 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
         )
       : undefined,
     nearby: nearby && nearby.length > 0 ? nearby : undefined,
+    itinerary: validItineraryContext(value.itinerary),
     nearbyAnchor:
       value.nearbyAnchor === 'my position' ||
       value.nearbyAnchor === 'at place' ||
