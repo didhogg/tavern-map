@@ -237,6 +237,25 @@ function remoteTileUrl(template: string, z: number, x: number, y: number): strin
     .replace(/\{y\}/g, String(y))
 }
 
+const tileProtocolRefreshes = new Map<string, Promise<LayerMapPackage | undefined>>()
+
+/** Re-read a package's tiles from storage; concurrent callers share one read. */
+function refreshTileProtocolPackage(packageId: string): Promise<LayerMapPackage | undefined> {
+  let pending = tileProtocolRefreshes.get(packageId)
+  if (!pending) {
+    pending = getLayerPackage(packageId)
+      .then((fresh) => {
+        if (fresh && tileProtocolPackages.has(packageId)) tileProtocolPackages.set(packageId, fresh)
+        return fresh
+      })
+      .finally(() => {
+        window.setTimeout(() => tileProtocolRefreshes.delete(packageId), 2000)
+      })
+    tileProtocolRefreshes.set(packageId, pending)
+  }
+  return pending
+}
+
 function registerTileProtocol(): void {
   if (tileProtocolRegistered) return
   tileProtocolRegistered = true
@@ -251,8 +270,20 @@ function registerTileProtocol(): void {
     if (!pkg || !Number.isFinite(z) || !Number.isFinite(x) || !Number.isFinite(y)) {
       throw new Error('Local tile is unavailable')
     }
-    const blob = pkg.tileFiles?.[`${z}/${y}/${x}`]
-    if (blob) return { data: await blob.arrayBuffer() }
+    const key = `${z}/${y}/${x}`
+    const blob = pkg.tileFiles?.[key]
+    if (blob) {
+      try {
+        return { data: await blob.arrayBuffer() }
+      } catch (error) {
+        // The stored tiles were rewritten (asset move, tile replacement) after
+        // this package was loaded, so the old handles are gone. Reload them once.
+        const fresh = await refreshTileProtocolPackage(packageId)
+        const retry = fresh?.tileFiles?.[key]
+        if (!retry) throw error
+        return { data: await retry.arrayBuffer() }
+      }
+    }
     const template = pkg.tile?.template?.trim()
     if (template) {
       const response = await fetch(remoteTileUrl(template, z, x, y))
