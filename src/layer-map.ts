@@ -401,6 +401,10 @@ const PANEL_HTML = `
         <div id="tml-place-bar" class="tml-place-bar" hidden>
           <span id="tml-place-text">点击地图放置“我的位置” · Esc 取消</span>
           <button type="button" data-user-action="cancel">取消</button>
+          <button type="button" data-pin-move="undo" title="撤销这次的上一步拖动 (Ctrl+Z)" hidden>撤销</button>
+          <button type="button" data-pin-move="redo" title="重做 (Ctrl+Shift+Z)" hidden>重做</button>
+          <button type="button" data-pin-move="cancel" title="放回原来的位置 (Esc)" hidden>取消</button>
+          <button type="button" data-pin-move="confirm" class="tml-place-confirm" title="保存新位置" hidden>确定</button>
         </div>
         <div id="tml-grid-panel" class="tml-grid-panel" hidden>
           <header class="tml-grid-head">
@@ -569,7 +573,11 @@ export class LayerMapUI {
   private packageLoadToken = 0
   private placingUser = false
   private placingPin: 'add' | 'move' | null = null
-  private placingPinId: string | undefined
+  /**
+   * "移动图钉" session: the pin can only be dragged while this is set. Each drag
+   * adds a point; undo/redo walk them; confirm writes one history entry.
+   */
+  private pinMove: { id: string; points: LayerPinPoint[]; cursor: number } | null = null
   private pinDrag: {
     id: string
     startSx: number
@@ -744,7 +752,7 @@ export class LayerMapUI {
     ) {
       const key = event.key.toLowerCase()
       if (key === 'z' || key === 'y') {
-        const selected = this.selectedMarker()
+        const selected = this.pinMove ? this.markerById(this.pinMove.id) : this.selectedMarker()
         if (selected) {
           if (key === 'y' || event.shiftKey) this.redoPin(selected.id)
           else this.undoPin(selected.id)
@@ -1222,6 +1230,11 @@ export class LayerMapUI {
     this.placeBarEl.addEventListener('click', (event) => {
       const target = event.target as HTMLElement
       if (target.closest('[data-user-action="cancel"]')) this.cancelPlacements()
+      const pinMove = target.closest<HTMLElement>('[data-pin-move]')?.dataset.pinMove
+      if (pinMove === 'undo') this.stepPinMove(-1)
+      else if (pinMove === 'redo') this.stepPinMove(1)
+      else if (pinMove === 'cancel') this.cancelPlacements()
+      else if (pinMove === 'confirm') this.endPinMove(true)
     })
     const onResize = (): void => {
       if (this.imagePanelOpen) this.positionImagePanel()
@@ -1430,8 +1443,9 @@ export class LayerMapUI {
     const history = selected ? this.pinHistoryFor(selected.id) : undefined
     const undo = this.panelEl.querySelector<HTMLButtonElement>('[data-action="undo-pin"]')
     const redo = this.panelEl.querySelector<HTMLButtonElement>('[data-action="redo-pin"]')
-    if (undo) undo.disabled = !history?.past.length
-    if (redo) redo.disabled = !history?.future.length
+    const session = selected && this.pinMove?.id === selected.id ? this.pinMove : undefined
+    if (undo) undo.disabled = session ? session.cursor <= 0 : !history?.past.length
+    if (redo) redo.disabled = session ? session.cursor >= session.points.length - 1 : !history?.future.length
   }
 
   private async refreshPackages(): Promise<void> {
@@ -1512,6 +1526,7 @@ export class LayerMapUI {
   }
 
   private async loadPackage(id: string): Promise<void> {
+    this.cancelPlacements()
     const pkg = await getLayerPackage(id)
     if (!pkg) {
       this.pkg = null
@@ -2111,12 +2126,11 @@ export class LayerMapUI {
       this.addItineraryStop(point.x, point.y, marker)
       return
     }
-    if (this.placingPin) {
-      const mode = this.placingPin
-      const id = this.placingPinId
+    // While moving a pin, clicks neither place nor select: only dragging the pin moves it.
+    if (this.pinMove) return
+    if (this.placingPin === 'add') {
       this.cancelPinPlacement()
-      if (mode === 'add') this.createCustomPin(point.x, point.y)
-      else if (id) this.movePinTo(id, point.x, point.y)
+      this.createCustomPin(point.x, point.y)
       return
     }
     if (this.placingUser) {
@@ -2137,11 +2151,10 @@ export class LayerMapUI {
 
   private readonly onTileMapDomMouseDown = (event: MouseEvent): void => {
     if (event.button !== 0) return
-    if (!this.pkg || this.pkg.kind !== 'tiles' || this.placingUser || this.placingPin) return
-    if (this.pinDrag) return
+    if (!this.pkg || this.pkg.kind !== 'tiles' || this.pinDrag) return
     const rect = this.maplibreEl.getBoundingClientRect()
-    const marker = this.hitMarker(event.clientX - rect.left, event.clientY - rect.top)
-    if (!marker || marker.id !== this.state.selectedMarkerId) return
+    const marker = this.hitMovingPin(event.clientX - rect.left, event.clientY - rect.top)
+    if (!marker) return
     const point = this.tileNormalizedAt(event.clientX, event.clientY)
     if (!point) return
     this.pinDrag = {
@@ -3394,10 +3407,10 @@ export class LayerMapUI {
       this.canvasEl.style.cursor = 'move'
       return
     }
-    if (!this.placingUser && !this.placingPin && !this.itineraryEdit) {
+    if (this.pinMove && !this.itineraryEdit) {
       const rect = this.canvasEl.getBoundingClientRect()
-      const marker = this.hitMarker(event.clientX - rect.left, event.clientY - rect.top)
-      if (marker && marker.id === this.state.selectedMarkerId) {
+      const marker = this.hitMovingPin(event.clientX - rect.left, event.clientY - rect.top)
+      if (marker) {
         const owner = this.pinDrag
         if (owner) return
         this.pinDrag = {
@@ -3532,7 +3545,16 @@ export class LayerMapUI {
       this.canvasEl.style.cursor = 'grab'
       return
     }
-    if (this.placingPin && !this.moved) {
+    if (this.pinMove && !this.moved && this.dragging) {
+      // A click (not a pan) while moving a pin does nothing; drag the pin instead.
+      this.dragging = false
+      if (this.canvasEl.hasPointerCapture(event.pointerId)) {
+        this.canvasEl.releasePointerCapture(event.pointerId)
+      }
+      this.canvasEl.style.cursor = 'grab'
+      return
+    }
+    if (this.placingPin === 'add' && !this.moved) {
       const rect = this.canvasEl.getBoundingClientRect()
       const width = this.canvasEl.clientWidth || 1
       const height = this.canvasEl.clientHeight || 1
@@ -3548,11 +3570,8 @@ export class LayerMapUI {
         this.canvasEl.releasePointerCapture(event.pointerId)
       }
       this.canvasEl.style.cursor = 'grab'
-      const mode = this.placingPin
-      const id = this.placingPinId
       this.cancelPinPlacement()
-      if (mode === 'add') this.createCustomPin(x, y)
-      else if (id) this.movePinTo(id, x, y)
+      this.createCustomPin(x, y)
       return
     }
     if (this.placingUser && !this.moved) {
@@ -4050,19 +4069,21 @@ export class LayerMapUI {
     actions.append(
       this.actionButton('居中', () => this.centerOnMarker(marker)),
       this.actionButton(atPlace ? '我在这里' : '移动我到这里', () => this.setUserPosition(marker.x, marker.y, marker.id), atPlace),
-      this.actionButton('移动图钉', () => this.startPinPlacement('move', marker.id), this.placingPin === 'move' && this.placingPinId === marker.id),
+      this.actionButton(
+        '移动图钉',
+        () => (this.pinMove?.id === marker.id ? this.cancelPlacements() : this.startPinPlacement('move', marker.id)),
+        this.pinMove?.id === marker.id,
+      ),
     )
+    // While this pin is being moved, undo/redo step through the current drags.
+    const session = this.pinMove?.id === marker.id ? this.pinMove : undefined
     const history = this.pinHistoryFor(marker.id)
-    const undo = this.actionButton(
-      `↶ 撤销${history?.past.length ? ` ${history.past.length}` : ''}`,
-      () => this.undoPin(marker.id),
-    )
-    undo.disabled = !history?.past.length
-    const redo = this.actionButton(
-      `↷ 重做${history?.future.length ? ` ${history.future.length}` : ''}`,
-      () => this.redoPin(marker.id),
-    )
-    redo.disabled = !history?.future.length
+    const undoCount = session ? session.cursor : history?.past.length ?? 0
+    const redoCount = session ? session.points.length - 1 - session.cursor : history?.future.length ?? 0
+    const undo = this.actionButton(`↶ 撤销${undoCount ? ` ${undoCount}` : ''}`, () => this.undoPin(marker.id))
+    undo.disabled = !undoCount
+    const redo = this.actionButton(`↷ 重做${redoCount ? ` ${redoCount}` : ''}`, () => this.redoPin(marker.id))
+    redo.disabled = !redoCount
     actions.append(undo, redo)
     if (!marker.custom && this.pinEdits.overrides[marker.id]) {
       actions.append(
@@ -6364,26 +6385,108 @@ export class LayerMapUI {
       return
     }
     this.cancelUserPlacement()
+    this.endPinMove(false)
+    const marker = mode === 'move' && id ? this.markerById(id) : undefined
+    if (mode === 'move' && !marker) return
     this.placingPin = mode
-    this.placingPinId = mode === 'move' ? id : undefined
-    this.showPlaceBar(
-      mode === 'add'
-        ? '点击地图放置我的图钉 · Esc 取消'
-        : '点击新位置放置这个图钉 · Esc 取消',
-    )
+    this.pinMove = marker
+      ? { id: marker.id, points: [{ x: marker.x, y: marker.y }], cursor: 0 }
+      : null
+    this.showPlaceBar(mode === 'add' ? '点击地图放置我的图钉 · Esc 取消' : '挪动图钉到新位置')
+    this.syncPlaceBar()
+    if (marker) this.renderDetail()
   }
 
   private cancelPinPlacement(): void {
+    this.endPinMove(false)
     this.placingPin = null
-    this.placingPinId = undefined
     this.hidePlaceBarIfIdle()
+    this.syncPlaceBar()
   }
 
   private cancelPlacements(): void {
+    this.endPinMove(false)
     this.placingUser = false
     this.placingPin = null
-    this.placingPinId = undefined
     if (this.placeBarEl) this.placeBarEl.hidden = true
+    this.syncPlaceBar()
+    this.syncToolButtons()
+  }
+
+  /** Move-pin buttons only while moving a pin; the plain cancel button otherwise. */
+  private syncPlaceBar(): void {
+    this.syncToolButtons()
+    if (!this.placeBarEl) return
+    const session = this.pinMove
+    for (const button of this.placeBarEl.querySelectorAll<HTMLButtonElement>('[data-pin-move]')) {
+      button.hidden = !session
+      if (button.dataset.pinMove === 'undo') button.disabled = !session || session.cursor <= 0
+      if (button.dataset.pinMove === 'redo') {
+        button.disabled = !session || session.cursor >= session.points.length - 1
+      }
+    }
+    const plainCancel = this.placeBarEl.querySelector<HTMLElement>('[data-user-action="cancel"]')
+    if (plainCancel) plainCancel.hidden = Boolean(session)
+  }
+
+  /** The pin being moved, when (sx, sy) is on it. Other pins stay locked. */
+  private hitMovingPin(sx: number, sy: number): LayerMarker | undefined {
+    const marker = this.pinMove ? this.markerById(this.pinMove.id) : undefined
+    if (!marker) return undefined
+    const width = this.canvasEl.clientWidth || 1
+    const height = this.canvasEl.clientHeight || 1
+    const [x, y] = this.project(marker.x, marker.y, width, height)
+    return Math.hypot(x - sx, y - sy) <= MARKER_HIT_RADIUS + 6 ? marker : undefined
+  }
+
+  /** Undo (-1) / redo (+1) one drag inside the current move session. */
+  private stepPinMove(delta: -1 | 1): void {
+    const session = this.pinMove
+    if (!session) return
+    const cursor = session.cursor + delta
+    if (cursor < 0 || cursor >= session.points.length) return
+    session.cursor = cursor
+    const point = session.points[cursor]
+    this.updatePinCoordinate(session.id, point.x, point.y, false)
+    this.syncPlaceBar()
+    this.renderDetail()
+  }
+
+  /**
+   * End the move session. Confirm keeps the final position as one move in the
+   * pin's history; otherwise the pin goes back to where the session started.
+   */
+  private endPinMove(confirm: boolean): void {
+    const session = this.pinMove
+    if (!session) return
+    this.pinMove = null
+    if (this.pinDrag?.id === session.id) {
+      this.pinDrag = null
+      this.maplibreMap?.dragPan.enable()
+    }
+    const origin = session.points[0]
+    const final = session.points[session.cursor]
+    const moved = Math.abs(origin.x - final.x) > 0.000001 || Math.abs(origin.y - final.y) > 0.000001
+    if (confirm) {
+      this.placingPin = null
+      this.hidePlaceBarIfIdle()
+      this.syncPlaceBar()
+      if (moved) {
+        this.recordPinMove(session.id, origin, final)
+        this.savePinEditsForMap()
+        this.afterPinMove(session.id, origin, final)
+        const marker = this.markerById(session.id)
+        if (marker) this.toast(`已移动 ${marker.name}`)
+      } else {
+        this.renderDetail()
+      }
+      return
+    }
+    if (moved) {
+      this.updatePinCoordinate(session.id, origin.x, origin.y, false)
+      this.savePinEditsForMap()
+    }
+    this.renderDetail()
     this.syncToolButtons()
   }
 
@@ -6467,6 +6570,10 @@ export class LayerMapUI {
   }
 
   private undoPin(id: string): void {
+    if (this.pinMove?.id === id) {
+      this.stepPinMove(-1)
+      return
+    }
     const history = this.pinHistoryFor(id)
     const marker = this.markerById(id)
     if (!history?.past.length || !marker) return
@@ -6480,6 +6587,10 @@ export class LayerMapUI {
   }
 
   private redoPin(id: string): void {
+    if (this.pinMove?.id === id) {
+      this.stepPinMove(1)
+      return
+    }
     const history = this.pinHistoryFor(id)
     const marker = this.markerById(id)
     if (!history?.future.length || !marker) return
@@ -6506,6 +6617,17 @@ export class LayerMapUI {
     this.pinDrag = null
     if (cancelled || !drag.moved) {
       this.updatePinCoordinate(drag.id, drag.originX, drag.originY, false)
+      return
+    }
+    const session = this.pinMove
+    if (session?.id === drag.id) {
+      const marker = this.markerById(drag.id)
+      if (!marker) return
+      session.points = session.points.slice(0, session.cursor + 1)
+      session.points.push({ x: marker.x, y: marker.y })
+      session.cursor = session.points.length - 1
+      this.syncPlaceBar()
+      this.renderDetail()
       return
     }
     const marker = this.markerById(drag.id)
@@ -6615,6 +6737,7 @@ export class LayerMapUI {
     const marker = this.markerById(id)
     const base = this.pkg?.markers.find((item) => item.id === id)
     if (!marker || !base || marker.custom) return
+    if (this.pinMove?.id === id) this.cancelPlacements()
     this.movePinTo(id, base.x, base.y)
   }
 

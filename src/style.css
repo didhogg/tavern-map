@@ -5143,6 +5143,22 @@
   cursor: pointer;
 }
 
+.tml-place-bar button[hidden] {
+  display: none;
+}
+
+.tml-place-bar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tml-place-bar .tml-place-confirm {
+  border-color: rgba(57, 181, 255, 0.8);
+  background: rgba(57, 181, 255, 0.32);
+  color: #ffffff;
+  font-weight: 600;
+}
+
 .tml-grid-panel {
   position: absolute;
   top: 12px;

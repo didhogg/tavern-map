@@ -40728,6 +40728,10 @@ var hH = `
         <div id="tml-place-bar" class="tml-place-bar" hidden>
           <span id="tml-place-text">点击地图放置“我的位置” · Esc 取消</span>
           <button type="button" data-user-action="cancel">取消</button>
+          <button type="button" data-pin-move="undo" title="撤销这次的上一步拖动 (Ctrl+Z)" hidden>撤销</button>
+          <button type="button" data-pin-move="redo" title="重做 (Ctrl+Shift+Z)" hidden>重做</button>
+          <button type="button" data-pin-move="cancel" title="放回原来的位置 (Esc)" hidden>取消</button>
+          <button type="button" data-pin-move="confirm" class="tml-place-confirm" title="保存新位置" hidden>确定</button>
         </div>
         <div id="tml-grid-panel" class="tml-grid-panel" hidden>
           <header class="tml-grid-head">
@@ -40889,7 +40893,7 @@ var hH = `
 	packageLoadToken = 0;
 	placingUser = !1;
 	placingPin = null;
-	placingPinId;
+	pinMove = null;
 	pinDrag = null;
 	gridPanelOpen = !1;
 	gridSaveTimer;
@@ -41015,7 +41019,7 @@ var hH = `
 		if (this.panelEl && !this.panelEl.hidden && !n && (e.metaKey || e.ctrlKey) && !e.altKey) {
 			let t = e.key.toLowerCase();
 			if (t === "z" || t === "y") {
-				let n = this.selectedMarker();
+				let n = this.pinMove ? this.markerById(this.pinMove.id) : this.selectedMarker();
 				if (n) {
 					t === "y" || e.shiftKey ? this.redoPin(n.id) : this.undoPin(n.id), e.preventDefault();
 					return;
@@ -41142,7 +41146,10 @@ var hH = `
 			passive: !1,
 			capture: !0
 		}), this.placeBarEl.addEventListener("click", (e) => {
-			e.target.closest("[data-user-action=\"cancel\"]") && this.cancelPlacements();
+			let t = e.target;
+			t.closest("[data-user-action=\"cancel\"]") && this.cancelPlacements();
+			let n = t.closest("[data-pin-move]")?.dataset.pinMove;
+			n === "undo" ? this.stepPinMove(-1) : n === "redo" ? this.stepPinMove(1) : n === "cancel" ? this.cancelPlacements() : n === "confirm" && this.endPinMove(!0);
 		});
 		let e = () => {
 			this.imagePanelOpen && this.positionImagePanel();
@@ -41262,8 +41269,8 @@ var hH = `
 			let e = this.itinerary?.stops.length ?? this.itineraryDraft?.stops.length ?? 0;
 			r.textContent = e > 0 ? `行程 ${e}` : "行程", r.classList.toggle("active", this.itineraryEdit || this.routeShelfOpen);
 		}
-		let i = this.selectedMarker(), a = i ? this.pinHistoryFor(i.id) : void 0, o = this.panelEl.querySelector("[data-action=\"undo-pin\"]"), s = this.panelEl.querySelector("[data-action=\"redo-pin\"]");
-		o && (o.disabled = !a?.past.length), s && (s.disabled = !a?.future.length);
+		let i = this.selectedMarker(), a = i ? this.pinHistoryFor(i.id) : void 0, o = this.panelEl.querySelector("[data-action=\"undo-pin\"]"), s = this.panelEl.querySelector("[data-action=\"redo-pin\"]"), c = i && this.pinMove?.id === i.id ? this.pinMove : void 0;
+		o && (o.disabled = c ? c.cursor <= 0 : !a?.past.length), s && (s.disabled = c ? c.cursor >= c.points.length - 1 : !a?.future.length);
 	}
 	async refreshPackages() {
 		if (this.metas = await Hz(), this.packageSelectEl.replaceChildren(), this.metas.length === 0) {
@@ -41310,6 +41317,7 @@ var hH = `
 		return e.custom ? this.customPinRecord(e.id)?.links ?? e.links ?? [] : this.state.links?.[e.id] ?? [];
 	}
 	async loadPackage(e) {
+		this.cancelPlacements();
 		let t = await qz(e);
 		if (!t) {
 			this.pkg = null, this.pinEdits = aV(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.renderEmpty("地图包读取失败或已不存在。"), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.requestDraw();
@@ -41602,9 +41610,9 @@ var hH = `
 			this.addItineraryStop(t.x, t.y, n);
 			return;
 		}
-		if (this.placingPin) {
-			let e = this.placingPin, n = this.placingPinId;
-			this.cancelPinPlacement(), e === "add" ? this.createCustomPin(t.x, t.y) : n && this.movePinTo(n, t.x, t.y);
+		if (this.pinMove) return;
+		if (this.placingPin === "add") {
+			this.cancelPinPlacement(), this.createCustomPin(t.x, t.y);
 			return;
 		}
 		if (this.placingUser) {
@@ -41621,9 +41629,9 @@ var hH = `
 		return this.lngLatToNormalized(i.lng, i.lat);
 	}
 	onTileMapDomMouseDown = (e) => {
-		if (e.button !== 0 || !this.pkg || this.pkg.kind !== "tiles" || this.placingUser || this.placingPin || this.pinDrag) return;
-		let t = this.maplibreEl.getBoundingClientRect(), n = this.hitMarker(e.clientX - t.left, e.clientY - t.top);
-		if (!n || n.id !== this.state.selectedMarkerId) return;
+		if (e.button !== 0 || !this.pkg || this.pkg.kind !== "tiles" || this.pinDrag) return;
+		let t = this.maplibreEl.getBoundingClientRect(), n = this.hitMovingPin(e.clientX - t.left, e.clientY - t.top);
+		if (!n) return;
 		let r = this.tileNormalizedAt(e.clientX, e.clientY);
 		r && (this.pinDrag = {
 			id: n.id,
@@ -42169,9 +42177,9 @@ var hH = `
 					y: e.clientY
 				}, this.alignStartRect = { ...this.alignRect }, this.canvasEl.setPointerCapture(e.pointerId), this.canvasEl.style.cursor = "move";
 			} else {
-				if (!this.placingUser && !this.placingPin && !this.itineraryEdit) {
-					let t = this.canvasEl.getBoundingClientRect(), n = this.hitMarker(e.clientX - t.left, e.clientY - t.top);
-					if (n && n.id === this.state.selectedMarkerId) {
+				if (this.pinMove && !this.itineraryEdit) {
+					let t = this.canvasEl.getBoundingClientRect(), n = this.hitMovingPin(e.clientX - t.left, e.clientY - t.top);
+					if (n) {
 						if (this.pinDrag) return;
 						this.pinDrag = {
 							id: n.id,
@@ -42236,11 +42244,10 @@ var hH = `
 	onPointerUp(e) {
 		if (this.pinDrag) this.finishPinDrag(e);
 		else if (e.type === "pointercancel" && (this.placingUser || this.placingPin)) this.cancelPlacements(), this.dragging = !1, this.canvasEl.hasPointerCapture(e.pointerId) && this.canvasEl.releasePointerCapture(e.pointerId), this.canvasEl.style.cursor = "grab";
-		else if (this.placingPin && !this.moved) {
+		else if (this.pinMove && !this.moved && this.dragging) this.dragging = !1, this.canvasEl.hasPointerCapture(e.pointerId) && this.canvasEl.releasePointerCapture(e.pointerId), this.canvasEl.style.cursor = "grab";
+		else if (this.placingPin === "add" && !this.moved) {
 			let t = this.canvasEl.getBoundingClientRect(), n = this.canvasEl.clientWidth || 1, r = this.canvasEl.clientHeight || 1, [i, a] = this.unproject(e.clientX - t.left, e.clientY - t.top, n, r);
-			this.dragging = !1, this.moved = !1, this.canvasEl.hasPointerCapture(e.pointerId) && this.canvasEl.releasePointerCapture(e.pointerId), this.canvasEl.style.cursor = "grab";
-			let o = this.placingPin, s = this.placingPinId;
-			this.cancelPinPlacement(), o === "add" ? this.createCustomPin(i, a) : s && this.movePinTo(s, i, a);
+			this.dragging = !1, this.moved = !1, this.canvasEl.hasPointerCapture(e.pointerId) && this.canvasEl.releasePointerCapture(e.pointerId), this.canvasEl.style.cursor = "grab", this.cancelPinPlacement(), this.createCustomPin(i, a);
 		} else if (this.placingUser && !this.moved) {
 			let t = this.canvasEl.getBoundingClientRect(), n = this.canvasEl.clientWidth || 1, r = this.canvasEl.clientHeight || 1, [i, a] = this.unproject(e.clientX - t.left, e.clientY - t.top, n, r);
 			this.dragging = !1, this.canvasEl.hasPointerCapture(e.pointerId) && this.canvasEl.releasePointerCapture(e.pointerId), this.canvasEl.style.cursor = "grab", this.setUserPosition(i, a, void 0, !e.altKey);
@@ -42481,19 +42488,19 @@ var hH = `
 			t.sourceLabel || (t.source === "mapgenie" ? "Map Genie 本地快照" : "Fandom 本地导入")
 		].filter(Boolean).join(" · ");
 		let h = document.createElement("div");
-		h.className = "tml-detail-actions", h.append(this.actionButton("居中", () => this.centerOnMarker(e)), this.actionButton(i ? "我在这里" : "移动我到这里", () => this.setUserPosition(e.x, e.y, e.id), i), this.actionButton("移动图钉", () => this.startPinPlacement("move", e.id), this.placingPin === "move" && this.placingPinId === e.id));
-		let g = this.pinHistoryFor(e.id), _ = this.actionButton(`↶ 撤销${g?.past.length ? ` ${g.past.length}` : ""}`, () => this.undoPin(e.id));
-		_.disabled = !g?.past.length;
-		let v = this.actionButton(`↷ 重做${g?.future.length ? ` ${g.future.length}` : ""}`, () => this.redoPin(e.id));
-		v.disabled = !g?.future.length, h.append(_, v), !e.custom && this.pinEdits.overrides[e.id] && h.append(this.actionButton("恢复原位", () => this.resetPinPosition(e.id), !1, "tml-danger-text")), e.custom && h.append(this.actionButton("删除图钉", () => this.deleteCustomPin(e.id), !1, "tml-danger-text"));
-		let y = e.custom ? this.customPinNameSection(e, u) : null;
-		o.append(s, p, h), y && o.append(y), o.append(this.sourceSection(e)), o.append(this.linksSection(e)), o.append(this.noteSection(e));
-		let b = document.createElement("div");
-		b.className = "tml-ai-row";
-		let x = document.createElement("span");
-		x.textContent = i ? "我在的地点会进入 AI 上下文" : "点开只是查看；AI 不会把这里当成我在的地点";
-		let S = this.actionButton("预览 AI", () => this.showContextStatus());
-		return b.append(x, S), o.append(b), o;
+		h.className = "tml-detail-actions", h.append(this.actionButton("居中", () => this.centerOnMarker(e)), this.actionButton(i ? "我在这里" : "移动我到这里", () => this.setUserPosition(e.x, e.y, e.id), i), this.actionButton("移动图钉", () => this.pinMove?.id === e.id ? this.cancelPlacements() : this.startPinPlacement("move", e.id), this.pinMove?.id === e.id));
+		let g = this.pinMove?.id === e.id ? this.pinMove : void 0, _ = this.pinHistoryFor(e.id), v = g ? g.cursor : _?.past.length ?? 0, y = g ? g.points.length - 1 - g.cursor : _?.future.length ?? 0, b = this.actionButton(`↶ 撤销${v ? ` ${v}` : ""}`, () => this.undoPin(e.id));
+		b.disabled = !v;
+		let x = this.actionButton(`↷ 重做${y ? ` ${y}` : ""}`, () => this.redoPin(e.id));
+		x.disabled = !y, h.append(b, x), !e.custom && this.pinEdits.overrides[e.id] && h.append(this.actionButton("恢复原位", () => this.resetPinPosition(e.id), !1, "tml-danger-text")), e.custom && h.append(this.actionButton("删除图钉", () => this.deleteCustomPin(e.id), !1, "tml-danger-text"));
+		let S = e.custom ? this.customPinNameSection(e, u) : null;
+		o.append(s, p, h), S && o.append(S), o.append(this.sourceSection(e)), o.append(this.linksSection(e)), o.append(this.noteSection(e));
+		let C = document.createElement("div");
+		C.className = "tml-ai-row";
+		let w = document.createElement("span");
+		w.textContent = i ? "我在的地点会进入 AI 上下文" : "点开只是查看；AI 不会把这里当成我在的地点";
+		let T = this.actionButton("预览 AI", () => this.showContextStatus());
+		return C.append(w, T), o.append(C), o;
 	}
 	markerFavoriteKey(e) {
 		return KB(this.pkg?.id ?? "", e.id);
@@ -43670,13 +43677,61 @@ var hH = `
 		this.placingUser = !1, this.hidePlaceBarIfIdle();
 	}
 	startPinPlacement(e, t) {
-		this.pkg ? (this.cancelUserPlacement(), this.placingPin = e, this.placingPinId = e === "move" ? t : void 0, this.showPlaceBar(e === "add" ? "点击地图放置我的图钉 · Esc 取消" : "点击新位置放置这个图钉 · Esc 取消")) : this.toast("先导入或选择一个地图包");
+		if (!this.pkg) {
+			this.toast("先导入或选择一个地图包");
+			return;
+		}
+		this.cancelUserPlacement(), this.endPinMove(!1);
+		let n = e === "move" && t ? this.markerById(t) : void 0;
+		(e !== "move" || n) && (this.placingPin = e, this.pinMove = n ? {
+			id: n.id,
+			points: [{
+				x: n.x,
+				y: n.y
+			}],
+			cursor: 0
+		} : null, this.showPlaceBar(e === "add" ? "点击地图放置我的图钉 · Esc 取消" : "挪动图钉到新位置"), this.syncPlaceBar(), n && this.renderDetail());
 	}
 	cancelPinPlacement() {
-		this.placingPin = null, this.placingPinId = void 0, this.hidePlaceBarIfIdle();
+		this.endPinMove(!1), this.placingPin = null, this.hidePlaceBarIfIdle(), this.syncPlaceBar();
 	}
 	cancelPlacements() {
-		this.placingUser = !1, this.placingPin = null, this.placingPinId = void 0, this.placeBarEl && (this.placeBarEl.hidden = !0), this.syncToolButtons();
+		this.endPinMove(!1), this.placingUser = !1, this.placingPin = null, this.placeBarEl && (this.placeBarEl.hidden = !0), this.syncPlaceBar(), this.syncToolButtons();
+	}
+	syncPlaceBar() {
+		if (this.syncToolButtons(), !this.placeBarEl) return;
+		let e = this.pinMove;
+		for (let t of this.placeBarEl.querySelectorAll("[data-pin-move]")) t.hidden = !e, t.dataset.pinMove === "undo" && (t.disabled = !e || e.cursor <= 0), t.dataset.pinMove === "redo" && (t.disabled = !e || e.cursor >= e.points.length - 1);
+		let t = this.placeBarEl.querySelector("[data-user-action=\"cancel\"]");
+		t && (t.hidden = !!e);
+	}
+	hitMovingPin(e, t) {
+		let n = this.pinMove ? this.markerById(this.pinMove.id) : void 0;
+		if (!n) return;
+		let r = this.canvasEl.clientWidth || 1, i = this.canvasEl.clientHeight || 1, [a, o] = this.project(n.x, n.y, r, i);
+		return Math.hypot(a - e, o - t) <= 18 ? n : void 0;
+	}
+	stepPinMove(e) {
+		let t = this.pinMove;
+		if (!t) return;
+		let n = t.cursor + e;
+		if (n < 0 || n >= t.points.length) return;
+		t.cursor = n;
+		let r = t.points[n];
+		this.updatePinCoordinate(t.id, r.x, r.y, !1), this.syncPlaceBar(), this.renderDetail();
+	}
+	endPinMove(e) {
+		let t = this.pinMove;
+		if (!t) return;
+		this.pinMove = null, this.pinDrag?.id === t.id && (this.pinDrag = null, this.maplibreMap?.dragPan.enable());
+		let n = t.points[0], r = t.points[t.cursor], i = Math.abs(n.x - r.x) > 1e-6 || Math.abs(n.y - r.y) > 1e-6;
+		if (e) {
+			if (this.placingPin = null, this.hidePlaceBarIfIdle(), this.syncPlaceBar(), i) {
+				this.recordPinMove(t.id, n, r), this.savePinEditsForMap(), this.afterPinMove(t.id, n, r);
+				let e = this.markerById(t.id);
+				e && this.toast(`已移动 ${e.name}`);
+			} else this.renderDetail();
+		} else i && (this.updatePinCoordinate(t.id, n.x, n.y, !1), this.savePinEditsForMap()), this.renderDetail(), this.syncToolButtons();
 	}
 	savePinEditsForMap() {
 		this.pkg && sV(this.pkg.id, this.pinEdits);
@@ -43734,6 +43789,10 @@ var hH = `
 		this.recordPinMove(e, i, a), this.savePinEditsForMap(), this.afterPinMove(e, i, a), this.toast(`已移动 ${r.name}`);
 	}
 	undoPin(e) {
+		if (this.pinMove?.id === e) {
+			this.stepPinMove(-1);
+			return;
+		}
 		let t = this.pinHistoryFor(e), n = this.markerById(e);
 		if (!t?.past.length || !n) return;
 		let r = t.past.pop();
@@ -43747,6 +43806,10 @@ var hH = `
 		}, r), this.toast(`已撤销 ${n.name} 的移动`);
 	}
 	redoPin(e) {
+		if (this.pinMove?.id === e) {
+			this.stepPinMove(1);
+			return;
+		}
 		let t = this.pinHistoryFor(e), n = this.markerById(e);
 		if (!t?.future.length || !n) return;
 		let r = t.future.pop();
@@ -43769,9 +43832,19 @@ var hH = `
 			this.updatePinCoordinate(t.id, t.originX, t.originY, !1);
 			return;
 		}
-		let n = this.markerById(t.id), r = n ? {
-			x: n.x,
-			y: n.y
+		let n = this.pinMove;
+		if (n?.id === t.id) {
+			let e = this.markerById(t.id);
+			if (!e) return;
+			n.points = n.points.slice(0, n.cursor + 1), n.points.push({
+				x: e.x,
+				y: e.y
+			}), n.cursor = n.points.length - 1, this.syncPlaceBar(), this.renderDetail();
+			return;
+		}
+		let r = this.markerById(t.id), i = r ? {
+			x: r.x,
+			y: r.y
 		} : {
 			x: t.originX,
 			y: t.originY
@@ -43779,10 +43852,10 @@ var hH = `
 		this.recordPinMove(t.id, {
 			x: t.originX,
 			y: t.originY
-		}, r), this.savePinEditsForMap(), this.afterPinMove(t.id, {
+		}, i), this.savePinEditsForMap(), this.afterPinMove(t.id, {
 			x: t.originX,
 			y: t.originY
-		}, r);
+		}, i);
 	}
 	createCustomPin(e, t) {
 		if (!this.pkg) return;
@@ -43820,7 +43893,7 @@ var hH = `
 	}
 	resetPinPosition(e) {
 		let t = this.markerById(e), n = this.pkg?.markers.find((t) => t.id === e);
-		t && n && !t.custom && this.movePinTo(e, n.x, n.y);
+		t && n && !t.custom && (this.pinMove?.id === e && this.cancelPlacements(), this.movePinTo(e, n.x, n.y));
 	}
 	nearestMarkerAt(e, t) {
 		if (!this.pkg) return;
