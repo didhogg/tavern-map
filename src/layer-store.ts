@@ -8,9 +8,20 @@ import type {
 } from './layer-types'
 
 const DB_NAME = 'tavern-map-layer'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const PACKAGE_STORE = 'packages'
 const META_STORE = 'meta'
+/**
+ * Heavy binary assets live in their own store, keyed by package id. Editing a
+ * package setting (grid, name, tile template, image fit…) then rewrites only
+ * the small package record. Before 0.7.2 the assets sat inside the package
+ * record, so every grid edit re-stored all tiles (21k blobs / 251 MB for the
+ * Skyrim HD map) and overlapping saves failed with NotReadableError.
+ */
+const ASSET_STORE = 'assets'
+const ASSET_FIELDS = ['tileFiles', 'image'] as const
+type AssetField = (typeof ASSET_FIELDS)[number]
+type PackageAssets = Partial<Pick<LayerMapPackage, AssetField>>
 
 let databasePromise: Promise<IDBDatabase> | null = null
 
@@ -26,8 +37,18 @@ function openDatabase(): Promise<IDBDatabase> {
         if (!db.objectStoreNames.contains(META_STORE)) {
           db.createObjectStore(META_STORE, { keyPath: 'id' })
         }
+        if (!db.objectStoreNames.contains(ASSET_STORE)) {
+          db.createObjectStore(ASSET_STORE)
+        }
       }
-      request.onsuccess = () => resolve(request.result)
+      request.onsuccess = () => {
+        const db = request.result
+        db.onversionchange = () => {
+          db.close()
+          databasePromise = null
+        }
+        resolve(db)
+      }
       request.onerror = () => reject(request.error ?? new Error('Layer map IndexedDB open failed'))
     })
   }
@@ -175,17 +196,75 @@ export async function listLayerPackages(): Promise<LayerPackageMeta[]> {
   }
 }
 
+function splitAssets(pkg: LayerMapPackage): { record: LayerMapPackage; assets: PackageAssets } {
+  const record = { ...pkg }
+  const assets: PackageAssets = {}
+  for (const field of ASSET_FIELDS) {
+    if (record[field] !== undefined) (assets as Record<string, unknown>)[field] = record[field]
+    delete record[field]
+  }
+  return { record, assets }
+}
+
+function hasInlineAssets(record: LayerMapPackage): boolean {
+  return ASSET_FIELDS.some((field) => record[field] !== undefined)
+}
+
+type StoredPackage = {
+  record: LayerMapPackage
+  assets: PackageAssets | undefined
+}
+
+async function readStored(db: IDBDatabase, id: string): Promise<StoredPackage | undefined> {
+  const transaction = db.transaction([PACKAGE_STORE, ASSET_STORE], 'readonly')
+  const [record, assets] = await Promise.all([
+    requestResult(
+      transaction.objectStore(PACKAGE_STORE).get(id) as IDBRequest<LayerMapPackage | undefined>,
+    ),
+    requestResult(
+      transaction.objectStore(ASSET_STORE).get(id) as IDBRequest<PackageAssets | undefined>,
+    ),
+  ])
+  return record ? { record, assets } : undefined
+}
+
+/** A package as the app sees it: the small record plus its assets. */
+function joinStored(stored: StoredPackage): LayerMapPackage {
+  // Records written before 0.7.2 still carry their assets inline.
+  if (hasInlineAssets(stored.record) || !stored.assets) return stored.record
+  return { ...stored.record, ...stored.assets }
+}
+
 export async function getLayerPackage(id: string): Promise<LayerMapPackage | undefined> {
   try {
     const db = await openDatabase()
-    const transaction = db.transaction(PACKAGE_STORE, 'readonly')
-    return await requestResult(
-      transaction.objectStore(PACKAGE_STORE).get(id) as IDBRequest<LayerMapPackage | undefined>,
-    )
+    const stored = await readStored(db, id)
+    return stored ? joinStored(stored) : undefined
   } catch (error) {
     console.warn('[tavern-map] layer package read failed', error)
     return undefined
   }
+}
+
+/**
+ * Writes to one package run one after another. A write that starts while an
+ * earlier one is still storing assets would otherwise read assets that the
+ * earlier write is about to replace.
+ */
+const writeQueues = new Map<string, Promise<unknown>>()
+
+function queued<T>(id: string, task: () => Promise<T>): Promise<T> {
+  const previous = writeQueues.get(id) ?? Promise.resolve()
+  const run = previous.then(task, task)
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  writeQueues.set(id, settled)
+  void settled.then(() => {
+    if (writeQueues.get(id) === settled) writeQueues.delete(id)
+  })
+  return run
 }
 
 export type StorageEstimate = {
@@ -248,12 +327,21 @@ export async function ensureLayerStorage(neededBytes: number): Promise<void> {
   }
 }
 
-export async function putLayerPackage(
+export function putLayerPackage(pkg: LayerMapPackage, signal?: AbortSignal): Promise<void> {
+  return queued(pkg.id, () => writePackage(pkg, { writeAssets: true }, signal))
+}
+
+/**
+ * Store a package. The small record and its meta are always written; the
+ * assets only when `writeAssets` is set, so setting edits stay cheap.
+ */
+async function writePackage(
   pkg: LayerMapPackage,
+  options: { writeAssets: boolean },
   signal?: AbortSignal,
 ): Promise<void> {
   const db = await openDatabase()
-  const transaction = db.transaction([PACKAGE_STORE, META_STORE], 'readwrite')
+  const transaction = db.transaction([PACKAGE_STORE, META_STORE, ASSET_STORE], 'readwrite')
   const abort = (): void => {
     try {
       transaction.abort()
@@ -262,7 +350,9 @@ export async function putLayerPackage(
     }
   }
   signal?.addEventListener('abort', abort, { once: true })
-  transaction.objectStore(PACKAGE_STORE).put(pkg)
+  const { record, assets } = splitAssets(pkg)
+  transaction.objectStore(PACKAGE_STORE).put(record)
+  if (options.writeAssets) transaction.objectStore(ASSET_STORE).put(assets, pkg.id)
   transaction.objectStore(META_STORE).put(layerMeta(pkg))
   try {
     await transactionDone(transaction)
@@ -381,18 +471,28 @@ function mergeOptional<T extends object>(current: T, patch: Partial<T>): T {
   return next
 }
 
-export async function updateLayerPackage(
+export function updateLayerPackage(
   id: string,
   patch: Partial<LayerMapPackage>,
 ): Promise<LayerMapPackage | undefined> {
-  const current = await getLayerPackage(id)
-  if (!current) return undefined
-  const next = mergeOptional(current, patch)
-  next.id = current.id
-  next.createdAt = current.createdAt
-  next.updatedAt = Date.now()
-  await putLayerPackage(next)
-  return next
+  return queued(id, async () => {
+    const db = await openDatabase()
+    const stored = await readStored(db, id)
+    if (!stored) return undefined
+    const current = joinStored(stored)
+    const next = mergeOptional(current, patch)
+    next.id = current.id
+    next.createdAt = current.createdAt
+    next.updatedAt = Date.now()
+    // Assets are rewritten only when they change, or once to move a pre-0.7.2
+    // record's inline assets into the asset store.
+    const writeAssets =
+      hasInlineAssets(stored.record) ||
+      !stored.assets ||
+      ASSET_FIELDS.some((field) => field in patch)
+    await writePackage(next, { writeAssets })
+    return next
+  })
 }
 
 export async function renameLayerPackage(
@@ -479,10 +579,13 @@ export async function setLayerTiles(
   return updateLayerPackage(id, { tileFiles, tile })
 }
 
-export async function deleteLayerPackage(id: string): Promise<void> {
-  const db = await openDatabase()
-  const transaction = db.transaction([PACKAGE_STORE, META_STORE], 'readwrite')
-  transaction.objectStore(PACKAGE_STORE).delete(id)
-  transaction.objectStore(META_STORE).delete(id)
-  await transactionDone(transaction)
+export function deleteLayerPackage(id: string): Promise<void> {
+  return queued(id, async () => {
+    const db = await openDatabase()
+    const transaction = db.transaction([PACKAGE_STORE, META_STORE, ASSET_STORE], 'readwrite')
+    transaction.objectStore(PACKAGE_STORE).delete(id)
+    transaction.objectStore(META_STORE).delete(id)
+    transaction.objectStore(ASSET_STORE).delete(id)
+    await transactionDone(transaction)
+  })
 }

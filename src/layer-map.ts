@@ -109,6 +109,14 @@ const LABEL_TILE_ZOOM = 11
 const MARKER_HIT_RADIUS = 12
 const REGION_HIT_MIN_ZOOM = 8
 const REGION_LABEL_MIN_ZOOM = 8
+const TILE_CLUSTER_BELOW_ZOOM = 10.8
+const STREET_LABEL_TILE_ZOOM = 14
+/**
+ * The tile zoom thresholds above were tuned on Map Genie maps whose tile sets
+ * start at zoom 8. Other maps start elsewhere (RDR2 2–7, Skyrim HD 6–12), so a
+ * fixed zoom 11 meant labels never appeared there. See tileZoomThreshold().
+ */
+const TILE_ZOOM_TUNED_MIN = 8
 const MARKER_INDEX_CELL = 0.025
 const LABEL_CELL_PX = 48
 const IMAGE_PANEL_WIDTH = 340
@@ -1252,13 +1260,14 @@ export class LayerMapUI {
         this.panelEl.classList.toggle('filters-open')
         break
       case 'labels':
-        this.state.showLabels = !this.state.showLabels
+        // Labels are on unless explicitly turned off (undefined = on).
+        this.state.showLabels = this.state.showLabels === false
         this.syncToolButtons()
         this.persist()
         this.requestDraw()
         break
       case 'regions':
-        this.state.showRegions = !this.state.showRegions
+        this.state.showRegions = this.state.showRegions === false
         this.syncToolButtons()
         this.persist()
         this.requestDraw()
@@ -2443,7 +2452,7 @@ export class LayerMapUI {
   private drawRegions(context: CanvasRenderingContext2D, width: number, height: number): void {
     const pkg = this.pkg
     if (!pkg || this.state.showRegions === false) return
-    if (pkg.kind === 'tiles' && this.view.zoom < REGION_HIT_MIN_ZOOM) return
+    if (pkg.kind === 'tiles' && this.view.zoom < this.tileZoomThreshold(REGION_HIT_MIN_ZOOM)) return
     const project = (x: number, y: number): [number, number] => this.project(x, y, width, height)
     pkg.regions.forEach((region, index) => {
       const selected = region.id === this.state.selectedRegionId
@@ -2510,7 +2519,9 @@ export class LayerMapUI {
   ): void {
     const pkg = this.pkg
     if (!pkg || this.state.showRegions === false || pkg.regions.length === 0) return
-    if (this.view.zoom < REGION_LABEL_MIN_ZOOM) return
+    const regionLabelZoom =
+      pkg.kind === 'tiles' ? this.tileZoomThreshold(REGION_LABEL_MIN_ZOOM) : REGION_LABEL_MIN_ZOOM
+    if (this.view.zoom < regionLabelZoom) return
     const zoom = this.view.zoom
     const size = pkg.kind === 'tiles' ? Math.max(11, Math.min(17, 10 + (zoom - 7) * 1.15)) : 12
     for (const region of pkg.regions) {
@@ -2666,7 +2677,20 @@ export class LayerMapUI {
 
   private shouldCluster(pkg: LayerMapPackage, visibleCount: number): boolean {
     if (visibleCount < 500) return false
-    return pkg.kind === 'image' ? this.view.zoom < 1.55 : this.view.zoom < 10.8
+    return pkg.kind === 'image'
+      ? this.view.zoom < 1.55
+      : this.view.zoom < this.tileZoomThreshold(TILE_CLUSTER_BELOW_ZOOM)
+  }
+
+  /**
+   * A tile zoom threshold for the current package: the tuned level shifted by
+   * how far this map's tile set starts below zoom 8. Never later than the tuned
+   * level, so maps that already worked keep their behavior.
+   */
+  private tileZoomThreshold(tunedLevel: number): number {
+    const minZoom = this.pkg?.tile?.minZoom
+    if (minZoom == null || !Number.isFinite(minZoom)) return tunedLevel
+    return Math.min(tunedLevel, tunedLevel - TILE_ZOOM_TUNED_MIN + minZoom)
   }
 
   private drawMarkerClusters(
@@ -2857,9 +2881,7 @@ export class LayerMapUI {
     const labelThreshold =
       pkg.kind === 'image'
         ? LABEL_IMAGE_ZOOM
-        : pkg.streets?.length
-          ? 14
-          : LABEL_TILE_ZOOM
+        : this.tileZoomThreshold(pkg.streets?.length ? STREET_LABEL_TILE_ZOOM : LABEL_TILE_ZOOM)
     const showLabels = this.state.showLabels !== false && this.view.zoom >= labelThreshold
     const visible = this.markersInView(width, height).filter(
       (marker) => !hidden.has(marker.categoryId),
@@ -6947,8 +6969,12 @@ export class LayerMapUI {
   private async saveGridNow(): Promise<void> {
     const pkg = this.pkg
     if (!pkg?.grid) return
-    const updated = await updateLayerPackage(pkg.id, { grid: { ...pkg.grid } })
-    if (updated && this.pkg?.id === updated.id) this.pkg = updated
+    const updated = await updateLayerPackage(pkg.id, { grid: { ...pkg.grid } }).catch((error) => {
+      this.toast(`保存网格失败：${errorMessage(error)}`)
+      return undefined
+    })
+    // Keep the grid being edited: inputs may have changed while this save ran.
+    if (updated && this.pkg?.id === updated.id) this.pkg = { ...updated, grid: this.pkg.grid }
   }
 
   private applyGridInputs(): void {
