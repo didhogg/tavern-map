@@ -37362,11 +37362,11 @@ async function mR(e, t, n) {
 	let r = new Uint8Array(await oR(e, t.localOffset, t.localOffset + 30)), i = new DataView(r.buffer, r.byteOffset, r.byteLength);
 	if (r.byteLength < 30 || cR(i, 0) !== $L) throw Error(`ZIP 文件头损坏：${t.path}`);
 	let a = sR(i, 26), o = sR(i, 28), s = t.localOffset + 30 + a + o, c = e.slice(s, s + t.compressedSize), l = iR(t.path);
-	if (t.method === 0) return c.slice(0, c.size, l);
+	if (t.method === 0) return new Blob([await c.arrayBuffer()], { type: l });
 	let u = globalThis.DecompressionStream;
 	if (!u) throw Error("当前浏览器不支持 ZIP 解压，请改用文件夹导入");
-	let d = c.stream().pipeThrough(new u("deflate-raw")), f = await new Response(d).blob();
-	return f.slice(0, f.size, l);
+	let d = c.stream().pipeThrough(new u("deflate-raw"));
+	return new Blob([await new Response(d).arrayBuffer()], { type: l });
 }
 async function hR(e, t = {}) {
 	let { entries: n, centralOffset: r, centralSize: i } = await pR(e), a = t.shouldRead ?? nR, o = n.filter((e) => !e.path.startsWith("__MACOSX/") && !e.path.split("/").includes(".DS_Store") && a(e.path)), s = [], c = 0;

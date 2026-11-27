@@ -257,16 +257,19 @@ async function extractEntry(
   const dataStart = entry.localOffset + 30 + nameLength + extraLength
   const compressed = file.slice(dataStart, dataStart + entry.compressedSize)
   const type = mimeForPath(entry.path)
+  // Always hand out a Blob that owns its bytes. A slice still references the
+  // whole archive File, and WebKit (TauriTavern / Safari) copies that entire
+  // backing file into a temporary file for every such Blob stored in
+  // IndexedDB: one 255 MB tile ZIP became hundreds of 255 MB temp copies.
   if (entry.method === 0) {
-    return compressed.slice(0, compressed.size, type)
+    return new Blob([await compressed.arrayBuffer()], { type })
   }
   const Decompression = globalThis.DecompressionStream
   if (!Decompression) {
     throw new Error('当前浏览器不支持 ZIP 解压，请改用文件夹导入')
   }
   const stream = compressed.stream().pipeThrough(new Decompression('deflate-raw'))
-  const raw = await new Response(stream).blob()
-  return raw.slice(0, raw.size, type)
+  return new Blob([await new Response(stream).arrayBuffer()], { type })
 }
 
 /**
