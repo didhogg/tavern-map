@@ -2556,6 +2556,63 @@
   cursor: pointer;
 }
 
+.tml-section-head,
+.tml-links-head,
+.tml-ai-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tml-links-head {
+  cursor: default;
+}
+
+.tml-ai-toggle-row {
+  justify-content: flex-end;
+  margin: 3px 0 5px;
+}
+
+.tml-ai-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--tm-muted);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tml-ai-toggle input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--tm-brass);
+  cursor: pointer;
+}
+
+.tml-ai-toggle.is-off {
+  color: var(--tm-faint);
+}
+
+.tml-ai-toggle.is-disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.tml-ai-toggle.is-disabled input {
+  cursor: not-allowed;
+}
+
+.tml-note-label {
+  flex: 1 1 auto;
+}
+
 .tml-source-text {
   max-height: 150px;
   margin-top: 6px;
@@ -2732,6 +2789,11 @@
   display: block;
   color: var(--tm-muted);
   font-size: 10px;
+}
+
+.tml-note-section .tml-ai-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
 }
 
 .tml-note-section textarea {

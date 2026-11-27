@@ -153,6 +153,14 @@ export type LayerPinEdits = {
   updatedAt: number
 }
 
+export type LayerAIPart = 'source' | 'wiki' | 'note'
+
+/**
+ * Per-place opt-outs for AI content. Missing parts are enabled by default;
+ * only an explicit false disables one part for that place.
+ */
+export type LayerPlaceAIFlags = Partial<Record<LayerAIPart, boolean>>
+
 export type LayerTileConfig = {
   template: string
   /** Optional remote tile URL template for Map Genie high-resolution fallback. */

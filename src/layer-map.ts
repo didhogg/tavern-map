@@ -33,6 +33,7 @@ import {
   DEFAULT_LAYER_STATE,
   loadLayerState,
   saveLayerState,
+  type LayerAIPart,
   type LayerCategory,
   type LayerCategoryGroup,
   type LayerChatState,
@@ -49,6 +50,7 @@ import {
   type LayerNearbyPlace,
   type LayerPinEdits,
   type LayerPinPoint,
+  type LayerPlaceAIFlags,
   type LayerUserPosition,
   type LayerPackageMeta,
   type LayerRegion,
@@ -81,6 +83,11 @@ import {
   removePinEdits,
   savePinEdits,
 } from './layer-pin-store'
+import {
+  loadPlaceAIFlags,
+  removePlaceAIFlags,
+  savePlaceAIFlags,
+} from './layer-ai-store'
 import { LayerWindowController } from './layer-window'
 import {
   removeStoredLayerPackage,
@@ -470,6 +477,7 @@ export class LayerMapUI {
   private pkg: LayerMapPackage | null = null
   private metas: LayerPackageMeta[] = []
   private pinEdits: LayerPinEdits = emptyPinEdits()
+  private placeAIFlags: Record<string, LayerPlaceAIFlags> = {}
   private effectiveMarkerList: LayerMarker[] = []
   private effectiveCategoryList: LayerCategory[] = []
   private effectiveGroupList: LayerCategoryGroup[] = []
@@ -742,6 +750,7 @@ export class LayerMapUI {
       },
       onDeleted: (id) => {
         removePinEdits(id)
+        removePlaceAIFlags(id)
         if (this.pkg?.id === id) {
           tileProtocolPackages.delete(id)
           this.closeImagePanel()
@@ -756,6 +765,7 @@ export class LayerMapUI {
           this.state.view = undefined
           this.persist(true)
           this.pkg = null
+          this.placeAIFlags = {}
           this.image = null
           this.setTileMapVisible(false)
           this.clearTileCaches()
@@ -862,6 +872,7 @@ export class LayerMapUI {
     this.state = loadLayerState(this.ctx)
     this.pkg = null
     this.pinEdits = emptyPinEdits()
+    this.placeAIFlags = {}
     this.rebuildEffectiveMarkers()
     this.clearImageResources()
     this.setTileMapVisible(false)
@@ -890,6 +901,7 @@ export class LayerMapUI {
     this.state.updatedAt = Date.now()
     this.pkg = null
     this.pinEdits = emptyPinEdits()
+    this.placeAIFlags = {}
     this.rebuildEffectiveMarkers()
     this.image = null
     this.imageUrl = null
@@ -1367,6 +1379,7 @@ export class LayerMapUI {
     if (!pkg) {
       this.pkg = null
       this.pinEdits = emptyPinEdits()
+      this.placeAIFlags = {}
       this.rebuildEffectiveMarkers()
       this.clearImageResources()
       this.setTileMapVisible(false)
@@ -1409,6 +1422,7 @@ export class LayerMapUI {
     if (this.pkg && this.pkg.id !== pkg.id) tileProtocolPackages.delete(this.pkg.id)
     this.pkg = pkg
     this.pinEdits = loadPinEdits(pkg.id)
+    this.placeAIFlags = loadPlaceAIFlags(pkg.id)
     this.rebuildEffectiveMarkers()
     this.migrateLegacyNotes(pkg)
     await this.ensureIconFont(pkg)
@@ -3798,8 +3812,10 @@ export class LayerMapUI {
     const section = document.createElement('section')
     section.className = 'tml-links'
     const heading = document.createElement('div')
-    heading.className = 'tml-section-label'
-    heading.textContent = '链接来源'
+    heading.className = 'tml-section-label tml-links-head'
+    const headingText = document.createElement('span')
+    headingText.textContent = '链接来源'
+    heading.append(headingText, this.aiContentToggle(marker, 'wiki'))
     section.append(heading)
     const imported = marker.sourceLinks ?? (
       marker.sourceUrl
@@ -4164,6 +4180,89 @@ export class LayerMapUI {
     if (loadSettings(this.liveContext()).layerSourceAI) this.refreshContext()
   }
 
+  private savePlaceAIFlagsForMap(): void {
+    if (this.pkg) savePlaceAIFlags(this.pkg.id, this.placeAIFlags)
+  }
+
+  private placeAIPartAllowed(marker: LayerMarker, part: LayerAIPart): boolean {
+    return this.placeAIFlags[marker.id]?.[part] !== false
+  }
+
+  private aiPartGloballyEnabled(part: LayerAIPart): boolean {
+    const settings = loadSettings(this.liveContext())
+    const nearby = settings.layerNearbyAI
+    const favorites = settings.layerFavoritesAI
+    if (part === 'source') {
+      return (
+        settings.layerSourceAI ||
+        (nearby && settings.layerNearbySource) ||
+        (favorites && settings.layerFavoriteSource)
+      )
+    }
+    if (part === 'wiki') {
+      return (
+        settings.layerWikiAI ||
+        (nearby && settings.layerNearbyWiki) ||
+        (favorites && settings.layerFavoriteWiki)
+      )
+    }
+    return (
+      settings.layerNoteAI ||
+      (nearby && settings.layerNearbyNotes) ||
+      (favorites && settings.layerFavoriteNote)
+    )
+  }
+
+  private setPlaceAIPart(marker: LayerMarker, part: LayerAIPart, enabled: boolean): void {
+    const flags = { ...(this.placeAIFlags[marker.id] ?? {}) }
+    if (enabled) delete flags[part]
+    else flags[part] = false
+    if (Object.keys(flags).length > 0) this.placeAIFlags[marker.id] = flags
+    else delete this.placeAIFlags[marker.id]
+    this.savePlaceAIFlagsForMap()
+    this.refreshContext()
+  }
+
+  private aiContentToggle(marker: LayerMarker, part: LayerAIPart): HTMLElement {
+    const names: Record<LayerAIPart, string> = {
+      source: '来源资料',
+      wiki: 'Wiki 正文',
+      note: '笔记',
+    }
+    const name = names[part]
+    const globallyEnabled = this.aiPartGloballyEnabled(part)
+    const label = document.createElement('label')
+    label.className = 'tml-ai-toggle'
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    checkbox.setAttribute('aria-label', `${name}是否显示给 AI`)
+    const caption = document.createElement('span')
+    caption.textContent = '给 AI'
+    label.append(checkbox, caption)
+    const sync = (): void => {
+      const on = globallyEnabled && this.placeAIPartAllowed(marker, part)
+      checkbox.checked = on
+      checkbox.disabled = !globallyEnabled
+      label.classList.toggle('is-off', !on)
+      label.classList.toggle('is-disabled', !globallyEnabled)
+      label.title = !globallyEnabled
+        ? `没有开启${name}的全局 AI 开关`
+        : on
+          ? `点击取消这个地点的${name}进入 AI`
+          : `点击让这个地点的${name}重新进入 AI`
+    }
+    sync()
+    checkbox.addEventListener('change', () => {
+      if (!globallyEnabled) {
+        checkbox.checked = false
+        return
+      }
+      this.setPlaceAIPart(marker, part, checkbox.checked)
+      sync()
+    })
+    return label
+  }
+
   private sourceSection(marker: LayerMarker): HTMLElement {
     const details = document.createElement('details')
     details.className = 'tml-source'
@@ -4194,7 +4293,10 @@ export class LayerMapUI {
       this.refreshContext()
     })
     actions.append(restore)
-    details.append(summary, textarea, status, actions)
+    const aiRow = document.createElement('div')
+    aiRow.className = 'tml-ai-toggle-row'
+    aiRow.append(this.aiContentToggle(marker, 'source'))
+    details.append(summary, aiRow, textarea, status, actions)
     return details
   }
 
@@ -4270,16 +4372,19 @@ export class LayerMapUI {
   private noteSection(marker: LayerMarker): HTMLElement {
     const section = document.createElement('div')
     section.className = 'tml-note-section'
+    const head = document.createElement('div')
+    head.className = 'tml-section-head'
     const label = document.createElement('label')
+    label.className = 'tml-note-label'
     label.textContent = '我的笔记（不限字数）'
+    head.append(label, this.aiContentToggle(marker, 'note'))
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写下地点笔记，不设当前也会保存…'
     textarea.value = this.markerNoteValue(marker)
     textarea.addEventListener('input', () => {
       this.setMarkerNote(marker, textarea.value)
     })
-    label.append(textarea)
-    section.append(label)
+    section.append(head, textarea)
     return section
   }
 
@@ -4432,16 +4537,21 @@ export class LayerMapUI {
             : '',
           distancePercent: (Math.hypot(screenDx, screenDy) / radiusPx) * radius * 100,
           note:
-            settings.layerNearbyNotes && this.markerNoteValue(marker).trim()
+            settings.layerNearbyNotes &&
+            this.placeAIPartAllowed(marker, 'note') &&
+            this.markerNoteValue(marker).trim()
               ? this.markerNoteValue(marker)
               : undefined,
           sourceMaterial:
-            settings.layerNearbySource && this.markerSourceValue(marker).trim()
+            settings.layerNearbySource &&
+            this.placeAIPartAllowed(marker, 'source') &&
+            this.markerSourceValue(marker).trim()
               ? this.markerSourceValue(marker)
               : undefined,
-          wikiTexts: settings.layerNearbyWiki
-            ? this.contextWikiTexts(marker, settings, true)
-            : undefined,
+          wikiTexts:
+            settings.layerNearbyWiki && this.placeAIPartAllowed(marker, 'wiki')
+              ? this.contextWikiTexts(marker, settings, true)
+              : undefined,
         }
       })
       .sort((a, b) => a.distancePercent - b.distancePercent)
@@ -4453,7 +4563,7 @@ export class LayerMapUI {
     settings: Settings,
     includeWiki = settings.layerWikiAI,
   ): Array<{ title: string; text: string }> {
-    if (!includeWiki) return []
+    if (!includeWiki || !this.placeAIPartAllowed(marker, 'wiki')) return []
     const imported = marker.sourceLinks ?? (
       marker.sourceUrl
         ? [{
@@ -4505,15 +4615,21 @@ export class LayerMapUI {
           region: settings.layerFavoriteCoords ? region : undefined,
           x: settings.layerFavoriteCoords ? (marker?.x ?? favorite.x) : undefined,
           y: settings.layerFavoriteCoords ? (marker?.y ?? favorite.y) : undefined,
-          note: settings.layerFavoriteNote
-            ? (marker ? this.markerNoteValue(marker) : favorite.note)?.trim() || undefined
-            : undefined,
+          note:
+            settings.layerFavoriteNote &&
+            (!marker || this.placeAIPartAllowed(marker, 'note'))
+              ? (marker ? this.markerNoteValue(marker) : favorite.note)?.trim() || undefined
+              : undefined,
           sourceMaterial:
-            settings.layerFavoriteSource && marker
+            settings.layerFavoriteSource &&
+            marker &&
+            this.placeAIPartAllowed(marker, 'source')
               ? this.markerSourceValue(marker).trim() || undefined
               : undefined,
           wikiTexts:
-            settings.layerFavoriteWiki && marker
+            settings.layerFavoriteWiki &&
+            marker &&
+            this.placeAIPartAllowed(marker, 'wiki')
               ? this.contextWikiTexts(marker, settings, settings.layerFavoriteWiki)
               : undefined,
         }
@@ -4537,11 +4653,10 @@ export class LayerMapUI {
     const user = this.state.userPosition
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
-    const note = settings.layerNoteAI
-      ? marker
+    const note =
+      settings.layerNoteAI && marker && this.placeAIPartAllowed(marker, 'note')
         ? this.markerNoteValue(marker)
         : undefined
-      : undefined
     const favorites = this.favoriteContext(settings)
     const context: LayerContextSnapshot = {
       mapName: pkg.name,
@@ -4559,7 +4674,9 @@ export class LayerMapUI {
       region: region?.name,
       note: note?.trim() || undefined,
       sourceMaterial:
-        marker && settings.layerSourceAI
+        marker &&
+        settings.layerSourceAI &&
+        this.placeAIPartAllowed(marker, 'source')
           ? this.markerSourceValue(marker).trim() || undefined
           : undefined,
       wikiTexts: marker ? this.contextWikiTexts(marker, settings) : undefined,
@@ -4949,6 +5066,10 @@ export class LayerMapUI {
     delete this.state.notes?.[key]
     this.pinEdits.customPins = this.pinEdits.customPins.filter((pin) => pin.id !== id)
     delete this.pinEdits.history[id]
+    if (this.placeAIFlags[id]) {
+      delete this.placeAIFlags[id]
+      this.savePlaceAIFlagsForMap()
+    }
     this.state.selectedMarkerId = undefined
     if (this.state.atPlaceId === id) this.state.atPlaceId = undefined
     removeFavorite(this.markerFavoriteKey(marker))
