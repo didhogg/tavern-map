@@ -528,7 +528,7 @@ export function parseMapGeniePackage(
   const locationsRaw = array(root.locations)
   if (locationsRaw.length === 0) throw new Error('没有找到 locations 数组')
   const regionsRaw = array(root.regions)
-  const streetsRaw = array(root.streets)
+  const streetsRaw = featureList(root.streets ?? root.roads)
   const map = record(root.map)
   const mapConfig = record(root.mapConfig)
   const groupsRaw = array(root.groups)
@@ -742,15 +742,33 @@ export function parseMapGeniePackage(
   }
 }
 
+/** GeoJSON road data: a feature array or a FeatureCollection. */
+function featureList(value: unknown): unknown[] {
+  const collection = record(value)
+  return collection && Array.isArray(collection.features) ? collection.features : array(value)
+}
+
+/** First non-empty property among common GeoJSON / OSM road keys. */
+function firstProperty(properties: Record<string, unknown> | undefined, keys: string[]): unknown {
+  for (const key of keys) {
+    const value = properties?.[key]
+    if (value != null && text(value)) return value
+  }
+  return undefined
+}
+
+const STREET_NAME_KEYS = ['Name', 'name', 'NAME', 'title', 'Title', 'label', 'Label']
+const STREET_TYPE_KEYS = ['Type', 'type', 'TYPE', 'highway', 'class', 'kind', 'fclass', 'road_type']
+
 function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
   const result: LayerStreet[] = []
   raw.forEach((item, featureIndex) => {
     const feature = record(item)
     if (!feature) return
     const properties = record(feature.properties)
-    const name = cleanSourceText(properties?.Name ?? properties?.name)
-    if (!name) return
-    const type = text(properties?.Type ?? properties?.type) || undefined
+    // Unnamed lines are still roads: kept for the road layer and "on road" context.
+    const name = cleanSourceText(firstProperty(properties, STREET_NAME_KEYS)) ?? ''
+    const type = text(firstProperty(properties, STREET_TYPE_KEYS)) || undefined
     const geometry = record(feature.geometry)
     const geometryType = text(geometry?.type)
     if (!geometry || (geometryType !== 'LineString' && geometryType !== 'MultiLineString')) {
@@ -760,7 +778,8 @@ function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
       geometryType === 'LineString'
         ? [geometry.coordinates]
         : array(geometry.coordinates)
-    const sourceId = idValue(properties?.fid) || String(featureIndex)
+    const sourceId =
+      idValue(properties?.fid) || idValue(properties?.id) || idValue(feature.id) || String(featureIndex)
     lines.forEach((lineRaw, lineIndex) => {
       const points: Array<[number, number]> = []
       for (const pointRaw of array(lineRaw)) {

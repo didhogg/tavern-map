@@ -102,9 +102,10 @@ export type LayerRegion = {
   polygons: Array<Array<[number, number]>>
 }
 
-/** A named road/street line used for map labels. */
+/** A road/street line from the map data: road layer, labels and "on road" context. */
 export type LayerStreet = {
   id: string
+  /** Empty when the source line has no name. */
   name: string
   type?: string
   /** Normalized polyline coordinates, [x, y] in 0..1. */
@@ -358,6 +359,17 @@ export type LayerItineraryContext = {
   legs: LayerItineraryContextLeg[]
 }
 
+export type LayerContextRoad = {
+  /** Empty when the road line has no name. */
+  name: string
+  type?: string
+  /** True when my position is on the road line, not just near it. */
+  on: boolean
+  distancePercent: number
+  distanceCells?: number
+  direction?: string
+}
+
 export type LayerContextSnapshot = {
   mapName: string
   /** Explicit "my position", only when the user placed it. */
@@ -365,6 +377,8 @@ export type LayerContextSnapshot = {
     x: number
     y: number
     region?: string
+    /** Road nearest to my position (within the nearby radius), from the map's road lines. */
+    road?: LayerContextRoad
   }
   currentPlace?: string
   currentX?: number
@@ -438,6 +452,8 @@ export type LayerChatState = {
   hiddenCategories?: string[]
   showLabels?: boolean
   showRegions?: boolean
+  /** Road line layer; off unless turned on. */
+  showRoads?: boolean
   notes?: Record<string, string>
   links?: Record<string, LayerLink[]>
   /** Fetched/pasted text for imported source links, keyed `markerId:linkId`. */
@@ -607,6 +623,7 @@ export function loadLayerState(ctx: StContext): LayerChatState {
       : [],
     showLabels: typeof value.showLabels === 'boolean' ? value.showLabels : true,
     showRegions: typeof value.showRegions === 'boolean' ? value.showRegions : true,
+    showRoads: value.showRoads === true,
     notes: {
       ...Object.fromEntries(
         Object.entries(globalNotesSnapshot()).filter(([key]) => key.startsWith('layer:')),
@@ -752,6 +769,20 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
   }
 }
 
+function validContextRoad(raw: unknown): LayerContextRoad | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const road = raw as Partial<LayerContextRoad>
+  if (typeof road.name !== 'string' || !Number.isFinite(road.distancePercent)) return undefined
+  return {
+    name: road.name,
+    type: typeof road.type === 'string' && road.type ? road.type : undefined,
+    on: road.on === true,
+    distancePercent: road.distancePercent as number,
+    distanceCells: Number.isFinite(road.distanceCells) ? road.distanceCells : undefined,
+    direction: typeof road.direction === 'string' && road.direction ? road.direction : undefined,
+  }
+}
+
 function validContext(raw: unknown): LayerContextSnapshot | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const value = raw as Partial<LayerContextSnapshot>
@@ -765,6 +796,7 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
           y: value.position.y,
           region:
             typeof value.position.region === 'string' ? value.position.region : undefined,
+          road: validContextRoad(value.position.road),
         }
       : undefined
   const nearby = Array.isArray(value.nearby)

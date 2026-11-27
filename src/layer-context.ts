@@ -1,5 +1,10 @@
 import { distanceUnitText, formatCellDistance } from './layer-distance'
-import type { LayerChatState, LayerGridConfig, LayerNearbyPlace } from './layer-types'
+import type {
+  LayerChatState,
+  LayerContextRoad,
+  LayerGridConfig,
+  LayerNearbyPlace,
+} from './layer-types'
 
 function clean(value: string | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim()
@@ -42,6 +47,18 @@ function placeLine(
   return `- ${clean(place.name)}${category} — ${coords}${direction}${note}`
 }
 
+function roadLine(road: LayerContextRoad, grid: LayerGridConfig | undefined): string {
+  const name = clean(road.name) || 'unnamed road'
+  const type = road.type ? ` (${clean(road.type)})` : ''
+  if (road.on) return `On road: ${name}${type}`
+  const distance =
+    grid && road.distanceCells != null
+      ? formatCellDistance(road.distanceCells, grid)
+      : `${road.distancePercent < 0.01 ? '<0.01' : road.distancePercent.toFixed(2)}%`
+  const direction = road.direction ? ` · ${road.direction}` : ''
+  return `Nearest road: ${name}${type} — ${distance}${direction}`
+}
+
 export function buildLayerContext(state: LayerChatState): string {
   const snapshot = state.context
   if (!snapshot?.mapName) return ''
@@ -58,6 +75,7 @@ export function buildLayerContext(state: LayerChatState): string {
     const coords = snapshot.grid ? gridPoint(snapshot.position, snapshot.grid) : mapPoint(snapshot.position)
     const area = snapshot.position.region ? ` · Area: ${clean(snapshot.position.region)}` : ''
     lines.push(`My position: ${coords}${area}`)
+    if (snapshot.position.road) lines.push(roadLine(snapshot.position.road, snapshot.grid))
   }
   if (snapshot.currentPlace) {
     const category = snapshot.category ? ` (${clean(snapshot.category)})` : ''

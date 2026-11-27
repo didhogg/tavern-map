@@ -1,5 +1,6 @@
 import { addProtocol, Map as MapLibreMap } from 'maplibre-gl'
 import { buildLayerContext } from './layer-context'
+import { buildRoadIndex, nearestRoad, roadRank, roadsInRect, type NearestRoad, type RoadIndex } from './layer-roads'
 import { estimateTokens } from './context'
 import { errorMessage } from './http'
 import {
@@ -111,7 +112,10 @@ const MARKER_HIT_RADIUS = 12
 const REGION_HIT_MIN_ZOOM = 8
 const REGION_LABEL_MIN_ZOOM = 8
 const TILE_CLUSTER_BELOW_ZOOM = 10.8
-const STREET_LABEL_TILE_ZOOM = 14
+/** Road-name zooms per road rank (main, secondary, minor), tuned like LABEL_TILE_ZOOM. */
+const STREET_LABEL_TILE_ZOOMS = [13, 14, 15]
+/** "On a road" when within this fraction of the map span width of its line. */
+const ON_ROAD_SPAN_FRACTION = 0.004
 /**
  * The tile zoom thresholds above were tuned on Map Genie maps whose tile sets
  * start at zoom 8. Other maps start elsewhere (RDR2 2–7, Skyrim HD 6–12), so a
@@ -369,6 +373,7 @@ const PANEL_HTML = `
         <div class="tml-toolbar-actions">
           <button type="button" class="tml-tool active" data-action="labels" aria-pressed="true">标签</button>
           <button type="button" class="tml-tool active" data-action="regions" aria-pressed="true">区域</button>
+          <button type="button" class="tml-tool" data-action="roads" aria-pressed="false" title="显示这张地图自带的道路线" hidden>道路</button>
           <button type="button" class="tml-tool tml-add-pin" data-action="add-pin" title="在地图上添加自己的图钉" aria-label="添加图钉">＋ 图钉</button>
           <button type="button" class="tml-tool tml-route-tool" data-action="itinerary" title="规划或查看行程" aria-label="行程">行程</button>
           <button type="button" class="tml-tool tml-history-tool" data-action="undo-pin" title="撤销选中图钉的移动" aria-label="撤销图钉移动" disabled>↶</button>
@@ -619,6 +624,8 @@ export class LayerMapUI {
   private readonly markerRegionCache = new Map<string, LayerRegion | undefined>()
   private readonly regionLabelCache = new Map<string, { x: number; y: number; area: number }>()
   private readonly streetLabelCache = new Map<string, { x: number; y: number; angle: number }>()
+  private roadIndexCache: { streets: LayerStreet[]; yScale: number; index: RoadIndex } | undefined
+  private currentRoadCache: { key: string; road: NearestRoad | undefined } | undefined
   private tileMoving = false
   private readonly markerIndex = new Map<string, LayerMarker[]>()
   private readonly labelCells = new Set<string>()
@@ -1296,6 +1303,13 @@ export class LayerMapUI {
         this.persist()
         this.requestDraw()
         break
+      case 'roads':
+        // Road lines are off unless turned on: the base map usually draws roads already.
+        this.state.showRoads = this.state.showRoads !== true
+        this.syncToolButtons()
+        this.persist()
+        this.requestDraw()
+        break
       case 'add-pin':
         if (this.placingPin === 'add') this.cancelPinPlacement()
         else this.startPinPlacement('add')
@@ -1351,7 +1365,9 @@ export class LayerMapUI {
       return
     }
     const area = this.regionForPoint(user.x, user.y)?.name
-    this.contextPositionEl.textContent = `${this.pointText(user.x, user.y)}${area ? ` · ${area}` : ''}`
+    const road = this.currentRoad()
+    const roadText = road ? ` · ${road.on ? '在路上' : '附近道路'}：${this.roadDisplayName(road.road.street)}` : ''
+    this.contextPositionEl.textContent = `${this.pointText(user.x, user.y)}${area ? ` · ${area}` : ''}${roadText}`
     this.contextXEl.value = (user.x * 100).toFixed(2)
     this.contextYEl.value = (user.y * 100).toFixed(2)
   }
@@ -1392,6 +1408,12 @@ export class LayerMapUI {
     labels?.setAttribute('aria-pressed', String(this.state.showLabels !== false))
     regions?.classList.toggle('active', this.state.showRegions !== false)
     regions?.setAttribute('aria-pressed', String(this.state.showRegions !== false))
+    const roads = this.panelEl.querySelector<HTMLElement>('[data-action="roads"]')
+    if (roads) {
+      roads.hidden = !this.pkg?.streets?.length
+      roads.classList.toggle('active', this.state.showRoads === true)
+      roads.setAttribute('aria-pressed', String(this.state.showRoads === true))
+    }
     const grid = this.panelEl.querySelector<HTMLElement>('[data-action="grid"]')
     grid?.classList.toggle('active', this.gridPanelOpen)
     const locate = this.panelEl.querySelector<HTMLElement>('[data-action="locate"]')
@@ -1588,6 +1610,8 @@ export class LayerMapUI {
     this.markerRegionCache.clear()
     this.regionLabelCache.clear()
     this.streetLabelCache.clear()
+    this.roadIndexCache = undefined
+    this.currentRoadCache = undefined
     this.rebuildEffectiveMarkers()
     this.clearTileCaches()
     this.packageSelectEl.value = pkg.id
@@ -2218,6 +2242,7 @@ export class LayerMapUI {
     }
     this.drawGrid(context, width, height)
     this.drawRegions(context, width, height)
+    this.drawRoads(context, width, height)
     this.drawItineraryLine(context, width, height)
     this.labelCells.clear()
     this.drawRegionLabels(context, width, height)
@@ -2796,10 +2821,101 @@ export class LayerMapUI {
   }
 
   private streetRank(street: LayerStreet): number {
-    const type = (street.type ?? '').toLowerCase()
-    if (type === 'main') return 0
-    if (type === 'major') return 1
-    return 2
+    return roadRank(street.type)
+  }
+
+  /** Spatial index of the package's road lines, rebuilt only when they change. */
+  private roadIndex(): RoadIndex | undefined {
+    const pkg = this.pkg
+    if (!pkg?.streets?.length) return undefined
+    const yScale = pkg.kind === 'image' ? pkg.height / pkg.width : 1
+    const cached = this.roadIndexCache
+    if (cached && cached.streets === pkg.streets && cached.yScale === yScale) return cached.index
+    const index = buildRoadIndex(pkg.streets, yScale)
+    this.roadIndexCache = { streets: pkg.streets, yScale, index }
+    return index
+  }
+
+  /**
+   * The road nearest to "my position" inside the nearby radius. Computed once
+   * per position/radius, never per frame.
+   */
+  private currentRoad(): { road: NearestRoad; on: boolean } | undefined {
+    const user = this.state.userPosition
+    const index = this.roadIndex()
+    if (!user || !index) return undefined
+    const radius = this.nearbyRadiusMapUnits()
+    const key = `${this.pkg?.id}:${user.x}:${user.y}:${radius}`
+    if (this.currentRoadCache?.key !== key) {
+      this.currentRoadCache = { key, road: nearestRoad(index, user.x, user.y, radius) }
+    }
+    const road = this.currentRoadCache.road
+    if (!road) return undefined
+    return { road, on: road.distance <= this.mapSpan().w * ON_ROAD_SPAN_FRACTION }
+  }
+
+  private roadDisplayName(street: LayerStreet): string {
+    return street.name || (street.type ? `无名道路（${street.type}）` : '无名道路')
+  }
+
+  /** Road lines in view; the road "I" am on is highlighted. */
+  private drawRoads(context: CanvasRenderingContext2D, width: number, height: number): void {
+    const pkg = this.pkg
+    if (!pkg?.streets?.length || this.state.showRoads !== true) return
+    const index = this.roadIndex()
+    if (!index) return
+    const [west, north] = this.unproject(-16, -16, width, height)
+    const [east, south] = this.unproject(width + 16, height + 16, width, height)
+    if (![west, north, east, south].every(Number.isFinite)) return
+    const visible = roadsInRect(index, {
+      minX: Math.min(west, east),
+      maxX: Math.max(west, east),
+      minY: Math.min(north, south) * index.yScale,
+      maxY: Math.max(north, south) * index.yScale,
+    })
+    const current = this.currentRoad()
+    const styles = [
+      { width: 3.2, color: 'rgba(255, 196, 92, 0.85)', dash: [] as number[] },
+      { width: 2.4, color: 'rgba(255, 222, 150, 0.8)', dash: [] as number[] },
+      { width: 1.6, color: 'rgba(250, 240, 214, 0.75)', dash: [5, 4] },
+    ]
+    context.save()
+    context.lineJoin = 'round'
+    context.lineCap = 'round'
+    const trace = (street: LayerStreet): void => {
+      context.beginPath()
+      street.points.forEach(([x, y], pointIndex) => {
+        const [sx, sy] = this.project(x, y, width, height)
+        if (pointIndex === 0) context.moveTo(sx, sy)
+        else context.lineTo(sx, sy)
+      })
+    }
+    for (const rank of [2, 1, 0]) {
+      const style = styles[rank]
+      for (const streetIndex of visible) {
+        const street = index.streets[streetIndex]
+        if (this.streetRank(street) !== rank || street === current?.road.street) continue
+        trace(street)
+        context.setLineDash(style.dash)
+        context.lineWidth = style.width + 2
+        context.strokeStyle = 'rgba(24, 16, 10, 0.55)'
+        context.stroke()
+        context.lineWidth = style.width
+        context.strokeStyle = style.color
+        context.stroke()
+      }
+    }
+    if (current?.on && visible.includes(index.streets.indexOf(current.road.street))) {
+      trace(current.road.street)
+      context.setLineDash([])
+      context.lineWidth = 7
+      context.strokeStyle = 'rgba(16, 24, 32, 0.6)'
+      context.stroke()
+      context.lineWidth = 4.5
+      context.strokeStyle = 'rgba(92, 214, 255, 0.95)'
+      context.stroke()
+    }
+    context.restore()
   }
 
   private streetLabelAnchor(
@@ -2854,8 +2970,10 @@ export class LayerMapUI {
     )
     let drawn = 0
     for (const street of ordered) {
+      if (!street.name) continue
       const rank = this.streetRank(street)
-      const minZoom = rank === 0 ? 13 : rank === 1 ? 14 : 15
+      const tuned = STREET_LABEL_TILE_ZOOMS[rank] ?? STREET_LABEL_TILE_ZOOMS[2]
+      const minZoom = pkg.kind === 'tiles' ? this.tileZoomThreshold(tuned) : tuned
       if (zoom < minZoom) continue
       const nameKey = street.name.toLocaleLowerCase()
       if (seen.has(nameKey)) continue
@@ -2905,7 +3023,7 @@ export class LayerMapUI {
     const labelThreshold =
       pkg.kind === 'image'
         ? LABEL_IMAGE_ZOOM
-        : this.tileZoomThreshold(pkg.streets?.length ? STREET_LABEL_TILE_ZOOM : LABEL_TILE_ZOOM)
+        : this.tileZoomThreshold(LABEL_TILE_ZOOM)
     const showLabels = this.state.showLabels !== false && this.view.zoom >= labelThreshold
     const visible = this.markersInView(width, height).filter(
       (marker) => !hidden.has(marker.categoryId),
@@ -5969,6 +6087,8 @@ export class LayerMapUI {
     const category = marker ? this.categoryById(marker.categoryId) : undefined
     const user = this.state.userPosition
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
+    const road = user ? this.currentRoad() : undefined
+    const contextGrid = this.gridConfig()
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
     const itinerary = this.itinerary ? this.itineraryContext(this.itinerary) : undefined
     const note =
@@ -5983,6 +6103,23 @@ export class LayerMapUI {
             x: user.x,
             y: user.y,
             region: positionRegion?.name,
+            road: road
+              ? {
+                  name: road.road.street.name,
+                  type: road.road.street.type,
+                  on: road.on,
+                  distancePercent: (road.road.distance / this.mapSpan().w) * 100,
+                  distanceCells: contextGrid
+                    ? gridCellDistance(user, road.road, contextGrid)
+                    : undefined,
+                  direction: road.on
+                    ? undefined
+                    : this.directionFor(
+                        road.road.x - user.x,
+                        (road.road.y - user.y) * (pkg.kind === 'image' ? pkg.height / pkg.width : 1),
+                      ),
+                }
+              : undefined,
           }
         : undefined,
       currentPlace: marker?.name,

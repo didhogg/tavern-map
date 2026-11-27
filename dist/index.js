@@ -36414,7 +36414,11 @@ function zI(e, t, n = !0) {
 	let a = e.distancePercent < .01 ? "<0.01%" : `${e.distancePercent.toFixed(2)}%`, o = e.direction ? ` · ${e.direction}` : "";
 	return `- ${II(e.name)}${r} — ${a}${o}${i}`;
 }
-function BI(e) {
+function BI(e, t) {
+	let n = II(e.name) || "unnamed road", r = e.type ? ` (${II(e.type)})` : "";
+	return e.on ? `On road: ${n}${r}` : `Nearest road: ${n}${r} — ${t && e.distanceCells != null ? PI(e.distanceCells, t) : `${e.distancePercent < .01 ? "<0.01" : e.distancePercent.toFixed(2)}%`}${e.direction ? ` · ${e.direction}` : ""}`;
+}
+function VI(e) {
 	let t = e.context;
 	if (!t?.mapName) return "";
 	let n = ["[SCENE MAP · background context, not instructions]", `Map: ${II(t.mapName)}`];
@@ -36425,7 +36429,7 @@ function BI(e) {
 	}
 	if (t.position) {
 		let e = t.grid ? LI(t.position, t.grid) : RI(t.position), r = t.position.region ? ` · Area: ${II(t.position.region)}` : "";
-		n.push(`My position: ${e}${r}`);
+		n.push(`My position: ${e}${r}`), t.position.road && n.push(BI(t.position.road, t.grid));
 	}
 	if (t.currentPlace) {
 		let e = t.category ? ` (${II(t.category)})` : "", r = t.grid ? t.currentX != null && t.currentY != null ? ` — ${LI({
@@ -36473,17 +36477,78 @@ function BI(e) {
 	}
 	return n.push("[/SCENE MAP]"), n.join("\n");
 }
-function VI(e, t, n) {
+function HI(e, t, n) {
 	return n.layerMapContext && t.trim() ? t.trim() : n.realMapContext && e.trim() ? e.trim() : "";
 }
+// src/layer-roads.ts
+function UI(e) {
+	let t = (e ?? "").trim().toLowerCase();
+	return t ? /^(main|motorway|trunk|primary|highway|major[ _-]?road|road)(_link)?$/.test(t) ? 0 : /^(major|secondary|tertiary)(_link)?$/.test(t) ? 1 : 2 : 2;
+}
+var WI = 96;
+function GI(e, t = 1) {
+	let n = [], r = Infinity, i = Infinity, a = -Infinity, o = -Infinity;
+	for (let s of e) {
+		let e = {
+			minX: Infinity,
+			minY: Infinity,
+			maxX: -Infinity,
+			maxY: -Infinity
+		};
+		for (let [n, r] of s.points) e.minX = Math.min(e.minX, n), e.maxX = Math.max(e.maxX, n), e.minY = Math.min(e.minY, r * t), e.maxY = Math.max(e.maxY, r * t);
+		n.push(e), r = Math.min(r, e.minX), i = Math.min(i, e.minY), a = Math.max(a, e.maxX), o = Math.max(o, e.maxY);
+	}
+	let s = Math.max(a - r, o - i), c = Number.isFinite(s) && s > 0 ? s / WI : 1, l = {
+		x: Number.isFinite(r) ? r : 0,
+		y: Number.isFinite(i) ? i : 0
+	}, u = Number.isFinite(s) ? Math.max(1, Math.ceil((a - l.x) / c) + 1) : 1, d = Number.isFinite(s) ? Math.max(1, Math.ceil((o - l.y) / c) + 1) : 1, f = /* @__PURE__ */ new Map();
+	return e.forEach((e, n) => {
+		for (let r = 1; r < e.points.length; r += 1) {
+			let [i, a] = e.points[r - 1], [o, s] = e.points[r], d = Math.floor((Math.min(i, o) - l.x) / c), p = Math.floor((Math.max(i, o) - l.x) / c), m = Math.floor((Math.min(a, s) * t - l.y) / c), h = Math.floor((Math.max(a, s) * t - l.y) / c);
+			for (let e = d; e <= p; e += 1) for (let t = m; t <= h; t += 1) {
+				let i = t * u + e, a = f.get(i);
+				a || f.set(i, a = []), a.push([n, r]);
+			}
+		}
+	}), {
+		streets: e,
+		bounds: n,
+		yScale: t,
+		origin: l,
+		cell: c,
+		columns: u,
+		rows: d,
+		buckets: f
+	};
+}
+function KI(e, t, n, r) {
+	if (!e.streets.length || !(r > 0)) return;
+	let i = n * e.yScale, a = Math.max(0, Math.floor((t - r - e.origin.x) / e.cell)), o = Math.min(e.columns - 1, Math.floor((t + r - e.origin.x) / e.cell)), s = Math.max(0, Math.floor((i - r - e.origin.y) / e.cell)), c = Math.min(e.rows - 1, Math.floor((i + r - e.origin.y) / e.cell)), l;
+	for (let n = a; n <= o; n += 1) for (let a = s; a <= c; a += 1) for (let [o, s] of e.buckets.get(a * e.columns + n) ?? []) {
+		let n = e.streets[o], [a, c] = n.points[s - 1], [u, d] = n.points[s], f = c * e.yScale, p = d * e.yScale, m = u - a, h = p - f, g = m * m + h * h, _ = g > 0 ? Math.min(1, Math.max(0, ((t - a) * m + (i - f) * h) / g)) : 0, v = a + m * _, y = f + h * _, b = Math.hypot(t - v, i - y);
+		b <= r && (!l || b < l.distance) && (l = {
+			street: n,
+			distance: b,
+			x: v,
+			y: y / e.yScale
+		});
+	}
+	return l;
+}
+function qI(e, t) {
+	let n = [];
+	return e.bounds.forEach((e, r) => {
+		e.maxX >= t.minX && e.minX <= t.maxX && e.maxY >= t.minY && e.minY <= t.maxY && n.push(r);
+	}), n;
+}
 // src/http.ts
-async function HI(e, t, n = 15e3) {
-	return await (await WI(e, t, n)).json();
+async function JI(e, t, n = 15e3) {
+	return await (await XI(e, t, n)).json();
 }
-async function UI(e, t, n = 15e3) {
-	return await (await WI(e, t, n)).text();
+async function YI(e, t, n = 15e3) {
+	return await (await XI(e, t, n)).text();
 }
-async function WI(e, t, n = 15e3) {
+async function XI(e, t, n = 15e3) {
 	let r = new AbortController(), i = window.setTimeout(() => r.abort(), n);
 	try {
 		let n = await fetch(e, {
@@ -36496,35 +36561,35 @@ async function WI(e, t, n = 15e3) {
 		window.clearTimeout(i);
 	}
 }
-function GI(e) {
-	return e instanceof AggregateError ? e.errors.map((e) => GI(e)).filter(Boolean)[0] ?? "请求失败" : e instanceof Error ? e.name === "AbortError" ? "请求超时" : e.message : String(e);
+function ZI(e) {
+	return e instanceof AggregateError ? e.errors.map((e) => ZI(e)).filter(Boolean)[0] ?? "请求失败" : e instanceof Error ? e.name === "AbortError" ? "请求超时" : e.message : String(e);
 }
 // src/layer-image.ts
-var KI = /* @__PURE__ */ new Set([
+var QI = /* @__PURE__ */ new Set([
 	"jpg",
 	"jpeg",
 	"png",
 	"webp",
 	"avif",
 	"gif"
-]), qI = /(placeholder|blank|dummy|template|sample|占位)/i;
-function JI(e) {
+]), $I = /(placeholder|blank|dummy|template|sample|占位)/i;
+function eL(e) {
 	return e.split(".").pop()?.toLowerCase() ?? "";
 }
-function YI(e) {
-	return KI.has(JI(e));
+function tL(e) {
+	return QI.has(eL(e));
 }
-function XI(e) {
+function nL(e) {
 	let t = e;
 	try {
 		t = decodeURIComponent(e);
 	} catch {}
 	return t.split("/").pop()?.toLowerCase().replace(/[_\s-]+/g, "-").trim() ?? "";
 }
-function ZI(e) {
-	return qI.test(e);
+function rL(e) {
+	return $I.test(e);
 }
-function QI(e) {
+function iL(e) {
 	return new Promise((t, n) => {
 		let r = URL.createObjectURL(e), i = new Image();
 		i.onload = () => {
@@ -36538,26 +36603,26 @@ function QI(e) {
 		}, i.src = r;
 	});
 }
-async function $I(e, t) {
-	let n = JI(t);
-	if (!KI.has(n) && !/^image\/(png|jpe?g|webp|avif|gif)$/i.test(e.type)) throw Error("请选择 PNG / JPG / WebP / AVIF 图片");
+async function aL(e, t) {
+	let n = eL(t);
+	if (!QI.has(n) && !/^image\/(png|jpe?g|webp|avif|gif)$/i.test(e.type)) throw Error("请选择 PNG / JPG / WebP / AVIF 图片");
 	let r;
 	if (typeof createImageBitmap == "function") {
 		let t = await createImageBitmap(e, { imageOrientation: "from-image" }).catch(() => void 0);
 		t ? (r = {
 			width: t.width,
 			height: t.height
-		}, t.close()) : r = await QI(e);
-	} else r = await QI(e);
+		}, t.close()) : r = await iL(e);
+	} else r = await iL(e);
 	return {
 		width: r.width,
 		height: r.height,
 		bytes: e.size,
 		type: e.type || `image/${n === "jpg" ? "jpeg" : n}`,
-		placeholder: ZI(t)
+		placeholder: rL(t)
 	};
 }
-async function eL(e, t = 180) {
+async function oL(e, t = 180) {
 	try {
 		let n = await createImageBitmap(e), r = Math.min(1, t / Math.max(n.width, n.height)), i = Math.max(1, Math.round(n.width * r)), a = Math.max(1, Math.round(n.height * r)), o = document.createElement("canvas");
 		o.width = i, o.height = a;
@@ -36573,11 +36638,11 @@ async function eL(e, t = 180) {
 		return;
 	}
 }
-function tL(e) {
+function sL(e) {
 	if (e && !(!Number.isFinite(e.x) || !Number.isFinite(e.y) || !Number.isFinite(e.w) || !Number.isFinite(e.h) || e.w <= 0 || e.h <= 0)) return e;
 }
-function nL(e) {
-	if (e.imageFit === "custom") return tL(e.imageRect) ?? {
+function cL(e) {
+	if (e.imageFit === "custom") return sL(e.imageRect) ?? {
 		x: 0,
 		y: 0,
 		w: 1,
@@ -36609,21 +36674,21 @@ function nL(e) {
 		h: 1
 	};
 }
-function rL(e) {
+function lL(e) {
 	return e === "contain" ? "保持比例" : e === "custom" ? "手动对齐" : "铺满地图";
 }
-function iL(e) {
+function uL(e) {
 	return e === "fandom-url" ? "Fandom 原图" : e === "local" ? "本地图片" : e === "package" ? "包内图片" : e === "none" ? "未设置" : "本地图片";
 }
-function aL(e) {
+function dL(e) {
 	if (!e.imageWidth || !e.imageHeight || !e.width || !e.height) return;
 	let t = e.imageWidth / e.imageHeight, n = e.width / e.height, r = Math.abs(t - n) / n;
 	if (!(r < .02)) return `图片比例与画布相差约 ${(r * 100).toFixed(1)}%`;
 }
-function oL(e) {
+function fL(e) {
 	if (e.imageWidth && e.width && !(e.imageWidth >= e.width * .5)) return "图片比画布小很多，放大后可能模糊";
 }
-function sL(e) {
+function pL(e) {
 	if (!e || e < 1) return "0 B";
 	let t = [
 		"B",
@@ -36633,10 +36698,10 @@ function sL(e) {
 	], n = Math.min(t.length - 1, Math.floor(Math.log(e) / Math.log(1024))), r = e / 1024 ** n;
 	return `${r >= 10 || n === 0 ? r.toFixed(0) : r.toFixed(1)} ${t[n]}`;
 }
-function cL(e) {
+function mL(e) {
 	return (e ?? 0).toLocaleString("zh-CN");
 }
-function lL(e) {
+function hL(e) {
 	return {
 		x: Math.max(-2, Math.min(2, e.x)),
 		y: Math.max(-2, Math.min(2, e.y)),
@@ -36645,7 +36710,7 @@ function lL(e) {
 	};
 }
 // src/mapgenie-icons.ts
-function uL(e) {
+function gL(e) {
 	let t = [
 		e.tile?.remoteTemplate,
 		e.tile?.template,
@@ -36658,11 +36723,11 @@ function uL(e) {
 		if (n?.[1] && n[1] !== "maps") return n[1];
 	}
 }
-async function dL(e, t) {
+async function _L(e, t) {
 	if (e.source !== "mapgenie") return;
 	let n = new Set(e.categories.map((e) => e.icon?.trim()).filter((e) => !!e));
 	if (n.size === 0) return;
-	let r = uL(e);
+	let r = gL(e);
 	if (!r) return;
 	let i = `https://cdn.mapgenie.io/css/themes/icons/${encodeURIComponent(r)}-icons.css`;
 	try {
@@ -36698,14 +36763,14 @@ async function dL(e, t) {
 		return;
 	}
 }
-var fL = "v158";
-async function pL(e, t) {
+var vL = "v158";
+async function yL(e, t) {
 	if (e.source !== "mapgenie") return;
 	let n = new Set(e.categories.map((e) => e.icon?.trim()).filter((e) => !!e));
 	if (n.size === 0) return;
-	let r = uL(e);
+	let r = gL(e);
 	if (!r) return;
-	let i = `https://media.mapgenie.io/v2/assets/prod/games/${encodeURIComponent(r)}/icon-set/build/${fL}`;
+	let i = `https://media.mapgenie.io/v2/assets/prod/games/${encodeURIComponent(r)}/icon-set/build/${vL}`;
 	try {
 		let [e, r] = await Promise.all([fetch(`${i}/atlas.json`, {
 			signal: t,
@@ -36752,7 +36817,7 @@ async function pL(e, t) {
 	}
 }
 // src/layer-import.ts
-var mL = [
+var bL = [
 	"#e6b56a",
 	"#78c6c0",
 	"#e78282",
@@ -36774,76 +36839,76 @@ var mL = [
 	"#64b5f6",
 	"#e57373"
 ];
-function hL(e) {
+function xL(e) {
 	return e && typeof e == "object" && !Array.isArray(e) ? e : void 0;
 }
-function gL(e) {
+function SL(e) {
 	return Array.isArray(e) ? e : [];
 }
-function _L(e) {
+function CL(e) {
 	return typeof e == "string" ? e.trim() : "";
 }
-function vL(e) {
+function wL(e) {
 	if (typeof e == "number" && Number.isFinite(e)) return e;
 	if (typeof e == "string" && e.trim()) {
 		let t = Number(e);
 		if (Number.isFinite(t)) return t;
 	}
 }
-function yL(e) {
+function TL(e) {
 	return typeof e == "string" || typeof e == "number" ? String(e) : "";
 }
-function bL(e) {
+function EL(e) {
 	let t = 2166136261;
 	for (let n = 0; n < e.length; n += 1) t ^= e.charCodeAt(n), t = Math.imul(t, 16777619);
 	return (t >>> 0).toString(36);
 }
-function xL(e) {
+function DL(e) {
 	try {
 		return new TextEncoder().encode(JSON.stringify(e)).length;
 	} catch {
 		return 0;
 	}
 }
-function SL(e) {
-	return mL[e % mL.length];
+function OL(e) {
+	return bL[e % bL.length];
 }
-function CL(e, t) {
-	let n = _L(e);
+function kL(e, t) {
+	let n = CL(e);
 	return /^#[0-9a-f]{3,8}$/i.test(n) ? n : /^[0-9a-f]{3,8}$/i.test(n) ? `#${n}` : t;
 }
-function wL(e) {
-	let t = _L(e);
+function AL(e) {
+	let t = CL(e);
 	return t ? t.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/\[\[([^\]]+)\]\]/g, "$1").replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]*\)/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/_([^_]+)_/g, "$1").replace(/\r\n?/g, "\n").trim() : "";
 }
-var TL = "forgottenrealms.fandom.com";
-function EL(e) {
-	let t = _L(e);
-	if (!t) return TL;
+var jL = "forgottenrealms.fandom.com";
+function ML(e) {
+	let t = CL(e);
+	if (!t) return jL;
 	try {
 		return new URL(/^https?:\/\//i.test(t) ? t : `https://${t}`).hostname.toLowerCase() || "forgottenrealms.fandom.com";
 	} catch {
 		return t.replace(/^https?:\/\//i, "").split("/")[0]?.toLowerCase() || "forgottenrealms.fandom.com";
 	}
 }
-function DL(e) {
+function NL(e) {
 	return e.trim().replace(/^\/+/, "").split("/").map((e) => encodeURIComponent(e.replace(/\s+/g, "_"))).join("/");
 }
-function OL(e, t = TL) {
+function PL(e, t = jL) {
 	let n = e.trim();
 	if (!n) return "";
 	if (/^https?:\/\//i.test(n)) return n;
-	if (n.startsWith("/")) return `https://${EL(t)}${n}`;
-	let [r, i] = n.split("#", 2), a = i ? `#${DL(i)}` : "";
-	return `https://${EL(t)}/wiki/${DL(r)}${a}`;
+	if (n.startsWith("/")) return `https://${ML(t)}${n}`;
+	let [r, i] = n.split("#", 2), a = i ? `#${NL(i)}` : "";
+	return `https://${ML(t)}/wiki/${NL(r)}${a}`;
 }
-function kL(e, t, n) {
+function FL(e, t, n) {
 	return `${e}:${t || n}`;
 }
-function AL(e, t, n, r, i) {
-	return yL(e.id) || `pos-${bL(`${t}:${n.toFixed(3)}:${r.toFixed(3)}:${i}`)}`;
+function IL(e, t, n, r, i) {
+	return TL(e.id) || `pos-${EL(`${t}:${n.toFixed(3)}:${r.toFixed(3)}:${i}`)}`;
 }
-function jL(e) {
+function LL(e) {
 	if (e.length === 0) return {
 		minX: 0,
 		maxX: 1,
@@ -36860,18 +36925,18 @@ function jL(e) {
 		maxY: i + c
 	};
 }
-function ML(e) {
+function RL(e) {
 	return (e + 180) / 360;
 }
-function NL(e) {
+function zL(e) {
 	let t = Math.min(85.05112878, Math.max(-85.05112878, e)) * Math.PI / 180;
 	return (1 - Math.log(Math.tan(t) + 1 / Math.cos(t)) / Math.PI) / 2;
 }
-function PL(e, t) {
-	return [ML(e), NL(t)];
+function BL(e, t) {
+	return [RL(e), zL(t)];
 }
-function FL(e, t) {
-	let n = _L(e);
+function VL(e, t) {
+	let n = CL(e);
 	if (!n) return [];
 	let r = /* @__PURE__ */ new Set(), i = [];
 	for (let e of n.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g)) {
@@ -36885,7 +36950,7 @@ function FL(e, t) {
 	}
 	return i;
 }
-function IL(e, t, n, r) {
+function HL(e, t, n, r) {
 	let i = [];
 	e && i.push({
 		id: `source:${r}:wiki`,
@@ -36893,34 +36958,34 @@ function IL(e, t, n, r) {
 		title: t || e,
 		url: e
 	});
-	for (let e of FL(n, r)) i.some((t) => t.url === e.url) || i.push(e);
+	for (let e of VL(n, r)) i.some((t) => t.url === e.url) || i.push(e);
 	return i.length > 0 ? i : void 0;
 }
-function LL(e) {
+function UL(e) {
 	let t = [];
 	return e.forEach((e, n) => {
-		let r = hL(e);
+		let r = xL(e);
 		if (!r) return;
-		let i = yL(r.id), a = _L(r.name) || _L(r.title) || i;
+		let i = TL(r.id), a = CL(r.name) || CL(r.title) || i;
 		if (!i || !a) return;
-		let o = vL(r.listId) ?? vL(r.order) ?? n;
+		let o = wL(r.listId) ?? wL(r.order) ?? n;
 		t.push({
 			id: i,
 			name: a,
 			groupId: "fandom",
-			color: CL(r.color, SL(n)),
+			color: kL(r.color, OL(n)),
 			order: o
 		});
 	}), t.sort((e, t) => (e.order ?? 0) - (t.order ?? 0));
 }
-function RL(e) {
+function WL(e) {
 	let t = e.mapBounds, n = [], r = [];
-	if (Array.isArray(t)) n = gL(t[0]), r = gL(t[1]);
+	if (Array.isArray(t)) n = SL(t[0]), r = SL(t[1]);
 	else {
-		let e = hL(t);
-		n = gL(e?.min ?? e?.[0]), r = gL(e?.max ?? e?.[1]);
+		let e = xL(t);
+		n = SL(e?.min ?? e?.[0]), r = SL(e?.max ?? e?.[1]);
 	}
-	let i = vL(r[0]) ?? vL(e.width) ?? 3e3, a = vL(r[1]) ?? vL(e.height) ?? 4524, o = vL(n[0]) ?? 0, s = vL(n[1]) ?? 0;
+	let i = wL(r[0]) ?? wL(e.width) ?? 3e3, a = wL(r[1]) ?? wL(e.height) ?? 4524, o = wL(n[0]) ?? 0, s = wL(n[1]) ?? 0;
 	return {
 		width: Math.max(1, i - o),
 		height: Math.max(1, a - s),
@@ -36928,32 +36993,32 @@ function RL(e) {
 		minY: s
 	};
 }
-function zL(e, t) {
-	let n = hL(e);
+function GL(e, t) {
+	let n = xL(e);
 	if (!n) throw Error("JSON 不是对象");
-	let r = gL(n.markers);
+	let r = SL(n.markers);
 	if (r.length === 0) throw Error("没有找到 markers 数组");
-	let i = RL(n), a = _L(n.origin) === "top-left" ? "top-left" : "bottom-left", o = _L(n.coordinateOrder) === "yx" ? "yx" : "xy", s = LL(gL(n.categories)), c = new Set(s.map((e) => e.id)), l = [{
+	let i = WL(n), a = CL(n.origin) === "top-left" ? "top-left" : "bottom-left", o = CL(n.coordinateOrder) === "yx" ? "yx" : "xy", s = UL(SL(n.categories)), c = new Set(s.map((e) => e.id)), l = [{
 		id: "fandom",
 		name: "地点",
 		order: 0
-	}], u = [], d = EL(t.wikiBase);
+	}], u = [], d = ML(t.wikiBase);
 	if (r.forEach((e, t) => {
-		let n = hL(e);
+		let n = xL(e);
 		if (!n) return;
-		let r = gL(n.position), l = vL(r[0]), f = vL(r[1]);
+		let r = SL(n.position), l = wL(r[0]), f = wL(r[1]);
 		if (l == null || f == null) return;
-		let p = o === "yx" ? f : l, m = o === "yx" ? l : f, h = hL(n.popup), g = wL(h?.title) || `地点 ${t + 1}`, _ = AL(n, g, p, m, t), v = yL(n.categoryId) || "uncategorized";
+		let p = o === "yx" ? f : l, m = o === "yx" ? l : f, h = xL(n.popup), g = AL(h?.title) || `地点 ${t + 1}`, _ = IL(n, g, p, m, t), v = TL(n.categoryId) || "uncategorized";
 		c.has(v) || (c.add(v), s.push({
 			id: v,
 			name: v === "uncategorized" ? "未分类" : v,
 			groupId: "fandom",
-			color: SL(s.length),
+			color: OL(s.length),
 			order: s.length
 		}));
-		let y = hL(h?.link), b = _L(y?.url), x = _L(y?.label) || b || void 0, S = b ? OL(b, d) : void 0, C = wL(h?.description) || void 0, w = Math.min(1, Math.max(0, (p - i.minX) / i.width)), T = (m - i.minY) / i.height, E = a === "bottom-left" ? 1 - T : T;
+		let y = xL(h?.link), b = CL(y?.url), x = CL(y?.label) || b || void 0, S = b ? PL(b, d) : void 0, C = AL(h?.description) || void 0, w = Math.min(1, Math.max(0, (p - i.minX) / i.width)), T = (m - i.minY) / i.height, E = a === "bottom-left" ? 1 - T : T;
 		u.push({
-			id: kL("fandom", _, t),
+			id: FL("fandom", _, t),
 			sourceId: _,
 			name: g,
 			categoryId: v,
@@ -36962,12 +37027,12 @@ function zL(e, t) {
 			description: C,
 			sourceUrl: S,
 			sourceTitle: x,
-			sourceLinks: IL(S, x, C, _)
+			sourceLinks: HL(S, x, C, _)
 		});
 	}), u.length === 0) throw Error("markers 中没有可用的 position");
-	let f = Date.now(), p = t.sourceKey || `fandom:${d}:${_L(n.mapImage) || t.name || "map"}:${i.width}x${i.height}`;
+	let f = Date.now(), p = t.sourceKey || `fandom:${d}:${CL(n.mapImage) || t.name || "map"}:${i.width}x${i.height}`;
 	return {
-		id: `fandom-${bL(p)}`,
+		id: `fandom-${EL(p)}`,
 		name: t.name || "Fandom 地图",
 		kind: "image",
 		source: "fandom",
@@ -36989,7 +37054,7 @@ function zL(e, t) {
 		groups: l,
 		markers: u,
 		regions: [],
-		dataBytes: xL({
+		dataBytes: DL({
 			categories: s,
 			groups: l,
 			markers: u,
@@ -37000,23 +37065,23 @@ function zL(e, t) {
 		updatedAt: f
 	};
 }
-function BL(e) {
+function KL(e) {
 	let t = e.indexOf("{z}"), n = e.indexOf("{x}"), r = e.indexOf("{y}");
 	return t < 0 || n < 0 || r < 0 ? "unknown" : n < r ? "zxy" : r < n ? "zyx" : "unknown";
 }
-function VL(e) {
+function qL(e) {
 	let t = e.indexOf("{z}");
 	return t > 0 ? e.slice(0, t).replace(/^\/+/, "") : "";
 }
-function HL(e) {
+function JL(e) {
 	let t = e.trim();
 	if (t) return /^https?:\/\//i.test(t) ? t : `https://tiles.mapgenie.io/games/${t.replace(/^\/+/, "")}`;
 }
-function UL(e) {
-	let t = {}, n = hL(e?.bounds);
+function YL(e) {
+	let t = {}, n = xL(e?.bounds);
 	if (!n) return t;
 	for (let [e, r] of Object.entries(n)) {
-		let n = hL(r), i = hL(n?.x), a = hL(n?.y), o = vL(i?.min), s = vL(i?.max), c = vL(a?.min), l = vL(a?.max);
+		let n = xL(r), i = xL(n?.x), a = xL(n?.y), o = wL(i?.min), s = wL(i?.max), c = wL(a?.min), l = wL(a?.max);
 		o != null && s != null && c != null && l != null && (t[e] = {
 			xMin: o,
 			xMax: s,
@@ -37026,69 +37091,69 @@ function UL(e) {
 	}
 	return t;
 }
-function WL(e) {
-	let t = hL(e);
-	return t ? gL(hL((hL(t.mapData) ?? t).mapConfig)?.tile_sets).flatMap((e, t) => {
-		let n = hL(e);
+function XL(e) {
+	let t = xL(e);
+	return t ? SL(xL((xL(t.mapData) ?? t).mapConfig)?.tile_sets).flatMap((e, t) => {
+		let n = xL(e);
 		if (!n) return [];
-		let r = _L(n.pattern), i = Math.max(0, vL(n.min_zoom) ?? 0), a = Math.max(i, vL(n.tiles_max_zoom) ?? vL(n.max_zoom) ?? i);
+		let r = CL(n.pattern), i = Math.max(0, wL(n.min_zoom) ?? 0), a = Math.max(i, wL(n.tiles_max_zoom) ?? wL(n.max_zoom) ?? i);
 		return [{
 			index: t,
-			id: yL(n.id) || String(t),
-			name: _L(n.name) || `瓦片组 ${t + 1}`,
+			id: TL(n.id) || String(t),
+			name: CL(n.name) || `瓦片组 ${t + 1}`,
 			pattern: r,
 			minZoom: i,
 			maxZoom: a,
-			order: BL(r),
-			prefix: VL(r),
-			boundsByZoom: UL(n),
-			backgroundColor: _L(n.background_color) || void 0
+			order: KL(r),
+			prefix: qL(r),
+			boundsByZoom: YL(n),
+			backgroundColor: CL(n.background_color) || void 0
 		}];
 	}) : [];
 }
-function GL(e) {
-	let t = hL(e), n = hL((hL(t?.mapData) ?? t)?.map);
+function ZL(e) {
+	let t = xL(e), n = xL((xL(t?.mapData) ?? t)?.map);
 	return {
-		title: _L(n?.title),
-		id: yL(n?.id),
-		slug: _L(n?.slug),
-		tileSets: WL(e)
+		title: CL(n?.title),
+		id: TL(n?.id),
+		slug: CL(n?.slug),
+		tileSets: XL(e)
 	};
 }
-function KL(e, t) {
-	let n = hL(e);
+function QL(e, t) {
+	let n = xL(e);
 	if (!n) throw Error("JSON 不是对象");
-	let r = hL(n.mapData) ?? n, i = gL(r.locations);
+	let r = xL(n.mapData) ?? n, i = SL(r.locations);
 	if (i.length === 0) throw Error("没有找到 locations 数组");
-	let a = gL(r.regions), o = gL(r.streets), s = hL(r.map), c = hL(r.mapConfig), l = gL(r.groups), u = r.categories, d = [];
+	let a = SL(r.regions), o = $L(r.streets ?? r.roads), s = xL(r.map), c = xL(r.mapConfig), l = SL(r.groups), u = r.categories, d = [];
 	l.forEach((e, t) => {
-		let n = hL(e), r = yL(n?.id), i = _L(n?.title);
+		let n = xL(e), r = TL(n?.id), i = CL(n?.title);
 		r && i && d.push({
 			id: r,
 			name: i,
-			order: vL(n?.order) ?? t
+			order: wL(n?.order) ?? t
 		});
 	});
 	let f = Array.isArray(u) ? u : u && typeof u == "object" ? Object.values(u) : [], p = [];
 	f.forEach((e, t) => {
-		let n = hL(e), r = yL(n?.id), i = _L(n?.title) || _L(n?.name);
+		let n = xL(e), r = TL(n?.id), i = CL(n?.title) || CL(n?.name);
 		r && i && p.push({
 			id: r,
 			name: i,
-			groupId: yL(n?.group_id) || void 0,
-			color: CL(n?.color, SL(t)),
-			icon: _L(n?.icon) || void 0,
-			order: vL(n?.order) ?? t
+			groupId: TL(n?.group_id) || void 0,
+			color: kL(n?.color, OL(t)),
+			icon: CL(n?.icon) || void 0,
+			order: wL(n?.order) ?? t
 		});
 	});
-	let m = gL(c?.tile_sets), h = t.tileSetIndex ?? 0, g = hL(m[h]) ?? hL(m[0]), _ = Math.max(0, vL(g?.min_zoom) ?? 0), v = Math.max(_, vL(g?.tiles_max_zoom) ?? vL(g?.max_zoom) ?? _), y = UL(g), b = y[String(_)], x = b?.xMin ?? 0, S = b?.yMin ?? 0, C = b?.xMax ?? x, w = b?.yMax ?? S, T = Math.max(1, Math.round(Math.min(C - x + 1, w - S + 1))), E = _L(g?.background_color) || _L(hL(m[0])?.background_color) || "#0a0f14", D = Object.keys(t.tileFiles ?? {}), O, k;
+	let m = SL(c?.tile_sets), h = t.tileSetIndex ?? 0, g = xL(m[h]) ?? xL(m[0]), _ = Math.max(0, wL(g?.min_zoom) ?? 0), v = Math.max(_, wL(g?.tiles_max_zoom) ?? wL(g?.max_zoom) ?? _), y = YL(g), b = y[String(_)], x = b?.xMin ?? 0, S = b?.yMin ?? 0, C = b?.xMax ?? x, w = b?.yMax ?? S, T = Math.max(1, Math.round(Math.min(C - x + 1, w - S + 1))), E = CL(g?.background_color) || CL(xL(m[0])?.background_color) || "#0a0f14", D = Object.keys(t.tileFiles ?? {}), O, k;
 	for (let e of D) {
 		let t = Number(e.split("/")[0]);
 		Number.isFinite(t) && (O = O == null ? t : Math.min(O, t), k = k == null ? t : Math.max(k, t));
 	}
 	let A = {
 		template: t.tileTemplate?.trim() ?? "",
-		remoteTemplate: HL(_L(g?.pattern)),
+		remoteTemplate: JL(CL(g?.pattern)),
 		minZoom: _,
 		maxZoom: v,
 		xMin: x,
@@ -37101,39 +37166,39 @@ function KL(e, t) {
 		coverageMaxZoom: k,
 		expectedCount: t.tileStats?.expected,
 		missingCount: t.tileStats?.missing,
-		setName: _L(g?.name) || void 0,
+		setName: CL(g?.name) || void 0,
 		setIndex: h,
 		setCount: m.length,
 		boundsByZoom: y
 	}, j = [];
 	for (let e of i) {
-		let t = hL(e), n = vL(t?.longitude), r = vL(t?.latitude);
-		n != null && r != null && j.push(PL(n, r));
+		let t = xL(e), n = wL(t?.longitude), r = wL(t?.latitude);
+		n != null && r != null && j.push(BL(n, r));
 	}
 	for (let e of a) {
-		let t = hL(e);
-		if (t) for (let e of YL(t)) for (let t of e.polygons) for (let [e, n] of t) j.push(PL(e, n));
+		let t = xL(e);
+		if (t) for (let e of aR(t)) for (let t of e.polygons) for (let [e, n] of t) j.push(BL(e, n));
 	}
-	let ee = qL(o);
+	let ee = rR(o);
 	for (let e of ee) for (let t of e.points) j.push(t);
-	let te = hL(r.worldBounds), ne = vL(te?.minX), re = vL(te?.minY), ie = vL(te?.maxX), ae = vL(te?.maxY);
+	let te = xL(r.worldBounds), ne = wL(te?.minX), re = wL(te?.minY), ie = wL(te?.maxX), ae = wL(te?.maxY);
 	A.worldBounds = ne != null && re != null && ie != null && ae != null ? {
 		minX: ne,
 		minY: re,
 		maxX: ie,
 		maxY: ae
-	} : jL(j);
+	} : LL(j);
 	let oe = [];
 	a.forEach((e, t) => {
-		let n = hL(e);
+		let n = xL(e);
 		if (!n) return;
-		let r = yL(n.id) || String(t), i = YL(n);
+		let r = TL(n.id) || String(t), i = aR(n);
 		if (i.length === 0) return;
-		let a = i.flatMap((e) => e.polygons.map((e) => e.map(([e, t]) => PL(e, t)))), o = vL(n.label_longitude) ?? vL(n.labelLongitude), s = vL(n.label_latitude) ?? vL(n.labelLatitude), c = o != null && s != null ? PL(o, s) : void 0;
+		let a = i.flatMap((e) => e.polygons.map((e) => e.map(([e, t]) => BL(e, t)))), o = wL(n.label_longitude) ?? wL(n.labelLongitude), s = wL(n.label_latitude) ?? wL(n.labelLatitude), c = o != null && s != null ? BL(o, s) : void 0;
 		oe.push({
 			id: `mapgenie-region:${r}`,
-			name: _L(n.title) || `区域 ${r}`,
-			parentId: yL(n.parent_region_id) || void 0,
+			name: CL(n.title) || `区域 ${r}`,
+			parentId: TL(n.parent_region_id) || void 0,
 			labelX: c?.[0],
 			labelY: c?.[1],
 			polygons: a
@@ -37141,27 +37206,27 @@ function KL(e, t) {
 	});
 	let se = /* @__PURE__ */ new Map();
 	a.forEach((e, t) => {
-		let n = yL(hL(e)?.id) || String(t);
+		let n = TL(xL(e)?.id) || String(t);
 		se.set(n, `mapgenie-region:${n}`);
 	});
 	let ce = [];
 	if (i.forEach((e, t) => {
-		let n = hL(e);
+		let n = xL(e);
 		if (!n) return;
-		let r = vL(n.longitude), i = vL(n.latitude);
+		let r = wL(n.longitude), i = wL(n.latitude);
 		if (r == null || i == null) return;
-		let a = wL(n.title) || `地点 ${t + 1}`, o = AL(n, a, r, i, t), s = hL(n.category), c = yL(n.category_id) || yL(s?.id) || "uncategorized";
+		let a = AL(n.title) || `地点 ${t + 1}`, o = IL(n, a, r, i, t), s = xL(n.category), c = TL(n.category_id) || TL(s?.id) || "uncategorized";
 		p.some((e) => e.id === c) || p.push({
 			id: c,
-			name: _L(s?.title) || c || "未分类",
-			groupId: yL(s?.group_id) || void 0,
-			color: CL(s?.color, SL(p.length)),
-			icon: _L(s?.icon) || void 0,
+			name: CL(s?.title) || c || "未分类",
+			groupId: TL(s?.group_id) || void 0,
+			color: kL(s?.color, OL(p.length)),
+			icon: CL(s?.icon) || void 0,
 			order: p.length
 		});
-		let [l, u] = PL(r, i), d = yL(n.region_id), f = wL(n.description) || void 0, m = FL(n.description, o);
+		let [l, u] = BL(r, i), d = TL(n.region_id), f = AL(n.description) || void 0, m = VL(n.description, o);
 		ce.push({
-			id: kL("mapgenie", o, t),
+			id: FL("mapgenie", o, t),
 			sourceId: o,
 			name: a,
 			categoryId: c,
@@ -37172,14 +37237,14 @@ function KL(e, t) {
 			sourceLinks: m.length > 0 ? m : void 0
 		});
 	}), ce.length === 0) throw Error("locations 中没有可用坐标");
-	let le = Date.now(), ue = _L(s?.title) || t.name || "Map Genie 地图", de = t.sourceKey || `mapgenie:${_L(s?.id) || _L(s?.slug) || ue}:${yL(g?.id) || h}`;
+	let le = Date.now(), ue = CL(s?.title) || t.name || "Map Genie 地图", de = t.sourceKey || `mapgenie:${CL(s?.id) || CL(s?.slug) || ue}:${TL(g?.id) || h}`;
 	return {
-		id: `mapgenie-${bL(de)}`,
+		id: `mapgenie-${EL(de)}`,
 		name: t.name || ue,
 		kind: "tiles",
 		source: "mapgenie",
-		sourceLabel: t.sourceLabel || _L(r.sourceLabel) || void 0,
-		defaultView: JL(r.defaultView),
+		sourceLabel: t.sourceLabel || CL(r.sourceLabel) || void 0,
+		defaultView: iR(r.defaultView),
 		sourceKey: de,
 		sourceUrl: t.sourceUrl,
 		width: 1,
@@ -37191,33 +37256,59 @@ function KL(e, t) {
 		markers: ce,
 		regions: oe,
 		streets: ee.length > 0 ? ee : void 0,
-		dataBytes: xL({
+		dataBytes: DL({
 			categories: p,
 			groups: d,
 			markers: ce,
 			regions: oe,
 			streets: ee
 		}),
-		attribution: _L(r.attribution) || "Map Genie / 用户本地快照",
+		attribution: CL(r.attribution) || "Map Genie / 用户本地快照",
 		createdAt: le,
 		updatedAt: le
 	};
 }
-function qL(e) {
+function $L(e) {
+	let t = xL(e);
+	return t && Array.isArray(t.features) ? t.features : SL(e);
+}
+function eR(e, t) {
+	for (let n of t) {
+		let t = e?.[n];
+		if (t != null && CL(t)) return t;
+	}
+}
+var tR = [
+	"Name",
+	"name",
+	"NAME",
+	"title",
+	"Title",
+	"label",
+	"Label"
+], nR = [
+	"Type",
+	"type",
+	"TYPE",
+	"highway",
+	"class",
+	"kind",
+	"fclass",
+	"road_type"
+];
+function rR(e) {
 	let t = [];
 	return e.forEach((e, n) => {
-		let r = hL(e);
+		let r = xL(e);
 		if (!r) return;
-		let i = hL(r.properties), a = wL(i?.Name ?? i?.name);
-		if (!a) return;
-		let o = _L(i?.Type ?? i?.type) || void 0, s = hL(r.geometry), c = _L(s?.type);
+		let i = xL(r.properties), a = AL(eR(i, tR)) ?? "", o = CL(eR(i, nR)) || void 0, s = xL(r.geometry), c = CL(s?.type);
 		if (!s || c !== "LineString" && c !== "MultiLineString") return;
-		let l = c === "LineString" ? [s.coordinates] : gL(s.coordinates), u = yL(i?.fid) || String(n);
+		let l = c === "LineString" ? [s.coordinates] : SL(s.coordinates), u = TL(i?.fid) || TL(i?.id) || TL(r.id) || String(n);
 		l.forEach((e, n) => {
 			let r = [];
-			for (let t of gL(e)) {
-				let e = gL(t), n = vL(e[0]), i = vL(e[1]);
-				n != null && i != null && r.push(PL(n, i));
+			for (let t of SL(e)) {
+				let e = SL(t), n = wL(e[0]), i = wL(e[1]);
+				n != null && i != null && r.push(BL(n, i));
 			}
 			r.length < 2 || t.push({
 				id: `mapgenie-street:${u}:${n}`,
@@ -37228,55 +37319,55 @@ function qL(e) {
 		});
 	}), t;
 }
-function JL(e) {
-	let t = hL(e), n = vL(t?.cx), r = vL(t?.cy), i = vL(t?.zoom);
+function iR(e) {
+	let t = xL(e), n = wL(t?.cx), r = wL(t?.cy), i = wL(t?.zoom);
 	if (n != null && r != null && i != null) return {
 		cx: Math.min(1, Math.max(0, n)),
 		cy: Math.min(1, Math.max(0, r)),
 		zoom: Math.max(0, i)
 	};
 }
-function YL(e) {
-	let t = gL(e.features), n = [];
+function aR(e) {
+	let t = SL(e.features), n = [];
 	for (let e of t) {
-		let t = hL(e);
+		let t = xL(e);
 		if (!t) continue;
-		let r = hL(t.geometry), i = _L(r?.type), a = r?.coordinates;
+		let r = xL(t.geometry), i = CL(r?.type), a = r?.coordinates;
 		if (r && a) {
 			if (i === "Polygon") {
-				let e = XL(a);
+				let e = oR(a);
 				e.length > 0 && n.push({ polygons: e });
-			} else if (i === "MultiPolygon") for (let e of gL(a)) {
-				let t = XL(e);
+			} else if (i === "MultiPolygon") for (let e of SL(a)) {
+				let t = oR(e);
 				t.length > 0 && n.push({ polygons: t });
 			}
 		}
 	}
 	return n;
 }
-function XL(e) {
+function oR(e) {
 	let t = [];
-	for (let n of gL(e)) {
+	for (let n of SL(e)) {
 		let e = [];
-		for (let t of gL(n)) {
-			let n = gL(t), r = vL(n[0]), i = vL(n[1]);
+		for (let t of SL(n)) {
+			let n = SL(t), r = wL(n[0]), i = wL(n[1]);
 			r != null && i != null && e.push([r, i]);
 		}
 		e.length >= 3 && t.push(e);
 	}
 	return t;
 }
-function ZL(e) {
-	let t = hL(e);
+function sR(e) {
+	let t = xL(e);
 	if (!t) return "unknown";
-	let n = hL(t.mapData) ?? t;
-	return Array.isArray(n.markers) && n.markers.length > 0 ? "fandom" : Array.isArray(n.locations) || hL(n.mapConfig) || hL(n.map) ? "mapgenie" : "unknown";
+	let n = xL(t.mapData) ?? t;
+	return Array.isArray(n.markers) && n.markers.length > 0 ? "fandom" : Array.isArray(n.locations) || xL(n.mapConfig) || xL(n.map) ? "mapgenie" : "unknown";
 }
-function QL(e) {
+function cR(e) {
 	return e.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || "本地地图包";
 }
 // src/layer-zip.ts
-var $L = 101010256, eR = 117853008, tR = 101075792, nR = 33639248, rR = 67324752, iR = 2 ** 53 - 1, aR = /* @__PURE__ */ new Set([
+var lR = 101010256, uR = 117853008, dR = 101075792, fR = 33639248, pR = 67324752, mR = 2 ** 53 - 1, hR = /* @__PURE__ */ new Set([
 	"jpg",
 	"jpeg",
 	"png",
@@ -37284,15 +37375,15 @@ var $L = 101010256, eR = 117853008, tR = 101075792, nR = 33639248, rR = 67324752
 	"avif",
 	"gif"
 ]);
-function oR(e) {
+function gR(e) {
 	let t = e.split(".").pop()?.toLowerCase() ?? "";
-	return t === "json" || aR.has(t);
+	return t === "json" || hR.has(t);
 }
-function sR(e) {
+function _R(e) {
 	return e.split(".").pop()?.toLowerCase() ?? "";
 }
-function cR(e) {
-	switch (sR(e)) {
+function vR(e) {
+	switch (_R(e)) {
 		case "json": return "application/json";
 		case "png": return "image/png";
 		case "webp": return "image/webp";
@@ -37301,52 +37392,52 @@ function cR(e) {
 		default: return "image/jpeg";
 	}
 }
-function lR(e) {
+function yR(e) {
 	if (e?.aborted) throw new DOMException("导入已取消", "AbortError");
 }
-async function uR(e, t, n) {
+async function bR(e, t, n) {
 	let r = Math.max(0, Math.min(e.size, t)), i = Math.max(r, Math.min(e.size, n));
 	return e.slice(r, i).arrayBuffer();
 }
-function dR(e, t) {
+function xR(e, t) {
 	return e.getUint16(t, !0);
 }
-function fR(e, t) {
+function SR(e, t) {
 	return e.getUint32(t, !0);
 }
-function pR(e, t) {
+function CR(e, t) {
 	let n = e.getBigUint64(t, !0);
-	if (n > BigInt(iR)) throw Error("ZIP64 数值超出浏览器可处理范围");
+	if (n > BigInt(mR)) throw Error("ZIP64 数值超出浏览器可处理范围");
 	return Number(n);
 }
-function mR(e, t, n = !1) {
+function wR(e, t, n = !1) {
 	let r = new DataView(e.buffer, e.byteOffset, e.byteLength);
 	if (n) {
-		for (let n = e.byteLength - 4; n >= 0; --n) if (fR(r, n) === t) return n;
-	} else for (let n = 0; n + 4 <= e.byteLength; n += 1) if (fR(r, n) === t) return n;
+		for (let n = e.byteLength - 4; n >= 0; --n) if (SR(r, n) === t) return n;
+	} else for (let n = 0; n + 4 <= e.byteLength; n += 1) if (SR(r, n) === t) return n;
 	return -1;
 }
-function hR(e, t) {
+function TR(e, t) {
 	let n = new DataView(e.buffer, e.byteOffset, e.byteLength), r = 0;
 	for (; r + 4 <= e.byteLength;) {
-		let e = dR(n, r), i = dR(n, r + 2), a = r + 4;
+		let e = xR(n, r), i = xR(n, r + 2), a = r + 4;
 		if (e === 1) {
 			let e = a, r = {};
-			return t.uncompressed && e + 8 <= a + i && (r.uncompressed = pR(n, e), e += 8), t.compressed && e + 8 <= a + i && (r.compressed = pR(n, e), e += 8), t.offset && e + 8 <= a + i && (r.offset = pR(n, e)), r;
+			return t.uncompressed && e + 8 <= a + i && (r.uncompressed = CR(n, e), e += 8), t.compressed && e + 8 <= a + i && (r.compressed = CR(n, e), e += 8), t.offset && e + 8 <= a + i && (r.offset = CR(n, e)), r;
 		}
 		r += 4 + i;
 	}
 	return {};
 }
-async function gR(e, t, n) {
-	let r = new Uint8Array(await uR(e, t, t + n)), i = new DataView(r.buffer, r.byteOffset, r.byteLength), a = [], o = 0;
+async function ER(e, t, n) {
+	let r = new Uint8Array(await bR(e, t, t + n)), i = new DataView(r.buffer, r.byteOffset, r.byteLength), a = [], o = 0;
 	for (; o + 46 <= r.byteLength;) {
-		if (fR(i, o) !== nR) throw Error("ZIP 中央目录损坏，文件可能没有下载完整");
-		let e = dR(i, o + 8), t = dR(i, o + 10), n = fR(i, o + 20), s = fR(i, o + 24), c = dR(i, o + 28), l = dR(i, o + 30), u = dR(i, o + 32), d = fR(i, o + 42), f = o + 46, p = f + c;
+		if (SR(i, o) !== fR) throw Error("ZIP 中央目录损坏，文件可能没有下载完整");
+		let e = xR(i, o + 8), t = xR(i, o + 10), n = SR(i, o + 20), s = SR(i, o + 24), c = xR(i, o + 28), l = xR(i, o + 30), u = xR(i, o + 32), d = SR(i, o + 42), f = o + 46, p = f + c;
 		if (p > r.byteLength) throw Error("ZIP 文件名长度损坏");
 		let m = r.subarray(f, p), h = new TextDecoder("utf-8").decode(m).replace(/\\/g, "/").replace(/^\.?\//, ""), g = p, _ = Math.min(r.byteLength, g + l), v = r.subarray(g, _), y = s, b = n, x = d;
 		if (s === 4294967295 || n === 4294967295 || d === 4294967295) {
-			let e = hR(v, {
+			let e = TR(v, {
 				uncompressed: s === 4294967295,
 				compressed: n === 4294967295,
 				offset: d === 4294967295
@@ -37365,21 +37456,21 @@ async function gR(e, t, n) {
 	}
 	return a;
 }
-async function _R(e) {
-	let t = Math.min(e.size, 65621), n = Math.max(0, e.size - t), r = new Uint8Array(await uR(e, n, e.size)), i = mR(r, $L, !0);
+async function DR(e) {
+	let t = Math.min(e.size, 65621), n = Math.max(0, e.size - t), r = new Uint8Array(await bR(e, n, e.size)), i = wR(r, lR, !0);
 	if (i < 0) throw Error("不是有效的 ZIP 文件（找不到中央目录结尾）");
-	let a = new DataView(r.buffer, r.byteOffset, r.byteLength), o = n + i, s = dR(a, i + 10), c = fR(a, i + 12), l = fR(a, i + 16);
+	let a = new DataView(r.buffer, r.byteOffset, r.byteLength), o = n + i, s = xR(a, i + 10), c = SR(a, i + 12), l = SR(a, i + 16);
 	if (s === 65535 || c === 4294967295 || l === 4294967295) {
 		let t = o - 20;
 		if (t < 0) throw Error("ZIP64 定位器缺失");
-		let n = new Uint8Array(await uR(e, t, t + 20)), r = new DataView(n.buffer, n.byteOffset, n.byteLength);
-		if (fR(r, 0) !== eR) throw Error("ZIP64 定位器损坏");
-		let i = pR(r, 8), a = new Uint8Array(await uR(e, i, i + 56)), u = new DataView(a.buffer, a.byteOffset, a.byteLength);
-		if (fR(u, 0) !== tR) throw Error("ZIP64 中央目录损坏");
-		s = pR(u, 32), c = pR(u, 40), l = pR(u, 48);
+		let n = new Uint8Array(await bR(e, t, t + 20)), r = new DataView(n.buffer, n.byteOffset, n.byteLength);
+		if (SR(r, 0) !== uR) throw Error("ZIP64 定位器损坏");
+		let i = CR(r, 8), a = new Uint8Array(await bR(e, i, i + 56)), u = new DataView(a.buffer, a.byteOffset, a.byteLength);
+		if (SR(u, 0) !== dR) throw Error("ZIP64 中央目录损坏");
+		s = CR(u, 32), c = CR(u, 40), l = CR(u, 48);
 	}
 	if (l + c > e.size) throw Error("ZIP 中央目录超出文件范围，文件可能没有下载完整");
-	let u = await gR(e, l, c);
+	let u = await ER(e, l, c);
 	if (s && u.length === 0) throw Error("ZIP 中没有可读取的文件");
 	return {
 		entries: u,
@@ -37387,23 +37478,23 @@ async function _R(e) {
 		centralSize: c
 	};
 }
-async function vR(e, t, n) {
-	if (lR(n), t.flags & 1) throw Error(`ZIP 内文件已加密，无法读取：${t.path}`);
+async function OR(e, t, n) {
+	if (yR(n), t.flags & 1) throw Error(`ZIP 内文件已加密，无法读取：${t.path}`);
 	if (t.method !== 0 && t.method !== 8) throw Error(`ZIP 使用了不支持的压缩方式（${t.method}）：${t.path}`);
-	let r = new Uint8Array(await uR(e, t.localOffset, t.localOffset + 30)), i = new DataView(r.buffer, r.byteOffset, r.byteLength);
-	if (r.byteLength < 30 || fR(i, 0) !== rR) throw Error(`ZIP 文件头损坏：${t.path}`);
-	let a = dR(i, 26), o = dR(i, 28), s = t.localOffset + 30 + a + o, c = e.slice(s, s + t.compressedSize), l = cR(t.path);
+	let r = new Uint8Array(await bR(e, t.localOffset, t.localOffset + 30)), i = new DataView(r.buffer, r.byteOffset, r.byteLength);
+	if (r.byteLength < 30 || SR(i, 0) !== pR) throw Error(`ZIP 文件头损坏：${t.path}`);
+	let a = xR(i, 26), o = xR(i, 28), s = t.localOffset + 30 + a + o, c = e.slice(s, s + t.compressedSize), l = vR(t.path);
 	if (t.method === 0) return new Blob([await c.arrayBuffer()], { type: l });
 	let u = globalThis.DecompressionStream;
 	if (!u) throw Error("当前浏览器不支持 ZIP 解压，请改用文件夹导入");
 	let d = c.stream().pipeThrough(new u("deflate-raw"));
 	return new Blob([await new Response(d).arrayBuffer()], { type: l });
 }
-async function yR(e, t = {}) {
-	let { entries: n, centralOffset: r, centralSize: i } = await _R(e), a = t.shouldRead ?? oR, o = n.filter((e) => !e.path.startsWith("__MACOSX/") && !e.path.split("/").includes(".DS_Store") && a(e.path)), s = [], c = 0;
+async function kR(e, t = {}) {
+	let { entries: n, centralOffset: r, centralSize: i } = await DR(e), a = t.shouldRead ?? gR, o = n.filter((e) => !e.path.startsWith("__MACOSX/") && !e.path.split("/").includes(".DS_Store") && a(e.path)), s = [], c = 0;
 	for (let n of o) {
-		lR(t.signal);
-		let r = await vR(e, n, t.signal);
+		yR(t.signal);
+		let r = await OR(e, n, t.signal);
 		c += 1, t.onProgress?.(c, o.length, n.path), r && s.push({
 			path: n.path,
 			name: n.path.split("/").pop() ?? n.path,
@@ -37416,7 +37507,7 @@ async function yR(e, t = {}) {
 	return s;
 }
 // src/layer-source.ts
-var bR = /* @__PURE__ */ new Set([
+var AR = /* @__PURE__ */ new Set([
 	"jpg",
 	"jpeg",
 	"png",
@@ -37424,50 +37515,50 @@ var bR = /* @__PURE__ */ new Set([
 	"avif",
 	"gif"
 ]);
-function xR(e) {
+function jR(e) {
 	if (e?.aborted) throw new DOMException("导入已取消", "AbortError");
 }
-function SR(e) {
+function MR(e) {
 	return e.path.toLowerCase().endsWith(".json");
 }
-function CR(e) {
-	return YI(e.name);
+function NR(e) {
+	return tL(e.name);
 }
-function wR(e) {
+function PR(e) {
 	return e.split("/").pop() ?? e;
 }
-function TR(e) {
+function FR(e) {
 	let t = e.lastIndexOf("/");
 	return t >= 0 ? e.slice(0, t) : "";
 }
-function ER(e) {
+function IR(e) {
 	return e.replace(/\\/g, "/").replace(/^\.?\//, "").replace(/\/+/g, "/");
 }
-function DR(e, t) {
-	let n = ER(t);
-	return !e || n.startsWith(`${e}/`) ? n : ER(`${e}/${n}`);
+function LR(e, t) {
+	let n = IR(t);
+	return !e || n.startsWith(`${e}/`) ? n : IR(`${e}/${n}`);
 }
-function OR(e, t) {
+function RR(e, t) {
 	if (!t) return !1;
-	let n = ER(t);
-	return e.path === n || e.path.endsWith(`/${n}`) || e.name === wR(n);
+	let n = IR(t);
+	return e.path === n || e.path.endsWith(`/${n}`) || e.name === PR(n);
 }
-function kR(e, t) {
+function zR(e, t) {
 	let n = e.map((e) => ({
-		path: ER(e.webkitRelativePath || e.name),
+		path: IR(e.webkitRelativePath || e.name),
 		name: e.name,
 		blob: e
 	})), r = n[0]?.path ?? "", i = r.includes("/") ? r.split("/")[0] : "";
 	return {
-		label: t || i || QL(n[0]?.name ?? "本地地图包"),
+		label: t || i || cR(n[0]?.name ?? "本地地图包"),
 		source: "files",
 		files: n
 	};
 }
-async function AR(e, t = {}) {
-	let n = await yR(e, {
+async function BR(e, t = {}) {
+	let n = await kR(e, {
 		signal: t.signal,
-		shouldRead: oR,
+		shouldRead: gR,
 		onProgress: (e, n, r) => {
 			t.onProgress?.({
 				step: "读取压缩包",
@@ -37476,69 +37567,69 @@ async function AR(e, t = {}) {
 				total: n
 			});
 		}
-	}), r = new Set(n.map((e) => ER(e.path).split("/")[0]).filter(Boolean));
+	}), r = new Set(n.map((e) => IR(e.path).split("/")[0]).filter(Boolean));
 	return {
-		label: QL((n.every((e) => ER(e.path).includes("/")) && r.size === 1 ? [...r][0] : "") || e.name),
+		label: cR((n.every((e) => IR(e.path).includes("/")) && r.size === 1 ? [...r][0] : "") || e.name),
 		source: "zip",
 		files: n.map((e) => ({
-			path: ER(e.path),
+			path: IR(e.path),
 			name: e.name,
 			blob: e.blob
 		}))
 	};
 }
-function jR(e) {
+function VR(e) {
 	return new Promise((t, n) => {
 		e.file(t, n);
 	});
 }
-function MR(e) {
+function HR(e) {
 	return new Promise((t, n) => {
 		e.readEntries(t, n);
 	});
 }
-async function NR(e, t, n, r) {
-	xR(r);
+async function UR(e, t, n, r) {
+	jR(r);
 	let i = t ? `${t}/${e.name}` : e.name;
 	if (e.isFile) {
-		let t = await jR(e);
+		let t = await VR(e);
 		n.push({
-			path: ER(i),
+			path: IR(i),
 			name: t.name,
 			blob: t
 		});
 	} else if (e.isDirectory) {
 		let t = e.createReader();
 		for (;;) {
-			let e = await MR(t);
+			let e = await HR(t);
 			if (e.length === 0) break;
-			for (let t of e) await NR(t, i, n, r);
+			for (let t of e) await UR(t, i, n, r);
 		}
 	}
 }
-async function PR(e, t = {}) {
+async function WR(e, t = {}) {
 	let n = Array.from(e.items ?? []).map((e) => e.webkitGetAsEntry?.()).filter((e) => !!e);
 	if (n.length > 0) {
 		let e = [];
-		for (let r of n) await NR(r, "", e, t.signal);
-		return e.length === 1 && /\.zip$/i.test(e[0].name) ? AR(e[0].blob, t) : {
-			label: (n.length === 1 ? n[0].name : "") || QL(e[0]?.name ?? "拖入的地图包"),
+		for (let r of n) await UR(r, "", e, t.signal);
+		return e.length === 1 && /\.zip$/i.test(e[0].name) ? BR(e[0].blob, t) : {
+			label: (n.length === 1 ? n[0].name : "") || cR(e[0]?.name ?? "拖入的地图包"),
 			source: "folder",
 			files: e
 		};
 	}
 	let r = Array.from(e.files ?? []);
-	if (r.length !== 0) return r.length === 1 && /\.zip$/i.test(r[0].name) ? AR(r[0], t) : kR(r);
+	if (r.length !== 0) return r.length === 1 && /\.zip$/i.test(r[0].name) ? BR(r[0], t) : zR(r);
 }
-function FR(e) {
+function GR(e) {
 	let t = e.files.filter((e) => e.name.toLowerCase() === "manifest.json").sort((e, t) => e.path.split("/").length - t.path.split("/").length)[0];
 	return t ? {
-		baseDir: TR(t.path),
+		baseDir: FR(t.path),
 		path: t.path
 	} : { baseDir: "" };
 }
-async function IR(e) {
-	let t = FR(e);
+async function KR(e) {
+	let t = GR(e);
 	if (!t.path) return t;
 	let n = e.files.find((e) => e.path === t.path);
 	if (!n) return t;
@@ -37555,18 +37646,18 @@ async function IR(e) {
 		};
 	}
 }
-function LR(e) {
+function qR(e) {
 	let t = e.replace(/\.(zip|json)$/i, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 	return t = t.replace(/^(fandom|mapgenie|tavernmap|tavern map|sample)\s+/i, ""), t = t.replace(/\s+(sample|export|snapshot)$/i, ""), /^[a-z0-9\s]+$/i.test(t) && (t = t.replace(/\b[a-z]/g, (e) => e.toUpperCase())), t || "本地地图包";
 }
-function RR(e) {
+function JR(e) {
 	return /^(map|mapdata|map data|data|tiles|images?|map image|package|地图|地图包|本地地图包)$/i.test(e.trim());
 }
-function zR(e, t) {
-	let n = e.name.replace(/\.[^.]+$/, ""), r = RR(t) ? "" : t;
-	return /^(map[-_ ]?image|image|map|底图)$/i.test(n) ? r || "本地底图" : LR(n);
+function YR(e, t) {
+	let n = e.name.replace(/\.[^.]+$/, ""), r = JR(t) ? "" : t;
+	return /^(map[-_ ]?image|image|map|底图)$/i.test(n) ? r || "本地底图" : qR(n);
 }
-function BR(e) {
+function XR(e) {
 	let t = e?.trim();
 	if (t && /^https?:\/\//i.test(t)) try {
 		let e = new URL(t);
@@ -37575,12 +37666,12 @@ function BR(e) {
 		return;
 	}
 }
-function VR(e, t, n) {
-	if (t?.wiki) return EL(t.wiki);
-	let r = BR(t?.sourceUrl);
+function ZR(e, t, n) {
+	if (t?.wiki) return ML(t.wiki);
+	let r = XR(t?.sourceUrl);
 	if (r) return r;
 	for (let e of Array.isArray(n.markers) ? n.markers : []) {
-		let t = e && typeof e == "object" ? e : void 0, n = t?.popup && typeof t.popup == "object" ? t.popup : void 0, r = n?.link && typeof n.link == "object" ? n.link : void 0, i = BR(typeof r?.url == "string" ? r.url : void 0);
+		let t = e && typeof e == "object" ? e : void 0, n = t?.popup && typeof t.popup == "object" ? t.popup : void 0, r = n?.link && typeof n.link == "object" ? n.link : void 0, i = XR(typeof r?.url == "string" ? r.url : void 0);
 		if (i) return i;
 	}
 	let i = [
@@ -37588,19 +37679,19 @@ function VR(e, t, n) {
 		typeof n.mapImage == "string" ? n.mapImage : "",
 		typeof n.description == "string" ? n.description : ""
 	].join(" ").toLowerCase();
-	return /waterdeep|forgotten realms|forgottenrealms|toril|dungeons?\s*&?\s*dragons?|d&d/.test(i) ? "forgottenrealms.fandom.com" : /cyberpunk|night city/.test(i) ? "cyberpunk.fandom.com" : TL;
+	return /waterdeep|forgotten realms|forgottenrealms|toril|dungeons?\s*&?\s*dragons?|d&d/.test(i) ? "forgottenrealms.fandom.com" : /cyberpunk|night city/.test(i) ? "cyberpunk.fandom.com" : jL;
 }
-async function HR(e, t) {
+async function QR(e, t) {
 	let n = [], r = [], i = 0;
 	for (let a of e) {
-		xR(t.signal), i += 1, t.onProgress?.({
+		jR(t.signal), i += 1, t.onProgress?.({
 			step: "读取图片",
 			detail: a.name,
 			done: i,
 			total: e.length
 		});
 		try {
-			let e = await $I(a.blob, a.name);
+			let e = await aL(a.blob, a.name);
 			n.push({
 				path: a.path,
 				name: a.name,
@@ -37621,10 +37712,10 @@ async function HR(e, t) {
 		warnings: r
 	};
 }
-function UR(e, t, n) {
+function $R(e, t, n) {
 	if (e.length === 0) return {};
-	let r = XI(t), i = r.replace(/\.[^.]+$/, "");
-	for (let t of e) n && (t.path === ER(n) || t.path.endsWith(`/${ER(n)}`)) ? t.matched = "manifest" : r && XI(t.name) === r ? t.matched = "mapImage" : i && XI(t.name).includes(i) && (t.matched = "fuzzy");
+	let r = nL(t), i = r.replace(/\.[^.]+$/, "");
+	for (let t of e) n && (t.path === IR(n) || t.path.endsWith(`/${IR(n)}`)) ? t.matched = "manifest" : r && nL(t.name) === r ? t.matched = "mapImage" : i && nL(t.name).includes(i) && (t.matched = "fuzzy");
 	e.length === 1 && e[0].matched === "none" && (e[0].matched = "only");
 	let a = (e) => (e.matched === "manifest" ? 0 : e.matched === "mapImage" ? 1 : e.matched === "fuzzy" ? 2 : e.matched === "only" ? 3 : 6) + (e.placeholder ? 10 : 0);
 	e.sort((e, t) => {
@@ -37632,14 +37723,14 @@ function UR(e, t, n) {
 		return n === 0 ? t.width * t.height - e.width * e.height : n;
 	});
 	let o = e[0];
-	return o.matched === "none" && (o.matched = "fuzzy"), !t && e.length > 1 && e.some((e) => e.matched === "mapImage" || e.matched === "manifest") ? { choice: o } : r && o.matched === "fuzzy" && !XI(o.name).includes(i) ? {
+	return o.matched === "none" && (o.matched = "fuzzy"), !t && e.length > 1 && e.some((e) => e.matched === "mapImage" || e.matched === "manifest") ? { choice: o } : r && o.matched === "fuzzy" && !nL(o.name).includes(i) ? {
 		choice: o,
 		warning: `没有找到 mapImage 指定的「${t}」，已选择包内最接近的图片「${o.name}」。`
 	} : { choice: o };
 }
-function WR(e) {
-	let t = ER(e).split("/"), n = t.pop() ?? "", r = n.split(".").pop()?.toLowerCase() ?? "";
-	if (!bR.has(r)) return;
+function ez(e) {
+	let t = IR(e).split("/"), n = t.pop() ?? "", r = n.split(".").pop()?.toLowerCase() ?? "";
+	if (!AR.has(r)) return;
 	let i = n.slice(0, Math.max(0, n.length - r.length - 1));
 	if (!/^\d+$/.test(i)) return;
 	let a = [...t.filter((e) => /^\d+$/.test(e)), i];
@@ -37651,7 +37742,7 @@ function WR(e) {
 		v: o[2]
 	};
 }
-function GR(e, t) {
+function tz(e, t) {
 	if (t.order !== "unknown") return t.order;
 	let n = 0, r = 0;
 	for (let i of e) {
@@ -37660,7 +37751,7 @@ function GR(e, t) {
 	}
 	return n === 0 && r === 0 || n >= r ? "zyx" : "zxy";
 }
-function KR(e, t) {
+function nz(e, t) {
 	let n = /* @__PURE__ */ new Map();
 	for (let t of e) n.set(t.z, (n.get(t.z) ?? 0) + 1);
 	let r = 0, i = 0, a = !1;
@@ -37680,12 +37771,12 @@ function KR(e, t) {
 		hasBounds: a
 	};
 }
-function qR(e, t, n, r) {
+function rz(e, t, n, r) {
 	return r === "zxy" ? `${e}/${n}/${t}` : `${e}/${t}/${n}`;
 }
-function JR(e, t, n = 1) {
-	let r = [], i = e.filter(CR).flatMap((e) => {
-		let t = WR(e.path);
+function iz(e, t, n = 1) {
+	let r = [], i = e.filter(NR).flatMap((e) => {
+		let t = ez(e.path);
 		return t ? [{
 			file: e,
 			parts: t
@@ -37695,9 +37786,9 @@ function JR(e, t, n = 1) {
 		order: t.order,
 		warnings: ["没有找到 z/x/y 结构的瓦片图片；地点和区域仍可导入。"]
 	};
-	let a = GR(i.map((e) => e.parts), t), o = {}, s = [], c = t.prefix.replace(/\/+$/, ""), l = c ? i.filter((e) => ER(e.file.path).includes(c)) : [], u = l.length > 0 ? l : i;
-	for (let e of u) o[qR(e.parts.z, e.parts.u, e.parts.v, a)] = e.file.blob, s.push(e.parts);
-	let d = KR(s, t), f = s.map((e) => e.z), p = f.length ? Math.min(...f) : void 0, m = f.length ? Math.max(...f) : void 0;
+	let a = tz(i.map((e) => e.parts), t), o = {}, s = [], c = t.prefix.replace(/\/+$/, ""), l = c ? i.filter((e) => IR(e.file.path).includes(c)) : [], u = l.length > 0 ? l : i;
+	for (let e of u) o[rz(e.parts.z, e.parts.u, e.parts.v, a)] = e.file.blob, s.push(e.parts);
+	let d = nz(s, t), f = s.map((e) => e.z), p = f.length ? Math.min(...f) : void 0, m = f.length ? Math.max(...f) : void 0;
 	return d.missing > 0 && r.push(`已覆盖的缩放层级内缺 ${d.missing.toLocaleString("zh-CN")} 张瓦片，缺块会显示占位。`), t.order === "unknown" && r.push(d.hasBounds ? `pattern 没有写明 {z}/{x}/{y} 或 {z}/{y}/{x}，已按 bounds 推断为 ${a === "zxy" ? "{z}/{x}/{y}" : "{z}/{y}/{x}"}。` : "pattern 没有写明瓦片顺序，已按 Map Genie 常见的 {z}/{y}/{x} 读取。"), {
 		tileFiles: o,
 		order: a,
@@ -37715,7 +37806,7 @@ function JR(e, t, n = 1) {
 		warnings: r
 	};
 }
-function YR(e, t, n) {
+function az(e, t, n) {
 	if (t.length === 0) return {
 		order: "unknown",
 		warnings: ["mapData 里没有 tile_sets，无法读取瓦片顺序。"]
@@ -37724,18 +37815,18 @@ function YR(e, t, n) {
 	if ((r < 0 || r >= t.length) && (r = 0), n?.tileSet == null) {
 		let n = 0, i = -1;
 		for (let r of t) {
-			let t = r.prefix.replace(/\/+$/, ""), a = t ? e.files.filter((e) => CR(e) && ER(e.path).includes(t)).length : 0;
+			let t = r.prefix.replace(/\/+$/, ""), a = t ? e.files.filter((e) => NR(e) && IR(e.path).includes(t)).length : 0;
 			a > i && (i = a, n = r.index);
 		}
 		i > 0 && (r = n);
 	}
 	let i = t[r] ?? t[0];
 	return {
-		...JR(e.files, i, t.length),
+		...iz(e.files, i, t.length),
 		tileSet: i
 	};
 }
-function XR(e, t, n) {
+function oz(e, t, n) {
 	let r = e.markers.reduce((e, t) => e + (t.sourceLinks?.length ?? 0), 0), i = e.markers.reduce((e, t) => e + +!!t.sourceLinks?.length, 0), a = e.markers.reduce((e, t) => e + +!!t.description, 0), o = e.image?.size ?? 0, s = Object.values(e.tileFiles ?? {}).reduce((e, t) => e + t.size, 0);
 	return {
 		markerCount: e.markers.length,
@@ -37762,16 +37853,16 @@ function XR(e, t, n) {
 		fileCount: +((e.dataBytes ?? 0) > 0) + +!!e.image + Object.keys(e.tileFiles ?? {}).length
 	};
 }
-async function ZR(e, t, n) {
+async function sz(e, t, n) {
 	let r = e.pkg;
-	return r.image = t.blob, r.imageType = t.blob.type || "image/jpeg", r.imageName = t.name, r.imageWidth = t.width, r.imageHeight = t.height, r.imageBytes = t.bytes, r.imageSource = n, n === "local" && (r.imagePageUrl = void 0), r.imageFit = "stretch", r.imageRect = void 0, r.imageLocked = n === "local" || t.path !== e.autoImagePath, r.thumbnail = await eL(t.blob), r.source === "manual" && r.markers.length === 0 && (r.width = t.width, r.height = t.height), e.selectedImagePath = t.path, e.stats = XR(r, e.stats.tiles, t), e.notices = e.notices.filter((e) => !nz.test(e.text)), e.notices.push(...rz(r, t, e.imageChoices, e.targetImageName)), e;
+	return r.image = t.blob, r.imageType = t.blob.type || "image/jpeg", r.imageName = t.name, r.imageWidth = t.width, r.imageHeight = t.height, r.imageBytes = t.bytes, r.imageSource = n, n === "local" && (r.imagePageUrl = void 0), r.imageFit = "stretch", r.imageRect = void 0, r.imageLocked = n === "local" || t.path !== e.autoImagePath, r.thumbnail = await oL(t.blob), r.source === "manual" && r.markers.length === 0 && (r.width = t.width, r.height = t.height), e.selectedImagePath = t.path, e.stats = oz(r, e.stats.tiles, t), e.notices = e.notices.filter((e) => !fz.test(e.text)), e.notices.push(...pz(r, t, e.imageChoices, e.targetImageName)), e;
 }
-async function QR(e, t) {
+async function cz(e, t) {
 	let n = e.imageChoices.find((e) => e.path === t);
-	return n ? ZR(e, n, n.source === "local" ? "local" : n.source) : e;
+	return n ? sz(e, n, n.source === "local" ? "local" : n.source) : e;
 }
-async function $R(e, t) {
-	let n = await $I(t, t.name), r = {
+async function lz(e, t) {
+	let n = await aL(t, t.name), r = {
 		path: `local:${t.name}:${t.size}:${t.lastModified}`,
 		name: t.name,
 		blob: t,
@@ -37782,16 +37873,16 @@ async function $R(e, t) {
 		source: "local",
 		matched: "local"
 	};
-	return e.imageChoices = [r, ...e.imageChoices.filter((e) => e.source !== "local")], ZR(e, r, "local");
+	return e.imageChoices = [r, ...e.imageChoices.filter((e) => e.source !== "local")], sz(e, r, "local");
 }
-function ez(e) {
+function uz(e) {
 	let t = e.pkg;
-	return t.image = void 0, t.imageType = void 0, t.imageName = void 0, t.imagePageUrl = void 0, t.imageWidth = void 0, t.imageHeight = void 0, t.imageBytes = void 0, t.imageSource = "none", t.imageFit = void 0, t.imageRect = void 0, t.imageLocked = !0, t.thumbnail = void 0, e.selectedImagePath = void 0, e.stats = XR(t, e.stats.tiles, void 0), e.notices = e.notices.filter((e) => !nz.test(e.text)), t.kind === "image" && e.notices.push({
+	return t.image = void 0, t.imageType = void 0, t.imageName = void 0, t.imagePageUrl = void 0, t.imageWidth = void 0, t.imageHeight = void 0, t.imageBytes = void 0, t.imageSource = "none", t.imageFit = void 0, t.imageRect = void 0, t.imageLocked = !0, t.thumbnail = void 0, e.selectedImagePath = void 0, e.stats = oz(t, e.stats.tiles, void 0), e.notices = e.notices.filter((e) => !fz.test(e.text)), t.kind === "image" && e.notices.push({
 		tone: "info",
 		text: "已移除底图。先导入点位后，可以在地图顶栏的“底图”里随时补回来。"
 	}), e;
 }
-function tz(e, t) {
+function dz(e, t) {
 	let n = Date.now();
 	return {
 		id: `manual-${n.toString(36)}`,
@@ -37821,8 +37912,8 @@ function tz(e, t) {
 		updatedAt: n
 	};
 }
-var nz = /没有可用底图|底图下载|占位图|没有找到 mapImage|没有文件名完全匹配|包内有 \d+ 张图片|包内只有这一张|图片比例|图片比画布|图片服务器|JSON 已读取|已匹配 mapImage|当前使用|图片比画布小/;
-function rz(e, t, n, r) {
+var fz = /没有可用底图|底图下载|占位图|没有找到 mapImage|没有文件名完全匹配|包内有 \d+ 张图片|包内只有这一张|图片比例|图片比画布|图片服务器|JSON 已读取|已匹配 mapImage|当前使用|图片比画布小/;
+function pz(e, t, n, r) {
 	let i = [];
 	if (!t) return i.push({
 		tone: "warning",
@@ -37844,46 +37935,46 @@ function rz(e, t, n, r) {
 		tone: "info",
 		text: `可选图片有 ${n.length} 张，当前使用「${t.name}」。可以在预览里换图。`
 	});
-	let a = aL(e);
+	let a = dL(e);
 	a && i.push({
 		tone: "info",
 		text: `${a}，默认铺满画布；地点对不上时可在导入后使用“对齐底图”。`
 	});
-	let o = oL(e);
+	let o = fL(e);
 	return o && i.push({
 		tone: "info",
 		text: o
 	}), i;
 }
-function iz(e, t, n, r, i) {
-	e.push(...rz(t, n, i, r || void 0));
+function mz(e, t, n, r, i) {
+	e.push(...pz(t, n, i, r || void 0));
 }
-async function az(e, t, n, r, i) {
+async function hz(e, t, n, r, i) {
 	let a = r.manifest, o = [];
 	r.error && o.push({
 		tone: "info",
 		text: r.error
 	});
-	let s = i.wikiBase ? EL(i.wikiBase) : VR(e, a, t), c = typeof t.mapImage == "string" ? t.mapImage.trim().replace(/^File:/i, "").trim() : "", l = await HR(e.files.filter(CR), i);
+	let s = i.wikiBase ? ML(i.wikiBase) : ZR(e, a, t), c = typeof t.mapImage == "string" ? t.mapImage.trim().replace(/^File:/i, "").trim() : "", l = await QR(e.files.filter(NR), i);
 	for (let e of l.warnings) o.push({
 		tone: "warning",
 		text: e
 	});
-	let u = UR(l.choices, c, a?.image).choice, d = LR(e.label), f = c ? LR(c.replace(/\.[^.]+$/, "")) : "", p = i.name?.trim() || a?.name || (RR(e.label) && f ? f : d), m = a?.sourceUrl || (c ? pz(s, `File:${c}`) : void 0), h = zL(t, {
+	let u = $R(l.choices, c, a?.image).choice, d = qR(e.label), f = c ? qR(c.replace(/\.[^.]+$/, "")) : "", p = i.name?.trim() || a?.name || (JR(e.label) && f ? f : d), m = a?.sourceUrl || (c ? Cz(s, `File:${c}`) : void 0), h = GL(t, {
 		name: p,
 		wikiBase: s,
 		sourceUrl: m,
 		image: u?.blob,
 		imageType: u?.blob.type,
 		imageName: u?.name,
-		imagePageUrl: c ? pz(s, `File:${c}`) : void 0,
+		imagePageUrl: c ? Cz(s, `File:${c}`) : void 0,
 		imageWidth: u?.width,
 		imageHeight: u?.height,
 		imageSource: u ? "package" : "none"
 	});
-	u && (h.thumbnail = await eL(u.blob)), c && s && (h.attribution = `${s} / 本地导入`);
-	let g = u?.path, _ = XR(h, void 0, u);
-	return iz(o, h, u, c, l.choices), {
+	u && (h.thumbnail = await oL(u.blob)), c && s && (h.attribution = `${s} / 本地导入`);
+	let g = u?.path, _ = oz(h, void 0, u);
+	return mz(o, h, u, c, l.choices), {
 		pkg: h,
 		stats: _,
 		notices: o,
@@ -37900,13 +37991,13 @@ async function az(e, t, n, r, i) {
 		canAttachData: !0
 	};
 }
-async function oz(e, t, n, r, i) {
+async function gz(e, t, n, r, i) {
 	let a = r.manifest, o = [];
 	r.error && o.push({
 		tone: "info",
 		text: r.error
 	});
-	let s = GL(t), c = YR(e, s.tileSets, {
+	let s = ZL(t), c = az(e, s.tileSets, {
 		...a,
 		tileSet: i.tileSetIndex ?? a?.tileSet
 	}), l = !!(i.tileUrl?.trim() || a?.tileUrl?.trim() || c.tileSet?.pattern);
@@ -37918,8 +38009,8 @@ async function oz(e, t, n, r, i) {
 		tone: "info",
 		text: `找到 ${s.tileSets.length} 个瓦片组，已使用「${c.tileSet.name}」。`
 	});
-	let u = KL(t, {
-		name: i.name?.trim() || a?.name || LR(s.title || e.label),
+	let u = QL(t, {
+		name: i.name?.trim() || a?.name || qR(s.title || e.label),
 		tileTemplate: i.tileUrl?.trim() || a?.tileUrl || "",
 		tileSetIndex: c.tileSet?.index,
 		tileFiles: c.tileFiles,
@@ -37933,7 +38024,7 @@ async function oz(e, t, n, r, i) {
 		sourceLabel: a?.sourceLabel
 	});
 	u.dataBytes = u.dataBytes ?? 0;
-	let d = XR(u, c.stats, void 0);
+	let d = oz(u, c.stats, void 0);
 	return c.tileFiles && Object.keys(c.tileFiles).length !== 0 || u.tile?.template || o.push({
 		tone: "warning",
 		text: "没有找到本地瓦片。地点、区域和说明仍可导入，之后可以在“底图”里补瓦片。"
@@ -37950,12 +38041,12 @@ async function oz(e, t, n, r, i) {
 		canAttachData: !1
 	};
 }
-function sz(e, t) {
-	return `${t === "fandom" ? "Fandom" : "Map Genie"} · ${wR(e)}`;
+function _z(e, t) {
+	return `${t === "fandom" ? "Fandom" : "Map Genie"} · ${PR(e)}`;
 }
-async function cz(e, t = {}) {
-	xR(t.signal);
-	let n = await IR(e), r = n.manifest, i = e.files.filter(SR).filter((e) => e.name.toLowerCase() !== "manifest.json").sort((e, t) => {
+async function vz(e, t = {}) {
+	jR(t.signal);
+	let n = await KR(e), r = n.manifest, i = e.files.filter(MR).filter((e) => e.name.toLowerCase() !== "manifest.json").sort((e, t) => {
 		let n = (e) => {
 			let t = e.name.toLowerCase();
 			return t === "map.json" || t === "mapdata.json" ? 0 : t.includes("mapdata") ? 1 : t.includes("map") ? 2 : 3;
@@ -37963,7 +38054,7 @@ async function cz(e, t = {}) {
 		return n(e) - n(t) || e.path.localeCompare(t.path);
 	}), a = [], o = [];
 	for (let e of i) {
-		xR(t.signal), t.onProgress?.({
+		jR(t.signal), t.onProgress?.({
 			step: "读取 JSON",
 			detail: e.path
 		});
@@ -37973,7 +38064,7 @@ async function cz(e, t = {}) {
 				o.push(`${e.path}：JSON 顶层不是对象`);
 				continue;
 			}
-			let r = ZL(n);
+			let r = sR(n);
 			if (r === "unknown") {
 				o.push(`${e.path}：既不像 Fandom markers，也不像 Map Genie locations`);
 				continue;
@@ -37987,20 +38078,20 @@ async function cz(e, t = {}) {
 			o.push(`${e.path}：${t instanceof Error ? t.message : String(t)}`);
 		}
 	}
-	let s = r?.data ? a.find((e) => OR(e.file, DR(n.baseDir, r.data))) : void 0, c = (t.dataPath ? a.find((e) => e.file.path === t.dataPath) : void 0) || s || a[0], l = a.map((e) => ({
+	let s = r?.data ? a.find((e) => RR(e.file, LR(n.baseDir, r.data))) : void 0, c = (t.dataPath ? a.find((e) => e.file.path === t.dataPath) : void 0) || s || a[0], l = a.map((e) => ({
 		path: e.file.path,
 		kind: e.kind,
-		label: sz(e.file.path, e.kind)
+		label: _z(e.file.path, e.kind)
 	}));
 	if (!c) {
-		let n = e.files.filter(CR), i = n.filter((e) => !WR(e.path));
+		let n = e.files.filter(NR), i = n.filter((e) => !ez(e.path));
 		if (n.length > 0 && i.length === 0) throw Error("只找到瓦片图片，没有 mapData JSON。请选择包含 mapdata.json 的整个地图包，或同时选择 mapData JSON 和瓦片文件夹。");
 		if (i.length > 0) {
-			let n = await HR(i, t), a = UR(n.choices, "", r?.image).choice;
+			let n = await QR(i, t), a = $R(n.choices, "", r?.image).choice;
 			if (!a) throw Error(o[0] || "没有找到可用的 JSON 或图片");
 			e.source === "files" && e.files.length === 1 && (a.source = "local", a.matched = "local");
-			let s = tz(a, t.name?.trim() || r?.name || zR(a, LR(e.label)));
-			s.thumbnail = await eL(a.blob);
+			let s = dz(a, t.name?.trim() || r?.name || YR(a, qR(e.label)));
+			s.thumbnail = await oL(a.blob);
 			let c = [{
 				tone: "info",
 				text: "只识别到底图，没有地点数据。可以先导入底图，之后关联 Fandom JSON。"
@@ -38013,7 +38104,7 @@ async function cz(e, t = {}) {
 				text: "这张图看起来是占位图，不是原始地图。"
 			}), {
 				pkg: s,
-				stats: XR(s, void 0, a),
+				stats: oz(s, void 0, a),
 				notices: c,
 				sourceLabel: "图片底图（无地点数据）",
 				sourceUrl: r?.sourceUrl,
@@ -38029,34 +38120,34 @@ async function cz(e, t = {}) {
 		throw Error(o[0] || "没有找到可识别的 map.json / mapdata.json，也没有图片。请选择完整的 Fandom 或 Map Genie 地图包。");
 	}
 	if (c.kind === "fandom") {
-		let r = await az(e, c.raw, c.file.path, n, t);
+		let r = await hz(e, c.raw, c.file.path, n, t);
 		return r.dataCandidates = l, l.length > 1 && r.notices.push({
 			tone: "info",
-			text: `包内有 ${l.length} 个地图 JSON，已使用 ${wR(c.file.path)}。`
+			text: `包内有 ${l.length} 个地图 JSON，已使用 ${PR(c.file.path)}。`
 		}), o.length > 0 && r.notices.push({
 			tone: "warning",
 			text: `另外 ${o.length} 个 JSON 没有用于导入：${o[0]}`
 		}), r;
 	}
-	let u = await oz(e, c.raw, c.file.path, n, t);
+	let u = await gz(e, c.raw, c.file.path, n, t);
 	return u.dataCandidates = l, l.length > 1 && u.notices.push({
 		tone: "info",
-		text: `包内有 ${l.length} 个地图 JSON，已使用 ${wR(c.file.path)}。`
+		text: `包内有 ${l.length} 个地图 JSON，已使用 ${PR(c.file.path)}。`
 	}), o.length > 0 && u.notices.push({
 		tone: "warning",
 		text: `另外 ${o.length} 个 JSON 没有用于导入：${o[0]}`
 	}), u;
 }
-function lz(e) {
+function yz(e) {
 	let t = e instanceof Error ? e.message : String(e);
 	return /Failed to fetch|NetworkError|Load failed|fetch failed/i.test(t) ? "图片服务器拒绝浏览器读取（可能是 Cloudflare / CORS 或网络拦截）" : /HTTP 403/.test(t) ? "Fandom 图片服务器返回 403（Cloudflare 拒绝）" : /HTTP 404/.test(t) ? "Fandom 上没有找到这张图片" : t;
 }
-function uz(e, t) {
+function bz(e, t) {
 	let n = new URL(`https://${e}/api.php`);
 	for (let [e, r] of Object.entries(t)) n.searchParams.set(e, r);
 	return n.searchParams.set("format", "json"), n.searchParams.set("formatversion", "2"), n.searchParams.set("origin", "*"), n.toString();
 }
-async function dz(e, t) {
+async function xz(e, t) {
 	let n = await fetch(e, {
 		signal: t,
 		credentials: "omit"
@@ -38064,7 +38155,7 @@ async function dz(e, t) {
 	if (!n.ok) throw Error(`HTTP ${n.status}`);
 	return await n.json();
 }
-async function fz(e, t, n) {
+async function Sz(e, t, n) {
 	let r = await fetch(e, {
 		signal: t,
 		credentials: "omit"
@@ -38083,7 +38174,7 @@ async function fz(e, t, n) {
 	}
 	let o = r.body.getReader(), s = [], c = 0;
 	for (;;) {
-		xR(t);
+		jR(t);
 		let { done: e, value: r } = await o.read();
 		if (e) break;
 		if (!r) continue;
@@ -38096,10 +38187,10 @@ async function fz(e, t, n) {
 	}
 	return new Blob(s, { type: i || "image/jpeg" });
 }
-function pz(e, t) {
+function Cz(e, t) {
 	return `https://${e}/wiki/${t.replace(/\s+/g, "_").replace(/%20/g, "_").replace(/[^A-Za-z0-9_\-./:()'!~*]/g, (e) => encodeURIComponent(e))}`;
 }
-function mz(e) {
+function wz(e) {
 	let t = e.searchParams.get("title");
 	if (t?.trim()) return t.trim().replace(/_/g, " ");
 	let n = e.pathname.match(/\/wiki\/(.+)$/);
@@ -38109,8 +38200,8 @@ function mz(e) {
 		return n[1].replace(/_/g, " ");
 	}
 }
-async function hz(e, t, n) {
-	let r = (await dz(uz(e, {
+async function Tz(e, t, n) {
+	let r = (await xz(bz(e, {
 		action: "query",
 		prop: "revisions",
 		rvprop: "content",
@@ -38125,7 +38216,7 @@ async function hz(e, t, n) {
 			raw: e
 		};
 	} catch {}
-	let a = await dz(uz(e, {
+	let a = await xz(bz(e, {
 		action: "parse",
 		page: t,
 		prop: "wikitext",
@@ -38139,7 +38230,7 @@ async function hz(e, t, n) {
 		};
 	} catch {}
 }
-async function gz(e, t = {}) {
+async function Ez(e, t = {}) {
 	let n;
 	try {
 		n = new URL(e.trim());
@@ -38148,7 +38239,7 @@ async function gz(e, t = {}) {
 	}
 	if (/mapgenie\.io$/i.test(n.hostname)) throw Error("Map Genie 页面 URL 不能直接解析。请选择本地的 mapdata.json 或整个地图包。");
 	if (!n.hostname.toLowerCase().endsWith(".fandom.com")) throw Error("目前只支持 Fandom Wiki 的 Map: 页面 URL");
-	let r = n.hostname.toLowerCase(), i = mz(n);
+	let r = n.hostname.toLowerCase(), i = wz(n);
 	if (!i) throw Error("这个 URL 里没有地图页面标题");
 	let a = /^map:/i.test(i) ? [i] : [`Map:${i}`, i], o, s = "";
 	for (let e of a) {
@@ -38157,22 +38248,22 @@ async function gz(e, t = {}) {
 			detail: e
 		});
 		try {
-			o = await hz(r, e, t.signal);
+			o = await Tz(r, e, t.signal);
 		} catch (e) {
 			s = e instanceof Error ? e.message : String(e);
 		}
 		if (o) break;
 	}
 	if (!o) throw Error(s || `没有在这个 Wiki 上找到 Map 页面「${i}」。可以确认页面地址是否以 /wiki/Map: 开头。`);
-	if (ZL(o.raw) !== "fandom") throw Error("这个页面是 Map 页面，但内容不是 Fandom 的 markers JSON。");
-	let c = (typeof o.raw.mapImage == "string" ? o.raw.mapImage.trim() : "").replace(/^File:/i, "").trim(), l = o.title.replace(/^Map:/i, ""), u = pz(r, o.title), d, f = "", p = c ? pz(r, `File:${c}`) : void 0;
+	if (sR(o.raw) !== "fandom") throw Error("这个页面是 Map 页面，但内容不是 Fandom 的 markers JSON。");
+	let c = (typeof o.raw.mapImage == "string" ? o.raw.mapImage.trim() : "").replace(/^File:/i, "").trim(), l = o.title.replace(/^Map:/i, ""), u = Cz(r, o.title), d, f = "", p = c ? Cz(r, `File:${c}`) : void 0;
 	if (c) {
 		t.onProgress?.({
 			step: "读取 Fandom 图片信息",
 			detail: c
 		});
 		try {
-			let e = (await dz(uz(r, {
+			let e = (await xz(bz(r, {
 				action: "query",
 				prop: "imageinfo",
 				iiprop: "url|size",
@@ -38183,7 +38274,7 @@ async function gz(e, t = {}) {
 				step: "下载底图",
 				detail: c
 			});
-			let n = await fz(e.url, t.signal, t.onProgress), i = await $I(n, c);
+			let n = await Sz(e.url, t.signal, t.onProgress), i = await aL(n, c);
 			d = {
 				path: `fandom:${c}`,
 				name: c,
@@ -38191,13 +38282,13 @@ async function gz(e, t = {}) {
 				width: i.width || e.width || 1,
 				height: i.height || e.height || 1,
 				bytes: n.size,
-				placeholder: ZI(c),
+				placeholder: rL(c),
 				source: "fandom-url",
 				matched: "downloaded"
 			};
 		} catch (e) {
 			if (e instanceof DOMException && e.name === "AbortError") throw e;
-			f = lz(e);
+			f = yz(e);
 		}
 	}
 	let m = [];
@@ -38208,8 +38299,8 @@ async function gz(e, t = {}) {
 		tone: "info",
 		text: "这个 Map 页面没有指定 mapImage，可以手动选择本地底图。"
 	});
-	let h = zL(o.raw, {
-		name: l || LR(r.replace(/\.fandom\.com$/, "")),
+	let h = GL(o.raw, {
+		name: l || qR(r.replace(/\.fandom\.com$/, "")),
 		wikiBase: r,
 		sourceUrl: u,
 		image: d?.blob,
@@ -38220,14 +38311,14 @@ async function gz(e, t = {}) {
 		imageHeight: d?.height,
 		imageSource: d ? "fandom-url" : "none"
 	});
-	h.attribution = `${r} / Fandom 页面`, h.imagePageUrl = p, d && (h.thumbnail = await eL(d.blob));
-	let g = XR(h, void 0, d);
+	h.attribution = `${r} / Fandom 页面`, h.imagePageUrl = p, d && (h.thumbnail = await oL(d.blob));
+	let g = oz(h, void 0, d);
 	if (d) {
 		d.placeholder && m.push({
 			tone: "warning",
 			text: "Fandom 返回的图片看起来是占位图，建议换成本地原图。"
 		});
-		let e = aL(h);
+		let e = dL(h);
 		e && m.push({
 			tone: "info",
 			text: `${e}，默认铺满画布；地点对不上时可在导入后使用“对齐底图”。`
@@ -38252,40 +38343,40 @@ async function gz(e, t = {}) {
 	};
 }
 // src/layer-store.ts
-var _z = "tavern-map-layer", vz = 2, yz = "packages", bz = "meta", xz = "assets", Sz = ["tileFiles", "image"], Cz = null;
-function wz() {
-	return Cz ||= new Promise((e, t) => {
-		let n = indexedDB.open(_z, vz);
+var Dz = "tavern-map-layer", Oz = 2, kz = "packages", Az = "meta", jz = "assets", Mz = ["tileFiles", "image"], Nz = null;
+function Pz() {
+	return Nz ||= new Promise((e, t) => {
+		let n = indexedDB.open(Dz, Oz);
 		n.onupgradeneeded = () => {
 			let e = n.result;
-			e.objectStoreNames.contains(yz) || e.createObjectStore(yz, { keyPath: "id" }), e.objectStoreNames.contains(bz) || e.createObjectStore(bz, { keyPath: "id" }), e.objectStoreNames.contains(xz) || e.createObjectStore(xz);
+			e.objectStoreNames.contains(kz) || e.createObjectStore(kz, { keyPath: "id" }), e.objectStoreNames.contains(Az) || e.createObjectStore(Az, { keyPath: "id" }), e.objectStoreNames.contains(jz) || e.createObjectStore(jz);
 		}, n.onsuccess = () => {
 			let t = n.result;
 			t.onversionchange = () => {
-				t.close(), Cz = null;
+				t.close(), Nz = null;
 			}, e(t);
 		}, n.onerror = () => t(n.error ?? /* @__PURE__ */ Error("Layer map IndexedDB open failed"));
-	}), Cz;
+	}), Nz;
 }
-function Tz(e) {
+function Fz(e) {
 	return new Promise((t, n) => {
 		e.onsuccess = () => t(e.result), e.onerror = () => n(e.error ?? /* @__PURE__ */ Error("Layer map IndexedDB request failed"));
 	});
 }
-function Ez(e) {
+function Iz(e) {
 	return new Promise((t, n) => {
 		e.oncomplete = () => t(), e.onerror = () => n(e.error ?? /* @__PURE__ */ Error("Layer map IndexedDB transaction failed")), e.onabort = () => n(e.error ?? /* @__PURE__ */ Error("Layer map IndexedDB transaction aborted"));
 	});
 }
-function Dz(e) {
+function Lz(e) {
 	try {
 		return new TextEncoder().encode(JSON.stringify(e)).length;
 	} catch {
 		return 0;
 	}
 }
-function Oz(e) {
-	return typeof e.dataBytes == "number" && Number.isFinite(e.dataBytes) && e.dataBytes > 0 ? e.dataBytes : !e.markers.length && !e.categories.length && !e.regions.length && !e.streets?.length ? 0 : Dz({
+function Rz(e) {
+	return typeof e.dataBytes == "number" && Number.isFinite(e.dataBytes) && e.dataBytes > 0 ? e.dataBytes : !e.markers.length && !e.categories.length && !e.regions.length && !e.streets?.length ? 0 : Lz({
 		categories: e.categories,
 		groups: e.groups,
 		markers: e.markers,
@@ -38293,12 +38384,12 @@ function Oz(e) {
 		streets: e.streets
 	});
 }
-function kz(e) {
+function zz(e) {
 	let t = 0;
 	for (let n of Object.values(e.tileFiles ?? {})) t += n.size;
 	return t;
 }
-function Az(e) {
+function Bz(e) {
 	let t = Object.keys(e.tileFiles ?? {});
 	if (t.length === 0) return {
 		min: e.tile?.coverageMinZoom,
@@ -38314,8 +38405,8 @@ function Az(e) {
 		max: r
 	} : {};
 }
-function jz(e) {
-	let t = Oz(e), n = Object.keys(e.tileFiles ?? {}).length, r = e.image?.size ?? e.imageBytes ?? 0, i = Az(e), a = !!e.image, o = e.kind === "image" && !a ? "image" : e.kind === "tiles" && n === 0 && !e.tile?.template ? "tiles" : null, s = e.markers.reduce((e, t) => e + (t.sourceLinks?.length ?? 0), 0), c = e.markers.reduce((e, t) => e + +!!t.description, 0);
+function Vz(e) {
+	let t = Rz(e), n = Object.keys(e.tileFiles ?? {}).length, r = e.image?.size ?? e.imageBytes ?? 0, i = Bz(e), a = !!e.image, o = e.kind === "image" && !a ? "image" : e.kind === "tiles" && n === 0 && !e.tile?.template ? "tiles" : null, s = e.markers.reduce((e, t) => e + (t.sourceLinks?.length ?? 0), 0), c = e.markers.reduce((e, t) => e + +!!t.description, 0);
 	return {
 		id: e.id,
 		name: e.name,
@@ -38339,61 +38430,61 @@ function jz(e) {
 		tileZoomMin: i.min,
 		tileZoomMax: i.max,
 		missingTiles: e.tile?.missingCount,
-		sizeBytes: t + r + kz(e) + (e.thumbnail?.size ?? 0),
+		sizeBytes: t + r + zz(e) + (e.thumbnail?.size ?? 0),
 		fileCount: +(t > 0) + +!!a + n,
 		missingAsset: o,
 		thumbnail: e.thumbnail,
 		updatedAt: e.updatedAt
 	};
 }
-async function Mz() {
+async function Hz() {
 	try {
-		return (await Tz((await wz()).transaction(bz, "readonly").objectStore(bz).getAll())).sort((e, t) => t.updatedAt - e.updatedAt);
+		return (await Fz((await Pz()).transaction(Az, "readonly").objectStore(Az).getAll())).sort((e, t) => t.updatedAt - e.updatedAt);
 	} catch (e) {
 		return console.warn("[tavern-map] layer package list failed", e), [];
 	}
 }
-function Nz(e) {
+function Uz(e) {
 	let t = { ...e }, n = {};
-	for (let e of Sz) t[e] !== void 0 && (n[e] = t[e]), delete t[e];
+	for (let e of Mz) t[e] !== void 0 && (n[e] = t[e]), delete t[e];
 	return {
 		record: t,
 		assets: n
 	};
 }
-function Pz(e) {
-	return Sz.some((t) => e[t] !== void 0);
+function Wz(e) {
+	return Mz.some((t) => e[t] !== void 0);
 }
-async function Fz(e, t) {
-	let n = e.transaction([yz, xz], "readonly"), [r, i] = await Promise.all([Tz(n.objectStore(yz).get(t)), Tz(n.objectStore(xz).get(t))]);
+async function Gz(e, t) {
+	let n = e.transaction([kz, jz], "readonly"), [r, i] = await Promise.all([Fz(n.objectStore(kz).get(t)), Fz(n.objectStore(jz).get(t))]);
 	return r ? {
 		record: r,
 		assets: i
 	} : void 0;
 }
-function Iz(e) {
-	return Pz(e.record) || !e.assets ? e.record : {
+function Kz(e) {
+	return Wz(e.record) || !e.assets ? e.record : {
 		...e.record,
 		...e.assets
 	};
 }
-async function Lz(e) {
+async function qz(e) {
 	try {
-		let t = await Fz(await wz(), e);
-		return t ? Iz(t) : void 0;
+		let t = await Gz(await Pz(), e);
+		return t ? Kz(t) : void 0;
 	} catch (e) {
 		console.warn("[tavern-map] layer package read failed", e);
 		return;
 	}
 }
-var Rz = /* @__PURE__ */ new Map();
-function zz(e, t) {
-	let n = (Rz.get(e) ?? Promise.resolve()).then(t, t), r = n.then(() => void 0, () => void 0);
-	return Rz.set(e, r), r.then(() => {
-		Rz.get(e) === r && Rz.delete(e);
+var Jz = /* @__PURE__ */ new Map();
+function Yz(e, t) {
+	let n = (Jz.get(e) ?? Promise.resolve()).then(t, t), r = n.then(() => void 0, () => void 0);
+	return Jz.set(e, r), r.then(() => {
+		Jz.get(e) === r && Jz.delete(e);
 	}), n;
 }
-async function Bz() {
+async function Xz() {
 	try {
 		let e = await navigator.storage?.estimate?.(), t = e?.usage ?? 0, n = e?.quota ?? 0;
 		return n ? {
@@ -38416,7 +38507,7 @@ async function Bz() {
 		};
 	}
 }
-var Vz = class extends Error {
+var Zz = class extends Error {
 	needed;
 	usage;
 	quota;
@@ -38424,71 +38515,71 @@ var Vz = class extends Error {
 		super("浏览器存储空间不足"), this.name = "StorageQuotaError", this.needed = e, this.usage = t, this.quota = n;
 	}
 };
-function Hz(e) {
-	return e instanceof Vz ? !0 : e instanceof DOMException ? e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED" || /quota/i.test(e.message) : e instanceof Error && /quota|storage space/i.test(e.message);
+function Qz(e) {
+	return e instanceof Zz ? !0 : e instanceof DOMException ? e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED" || /quota/i.test(e.message) : e instanceof Error && /quota|storage space/i.test(e.message);
 }
-async function Uz(e) {
-	let t = await Bz();
-	if (t.supported && e + 2097152 > t.available) throw new Vz(e, t.usage, t.quota);
+async function $z(e) {
+	let t = await Xz();
+	if (t.supported && e + 2097152 > t.available) throw new Zz(e, t.usage, t.quota);
 }
-function Wz(e, t) {
-	return zz(e.id, () => Gz(e, { writeAssets: !0 }, t));
+function eB(e, t) {
+	return Yz(e.id, () => tB(e, { writeAssets: !0 }, t));
 }
-async function Gz(e, t, n) {
-	let r = (await wz()).transaction([
-		yz,
-		bz,
-		xz
+async function tB(e, t, n) {
+	let r = (await Pz()).transaction([
+		kz,
+		Az,
+		jz
 	], "readwrite"), i = () => {
 		try {
 			r.abort();
 		} catch {}
 	};
 	n?.addEventListener("abort", i, { once: !0 });
-	let { record: a, assets: o } = Nz(e);
-	r.objectStore(yz).put(a), t.writeAssets && r.objectStore(xz).put(o, e.id), r.objectStore(bz).put(jz(e));
+	let { record: a, assets: o } = Uz(e);
+	r.objectStore(kz).put(a), t.writeAssets && r.objectStore(jz).put(o, e.id), r.objectStore(Az).put(Vz(e));
 	try {
-		await Ez(r);
+		await Iz(r);
 	} catch (t) {
 		if (n?.aborted) throw new DOMException("导入已取消", "AbortError");
-		if (Hz(t)) {
-			let t = await Bz();
-			throw new Vz((e.image?.size ?? 0) + kz(e), t.usage, t.quota);
+		if (Qz(t)) {
+			let t = await Xz();
+			throw new Zz((e.image?.size ?? 0) + zz(e), t.usage, t.quota);
 		}
 		throw t;
 	} finally {
 		n?.removeEventListener("abort", i);
 	}
 }
-function Kz(e, t) {
+function nB(e, t) {
 	if (e.source !== t.source || e.kind !== t.kind || e.width !== t.width || e.height !== t.height || e.markers.length !== t.markers.length) return !1;
 	let n = e.markers[0]?.sourceId ?? "", r = t.markers[0]?.sourceId ?? "", i = e.markers[e.markers.length - 1]?.sourceId ?? "", a = t.markers[t.markers.length - 1]?.sourceId ?? "";
 	return !(n !== r || i !== a || e.kind === "tiles" && (e.tile?.setIndex ?? 0) !== (t.tile?.setIndex ?? 0));
 }
-async function qz(e) {
-	let t = await Lz(e.id);
+async function rB(e) {
+	let t = await qz(e.id);
 	if (t) return t;
 	if (!e.sourceKey) return;
-	let n = await Mz();
+	let n = await Hz();
 	for (let t of n) if (t.sourceKey === e.sourceKey) {
-		let e = await Lz(t.id);
+		let e = await qz(t.id);
 		if (e) return e;
 	}
 	for (let t of n) {
 		if (t.sourceKey || t.source !== e.source || t.kind !== e.kind) continue;
-		let n = await Lz(t.id);
-		if (n && Kz(n, e)) return n;
+		let n = await qz(t.id);
+		if (n && nB(n, e)) return n;
 	}
 }
-async function Jz(e, t) {
-	let n = await qz(e);
-	return n && (e.id = n.id, e.createdAt = n.createdAt, n.nameLocked && (e.name = n.name, e.nameLocked = !0), n.grid && (e.grid = n.grid), n.iconFont && !e.iconFont && (e.iconFont = n.iconFont, e.dataBytes = (e.dataBytes ?? 0) + n.iconFont.data.size), n.iconAtlas && !e.iconAtlas && (e.iconAtlas = n.iconAtlas, e.dataBytes = (e.dataBytes ?? 0) + n.iconAtlas.image.size), n.imageLocked && (e.image = n.image, e.imageType = n.imageType, e.imageName = n.imageName, e.imagePageUrl = n.imagePageUrl, e.imageWidth = n.imageWidth, e.imageHeight = n.imageHeight, e.imageBytes = n.imageBytes, e.imageSource = n.imageSource, e.imageFit = n.imageFit, e.imageRect = n.imageRect, e.thumbnail = n.thumbnail, e.imageLocked = !0)), e.updatedAt = Date.now(), await Wz(e, t), {
+async function iB(e, t) {
+	let n = await rB(e);
+	return n && (e.id = n.id, e.createdAt = n.createdAt, n.nameLocked && (e.name = n.name, e.nameLocked = !0), n.grid && (e.grid = n.grid), n.iconFont && !e.iconFont && (e.iconFont = n.iconFont, e.dataBytes = (e.dataBytes ?? 0) + n.iconFont.data.size), n.iconAtlas && !e.iconAtlas && (e.iconAtlas = n.iconAtlas, e.dataBytes = (e.dataBytes ?? 0) + n.iconAtlas.image.size), n.imageLocked && (e.image = n.image, e.imageType = n.imageType, e.imageName = n.imageName, e.imagePageUrl = n.imagePageUrl, e.imageWidth = n.imageWidth, e.imageHeight = n.imageHeight, e.imageBytes = n.imageBytes, e.imageSource = n.imageSource, e.imageFit = n.imageFit, e.imageRect = n.imageRect, e.thumbnail = n.thumbnail, e.imageLocked = !0)), e.updatedAt = Date.now(), await eB(e, t), {
 		pkg: e,
 		existing: n,
 		updated: !!n
 	};
 }
-function Yz(e, t) {
+function aB(e, t) {
 	let n = {
 		...e,
 		...t
@@ -38496,23 +38587,23 @@ function Yz(e, t) {
 	for (let e of Object.keys(t)) t[e] === void 0 && delete n[e];
 	return n;
 }
-function Xz(e, t) {
-	return zz(e, async () => {
-		let n = await Fz(await wz(), e);
+function oB(e, t) {
+	return Yz(e, async () => {
+		let n = await Gz(await Pz(), e);
 		if (!n) return;
-		let r = Iz(n), i = Yz(r, t);
-		return i.id = r.id, i.createdAt = r.createdAt, i.updatedAt = Date.now(), await Gz(i, { writeAssets: Pz(n.record) || !n.assets || Sz.some((e) => e in t) }), i;
+		let r = Kz(n), i = aB(r, t);
+		return i.id = r.id, i.createdAt = r.createdAt, i.updatedAt = Date.now(), await tB(i, { writeAssets: Wz(n.record) || !n.assets || Mz.some((e) => e in t) }), i;
 	});
 }
-async function Zz(e, t) {
+async function sB(e, t) {
 	let n = t.trim();
-	if (n) return Xz(e, {
+	if (n) return oB(e, {
 		name: n,
 		nameLocked: !0
 	});
 }
-async function Qz(e, t) {
-	return Xz(e, {
+async function cB(e, t) {
+	return oB(e, {
 		image: t.image,
 		imageType: t.imageType,
 		imageName: t.imageName,
@@ -38529,8 +38620,8 @@ async function Qz(e, t) {
 		height: t.height
 	});
 }
-async function $z(e) {
-	return Xz(e, {
+async function lB(e) {
+	return oB(e, {
 		image: void 0,
 		imageType: void 0,
 		imageName: void 0,
@@ -38545,31 +38636,31 @@ async function $z(e) {
 		imageLocked: !0
 	});
 }
-async function eB(e, t, n) {
-	return Xz(e, {
+async function uB(e, t, n) {
+	return oB(e, {
 		imageFit: t,
 		imageRect: t === "custom" ? n : void 0
 	});
 }
-async function tB(e, t, n) {
-	return Xz(e, {
+async function dB(e, t, n) {
+	return oB(e, {
 		tileFiles: t,
 		tile: n
 	});
 }
-function nB(e) {
-	return zz(e, async () => {
-		let t = (await wz()).transaction([
-			yz,
-			bz,
-			xz
+function fB(e) {
+	return Yz(e, async () => {
+		let t = (await Pz()).transaction([
+			kz,
+			Az,
+			jz
 		], "readwrite");
-		t.objectStore(yz).delete(e), t.objectStore(bz).delete(e), t.objectStore(xz).delete(e), await Ez(t);
+		t.objectStore(kz).delete(e), t.objectStore(Az).delete(e), t.objectStore(jz).delete(e), await Iz(t);
 	});
 }
 // src/layer-import-ui.ts
-var rB = "tml-import", iB = `
-<div id="${rB}" class="tml-modal tml-import-modal" role="dialog" aria-modal="true" aria-label="导入地图包" hidden>
+var pB = "tml-import", mB = `
+<div id="${pB}" class="tml-modal tml-import-modal" role="dialog" aria-modal="true" aria-label="导入地图包" hidden>
   <div class="tml-modal-card tml-import-card">
     <header class="tml-modal-head">
       <div class="tml-modal-heading">
@@ -38648,7 +38739,7 @@ function Q(e, t, n) {
 	let r = document.createElement(e);
 	return t && (r.className = t), n != null && (r.textContent = n), r;
 }
-function aB(e) {
+function hB(e) {
 	let t = document.createElementNS("http://www.w3.org/2000/svg", "svg");
 	t.setAttribute("viewBox", "0 0 24 24"), t.setAttribute("fill", "none"), t.setAttribute("stroke", "currentColor"), t.setAttribute("stroke-width", "1.6"), t.setAttribute("aria-hidden", "true");
 	for (let n of {
@@ -38680,7 +38771,7 @@ function aB(e) {
 	}
 	return t;
 }
-var oB = class {
+var gB = class {
 	options;
 	el;
 	dropZone;
@@ -38751,10 +38842,10 @@ var oB = class {
 	};
 	constructor(e) {
 		this.options = e;
-		let t = document.getElementById(rB);
+		let t = document.getElementById(pB);
 		t && t.remove();
 		let n = document.createElement("template");
-		n.innerHTML = iB.trim(), document.body.append(n.content), this.el = document.getElementById(rB), this.dropZone = document.getElementById("tml-drop-zone"), this.pickSummary = document.getElementById("tml-pick-summary"), this.previewEl = document.getElementById("tml-import-preview"), this.busyEl = document.getElementById("tml-import-busy"), this.errorEl = document.getElementById("tml-import-error"), this.noteEl = document.getElementById("tml-import-note"), this.subEl = document.getElementById("tml-import-sub"), this.backButton = this.el.querySelector("[data-import-action=\"back\"]"), this.retryButton = this.el.querySelector("[data-import-action=\"retry\"]"), this.cancelButton = this.el.querySelector("[data-import-action=\"cancel\"]"), this.runButton = this.el.querySelector("[data-import-action=\"run\"]"), this.fandomUrlEl = document.getElementById("tml-fandom-url"), this.jsonUrlEl = document.getElementById("tml-json-url"), this.inputs = {
+		n.innerHTML = mB.trim(), document.body.append(n.content), this.el = document.getElementById(pB), this.dropZone = document.getElementById("tml-drop-zone"), this.pickSummary = document.getElementById("tml-pick-summary"), this.previewEl = document.getElementById("tml-import-preview"), this.busyEl = document.getElementById("tml-import-busy"), this.errorEl = document.getElementById("tml-import-error"), this.noteEl = document.getElementById("tml-import-note"), this.subEl = document.getElementById("tml-import-sub"), this.backButton = this.el.querySelector("[data-import-action=\"back\"]"), this.retryButton = this.el.querySelector("[data-import-action=\"retry\"]"), this.cancelButton = this.el.querySelector("[data-import-action=\"cancel\"]"), this.runButton = this.el.querySelector("[data-import-action=\"run\"]"), this.fandomUrlEl = document.getElementById("tml-fandom-url"), this.jsonUrlEl = document.getElementById("tml-json-url"), this.inputs = {
 			zip: document.getElementById("tml-input-zip"),
 			folder: document.getElementById("tml-input-folder"),
 			json: document.getElementById("tml-input-json"),
@@ -38845,15 +38936,15 @@ var oB = class {
 	}
 	async loadZip(e) {
 		this.manual = {}, this.bundle = null, this.preview = null, this.nameOverride = "", this.wikiOverride = "", this.tileUrl = "", await this.runTask("读取 .zip 地图包", async () => {
-			let t = await AR(e, {
+			let t = await BR(e, {
 				signal: this.abort?.signal,
 				onProgress: (e) => this.reportProgress(e)
 			});
-			return this.bundle = t, cz(t, this.analyzeOptions());
+			return this.bundle = t, vz(t, this.analyzeOptions());
 		});
 	}
 	async loadFolder(e) {
-		this.manual = {}, this.bundle = kR(e), this.preview = null, await this.runTask("扫描地图文件夹", async () => cz(this.bundle, this.analyzeOptions()));
+		this.manual = {}, this.bundle = zR(e), this.preview = null, await this.runTask("扫描地图文件夹", async () => vz(this.bundle, this.analyzeOptions()));
 	}
 	async analyzeManual() {
 		let e = [];
@@ -38863,7 +38954,7 @@ var oB = class {
 			return;
 		}
 		let t = this.manual.json && this.manual.json.name.replace(/\.[^.]+$/, "") || this.manual.image && this.manual.image.name.replace(/\.[^.]+$/, "") || "手动选择的地图包";
-		this.bundle = kR(e, t), this.preview = null, await this.runTask("读取本地文件", async () => cz(this.bundle, this.analyzeOptions()));
+		this.bundle = zR(e, t), this.preview = null, await this.runTask("读取本地文件", async () => vz(this.bundle, this.analyzeOptions()));
 	}
 	analyzeOptions() {
 		return {
@@ -38877,17 +38968,17 @@ var oB = class {
 	}
 	async loadDropped(e) {
 		await this.runTask("读取拖入的地图包", async () => {
-			let t = await PR(e, {
+			let t = await WR(e, {
 				signal: this.abort?.signal,
 				onProgress: (e) => this.reportProgress(e)
 			});
 			if (!t) throw Error("没有识别到文件。可以拖入 .zip、文件夹，或 map.json + 图片。");
-			return this.bundle = t, this.manual = {}, cz(t, this.analyzeOptions());
+			return this.bundle = t, this.manual = {}, vz(t, this.analyzeOptions());
 		});
 	}
 	async readFandomUrl() {
 		let e = this.fandomUrlEl.value.trim();
-		e ? (this.bundle = null, this.preview = null, await this.runTask("读取 Fandom 地图页面", async () => gz(e, {
+		e ? (this.bundle = null, this.preview = null, await this.runTask("读取 Fandom 地图页面", async () => Ez(e, {
 			signal: this.abort?.signal,
 			onProgress: (e) => this.reportProgress(e)
 		}))) : this.showError("读取 Fandom 页面", "请输入 Fandom 地图页面 URL。");
@@ -38905,8 +38996,8 @@ var oB = class {
 				throw Error(`无法读取这个 URL（可能是 CORS 限制）：${e instanceof Error ? e.message : String(e)}`);
 			}
 			if (!t.ok) throw Error(`JSON URL 返回 HTTP ${t.status}`);
-			let n = await t.blob(), r = e.split("/").pop()?.split("?")[0] || "map.json", i = kR([new File([n], r.endsWith(".json") ? r : `${r}.json`, { type: "application/json" })], r.replace(/\.[^.]+$/, ""));
-			return this.bundle = i, cz(i, this.analyzeOptions());
+			let n = await t.blob(), r = e.split("/").pop()?.split("?")[0] || "map.json", i = zR([new File([n], r.endsWith(".json") ? r : `${r}.json`, { type: "application/json" })], r.replace(/\.[^.]+$/, ""));
+			return this.bundle = i, vz(i, this.analyzeOptions());
 		}) : this.showError("读取 JSON URL", "请输入 JSON 文件 URL。");
 	}
 	async runTask(e, t) {
@@ -38924,7 +39015,7 @@ var oB = class {
 					this.closing || (this.busy = !1, this.setView(this.preview ? "preview" : "pick"), this.preview && this.renderPreview());
 					return;
 				}
-				this.busy = !1, this.showError(e, GI(t));
+				this.busy = !1, this.showError(e, ZI(t));
 			} finally {
 				this.closing || (this.busy = !1), this.abort = null, this.renderFooter();
 			}
@@ -38940,21 +39031,21 @@ var oB = class {
 		}));
 	}
 	async chooseImage(e) {
-		this.preview && (this.preview = await QR(this.preview, e), this.showChoices = !1, this.renderPreview());
+		this.preview && (this.preview = await cz(this.preview, e), this.showChoices = !1, this.renderPreview());
 	}
 	async handleImageFile(e) {
 		if (!e.type.startsWith("image/") && !/\.(png|jpe?g|webp|avif|gif)$/i.test(e.name)) this.showError("读取底图", "请选择 PNG / JPG / WebP / AVIF 图片。");
 		else if (this.view === "preview" && this.preview) try {
-			this.preview = await $R(this.preview, e), this.showChoices = !1, this.renderPreview();
+			this.preview = await lz(this.preview, e), this.showChoices = !1, this.renderPreview();
 		} catch (e) {
-			this.showError("读取底图", GI(e));
+			this.showError("读取底图", ZI(e));
 		}
 		else this.manual.image = e, await this.analyzeManual();
 	}
 	async replaceTiles(e) {
 		let t = this.preview?.bundle;
 		if (!t) return;
-		let n = t.files.filter((e) => e.path.toLowerCase().endsWith(".json")), r = t.files.find((e) => e.name.toLowerCase() === "manifest.json"), i = kR(e, t.label).files, a = {
+		let n = t.files.filter((e) => e.path.toLowerCase().endsWith(".json")), r = t.files.find((e) => e.name.toLowerCase() === "manifest.json"), i = zR(e, t.label).files, a = {
 			label: t.label,
 			source: "files",
 			files: [
@@ -38963,7 +39054,7 @@ var oB = class {
 				...r ? [r] : []
 			]
 		};
-		this.bundle = a, await this.runTask("重新扫描瓦片", async () => cz(a, {
+		this.bundle = a, await this.runTask("重新扫描瓦片", async () => vz(a, {
 			...this.analyzeOptions(),
 			dataPath: this.preview?.dataPath
 		}));
@@ -38972,12 +39063,12 @@ var oB = class {
 		if (this.preview) {
 			if (e === "pick-image") this.previewImageInput.click();
 			else if (e === "pick-tiles") this.previewTilesInput.click();
-			else if (e === "remove-image") this.preview = ez(this.preview), this.renderPreview();
+			else if (e === "remove-image") this.preview = uz(this.preview), this.renderPreview();
 			else if (e === "toggle-choices") this.showChoices = !this.showChoices, this.renderPreview();
 			else if (e === "run-without-image") await this.runImport();
 			else if (e === "reanalyze") {
 				if (!this.bundle) return;
-				await this.runTask("重新读取地图包", async () => cz(this.bundle, this.analyzeOptions()));
+				await this.runTask("重新读取地图包", async () => vz(this.bundle, this.analyzeOptions()));
 			} else e === "read-url-again" && await this.readFandomUrl();
 		}
 	}
@@ -39009,11 +39100,11 @@ var oB = class {
 		let t = Q("div", "tml-progress-list"), n = this.progress.length - 1;
 		this.progress.forEach((e, r) => {
 			let i = Q("div", "tml-progress-row"), a = Q("span", "tml-progress-mark");
-			r < n || e.total && e.done === e.total ? (a.classList.add("is-done"), a.append(aB("check"))) : a.classList.add("is-active");
+			r < n || e.total && e.done === e.total ? (a.classList.add("is-done"), a.append(hB("check"))) : a.classList.add("is-active");
 			let o = Q("div", "tml-progress-body");
 			if (o.append(Q("span", "tml-progress-step", e.step)), e.detail && o.append(Q("span", "tml-progress-detail", e.detail)), e.total) {
 				let t = Q("div", "tml-progress-bar"), n = Q("span");
-				n.style.width = `${Math.min(100, Math.max(0, (e.done ?? 0) / e.total * 100))}%`, t.append(n), o.append(t), o.append(Q("span", "tml-progress-count", `${cL(e.done ?? 0)} / ${cL(e.total)}`));
+				n.style.width = `${Math.min(100, Math.max(0, (e.done ?? 0) / e.total * 100))}%`, t.append(n), o.append(t), o.append(Q("span", "tml-progress-count", `${mL(e.done ?? 0)} / ${mL(e.total)}`));
 			}
 			i.append(a, o), t.append(i);
 		}), this.busyEl.append(t);
@@ -39021,7 +39112,7 @@ var oB = class {
 	renderError() {
 		this.errorEl.replaceChildren();
 		let e = Q("div", "tml-error-head"), t = Q("span", "tml-error-mark");
-		t.append(aB("warning"));
+		t.append(hB("warning"));
 		let n = Q("div");
 		n.append(Q("strong", void 0, this.errorStage || "导入失败"), Q("p", void 0, this.errorText)), e.append(t, n), this.errorEl.append(e), this.errorEl.append(Q("p", "tml-hint", "已经读取到的文件仍保留在这个窗口里，可以返回重选或重试；没有写入任何地图包。"));
 	}
@@ -39040,9 +39131,9 @@ var oB = class {
 			let n = Q("span", "tml-fact");
 			return n.append(Q("span", "tml-fact-label", e), Q("strong", void 0, t)), n;
 		};
-		s.append(c("地点", cL(n.markerCount)), c("分类", cL(n.categoryCount)), c("有说明", cL(n.descriptionCount)), c("有链接", cL(n.linkMarkerCount))), t.kind === "tiles" && (s.append(c("区域", cL(n.regionCount))), n.streetCount && s.append(c("街道", cL(n.streetCount)))), t.kind === "image" && s.append(c("画布", `${cL(t.width)}×${cL(t.height)}`)), this.previewEl.append(s);
+		s.append(c("地点", mL(n.markerCount)), c("分类", mL(n.categoryCount)), c("有说明", mL(n.descriptionCount)), c("有链接", mL(n.linkMarkerCount))), t.kind === "tiles" && (s.append(c("区域", mL(n.regionCount))), n.streetCount && s.append(c("街道", mL(n.streetCount)))), t.kind === "image" && s.append(c("画布", `${mL(t.width)}×${mL(t.height)}`)), this.previewEl.append(s);
 		let l = Q("div", "tml-preview-meta");
-		l.append(Q("span", void 0, `${cL(n.fileCount)} 个文件`), Q("span", void 0, `约 ${sL(n.sizeBytes)}`), Q("span", void 0, t.kind === "tiles" ? "瓦片地图 · WebMercator" : t.image ? `底图 ${cL(t.imageWidth ?? 0)}×${cL(t.imageHeight ?? 0)}` : "暂无底图")), this.previewEl.append(l), t.kind === "image" && this.previewEl.append(this.renderImageSection(e)), t.kind === "tiles" && this.previewEl.append(this.renderTileSection(e)), this.previewEl.append(this.renderNotices(e)), this.previewEl.append(this.renderDataChoices(e)), this.previewEl.append(this.renderAdvanced(e)), this.renderFooter();
+		l.append(Q("span", void 0, `${mL(n.fileCount)} 个文件`), Q("span", void 0, `约 ${pL(n.sizeBytes)}`), Q("span", void 0, t.kind === "tiles" ? "瓦片地图 · WebMercator" : t.image ? `底图 ${mL(t.imageWidth ?? 0)}×${mL(t.imageHeight ?? 0)}` : "暂无底图")), this.previewEl.append(l), t.kind === "image" && this.previewEl.append(this.renderImageSection(e)), t.kind === "tiles" && this.previewEl.append(this.renderTileSection(e)), this.previewEl.append(this.renderNotices(e)), this.previewEl.append(this.renderDataChoices(e)), this.previewEl.append(this.renderAdvanced(e)), this.renderFooter();
 	}
 	renderImageSection(e) {
 		let t = Q("section", "tml-preview-image"), n = Q("div", "tml-section-heading");
@@ -39058,7 +39149,7 @@ var oB = class {
 			let o = Q("div", "tml-image-body"), s = Q("strong", "tml-image-name", e.pkg.imageName || "当前底图");
 			s.title = e.pkg.imageName || "", o.append(s);
 			let c = [];
-			e.pkg.imageWidth && e.pkg.imageHeight && c.push(`${cL(e.pkg.imageWidth)}×${cL(e.pkg.imageHeight)}`), c.push(sL(e.pkg.image?.size)), c.push(iL(e.pkg.imageSource)), c.push(rL(e.pkg.imageFit)), o.append(Q("span", "tml-image-meta", c.join(" · "))), r?.placeholder && o.append(Q("span", "tml-image-warning", "占位图，不是原始地图。建议换成本地原图。"));
+			e.pkg.imageWidth && e.pkg.imageHeight && c.push(`${mL(e.pkg.imageWidth)}×${mL(e.pkg.imageHeight)}`), c.push(pL(e.pkg.image?.size)), c.push(uL(e.pkg.imageSource)), c.push(lL(e.pkg.imageFit)), o.append(Q("span", "tml-image-meta", c.join(" · "))), r?.placeholder && o.append(Q("span", "tml-image-warning", "占位图，不是原始地图。建议换成本地原图。"));
 			let l = Q("div", "tml-image-actions"), u = Q("button", "tml-btn", "更换底图");
 			if (u.type = "button", u.dataset.previewAction = "pick-image", l.append(u), e.imageChoices.length > 1) {
 				let t = Q("button", "tml-btn", this.showChoices ? "收起包内图片" : `使用包内图片 ${e.imageChoices.length}`);
@@ -39068,7 +39159,7 @@ var oB = class {
 			d.type = "button", d.dataset.previewAction = "remove-image", l.append(d), o.append(l), n.append(i, o), t.append(n), t.append(Q("p", "tml-image-drop-hint", "也可以把图片拖到这里，或直接粘贴剪贴板里的图片替换。"));
 		} else {
 			let n = Q("div", "tml-image-empty"), r = Q("span", "tml-image-empty-mark");
-			r.append(aB("image"));
+			r.append(hB("image"));
 			let i = Q("div", "tml-image-empty-body");
 			if (i.append(Q("strong", void 0, "这张包没有可用底图"), Q("p", void 0, e.imageDownloadError ? "JSON、说明和链接已经读取。底图下载失败，可以选择本地图片或先导入点位。" : "地点、说明和链接已经读取。可以先导入点位，之后随时补图。")), e.imageDownloadError && (i.append(Q("p", "tml-image-error", `原因：${e.imageDownloadError}`)), e.imagePageUrl)) {
 				let t = document.createElement("a");
@@ -39112,7 +39203,7 @@ var oB = class {
 		let r = e.stats.tiles;
 		if (r && r.count > 0) {
 			let e = Q("div", "tml-tile-summary");
-			e.append(Q("strong", void 0, `${cL(r.count)} 张`), Q("span", void 0, r.minZoom != null && r.maxZoom != null ? `覆盖 z${r.minZoom}–z${r.maxZoom}` : "覆盖层级未检测"), Q("span", r.missing > 0 ? "tml-tile-missing" : "tml-tile-ok", r.missing > 0 ? `缺 ${cL(r.missing)} 张` : "已覆盖层级不缺块")), t.append(e), t.append(Q("p", "tml-hint", `顺序 ${r.order === "zxy" ? "{z}/{x}/{y}" : r.order === "zyx" ? "{z}/{y}/{x}" : "未检测"} · ${r.hasBounds ? "有 bounds" : "无 bounds，按 WebMercator"} · 瓦片组「${r.setName}」`));
+			e.append(Q("strong", void 0, `${mL(r.count)} 张`), Q("span", void 0, r.minZoom != null && r.maxZoom != null ? `覆盖 z${r.minZoom}–z${r.maxZoom}` : "覆盖层级未检测"), Q("span", r.missing > 0 ? "tml-tile-missing" : "tml-tile-ok", r.missing > 0 ? `缺 ${mL(r.missing)} 张` : "已覆盖层级不缺块")), t.append(e), t.append(Q("p", "tml-hint", `顺序 ${r.order === "zxy" ? "{z}/{x}/{y}" : r.order === "zyx" ? "{z}/{y}/{x}" : "未检测"} · ${r.hasBounds ? "有 bounds" : "无 bounds，按 WebMercator"} · 瓦片组「${r.setName}」`));
 		} else e.pkg.tile?.template ? t.append(Q("p", "tml-hint", "使用在线瓦片模板；导入后需要联网加载底图。也可以再选择本地瓦片文件夹做离线备份。")) : t.append(Q("p", "tml-hint", "没有找到本地瓦片。地点和区域仍可导入；也可以在“底图”里补瓦片。"));
 		if (e.bundle) {
 			let e = Q("button", "tml-btn", r?.count ? "重新选择瓦片文件夹" : "选择瓦片文件夹");
@@ -39124,11 +39215,11 @@ var oB = class {
 		let t = Q("section", "tml-preview-notices");
 		if (e.notices.length === 0) {
 			let e = Q("div", "tml-notice is-ok"), n = Q("span", "tml-notice-mark");
-			return n.append(aB("check")), e.append(n, Q("span", void 0, "数据完整，可以导入。")), t.append(e), t;
+			return n.append(hB("check")), e.append(n, Q("span", void 0, "数据完整，可以导入。")), t.append(e), t;
 		}
 		for (let n of e.notices) {
 			let e = Q("div", `tml-notice is-${n.tone}`), r = Q("span", "tml-notice-mark");
-			r.append(aB(n.tone === "warning" ? "warning" : "info")), e.append(r, Q("span", void 0, n.text)), t.append(e);
+			r.append(hB(n.tone === "warning" ? "warning" : "info")), e.append(r, Q("span", void 0, n.text)), t.append(e);
 		}
 		return t;
 	}
@@ -39145,7 +39236,7 @@ var oB = class {
 		}
 		return r.addEventListener("change", () => {
 			let e = r.value;
-			this.bundle && this.runTask("切换数据文件", async () => cz(this.bundle, {
+			this.bundle && this.runTask("切换数据文件", async () => vz(this.bundle, {
 				...this.analyzeOptions(),
 				dataPath: e
 			}));
@@ -39206,19 +39297,19 @@ var oB = class {
 						step: "下载标记图标",
 						detail: "读取 Map Genie 原始分类图标；失败时保留彩色圆点。"
 					});
-					let e = await pL(t, this.abort.signal);
+					let e = await yL(t, this.abort.signal);
 					if (e) t.iconAtlas = e, t.dataBytes = (t.dataBytes ?? 0) + e.image.size;
 					else {
-						let e = await dL(t, this.abort.signal);
+						let e = await _L(t, this.abort.signal);
 						e && (t.iconFont = e, t.dataBytes = (t.dataBytes ?? 0) + e.data.size);
 					}
 				}
-				if (await Uz(e.stats.sizeBytes + (t.iconAtlas?.image.size ?? 0) + (t.iconFont?.data.size ?? 0)), this.abort.signal.aborted) throw new DOMException("导入已取消", "AbortError");
+				if (await $z(e.stats.sizeBytes + (t.iconAtlas?.image.size ?? 0) + (t.iconFont?.data.size ?? 0)), this.abort.signal.aborted) throw new DOMException("导入已取消", "AbortError");
 				this.reportProgress({
 					step: "写入 IndexedDB",
-					detail: `${cL(t.markers.length)} 个地点 · ${sL(e.stats.sizeBytes)}`
+					detail: `${mL(t.markers.length)} 个地点 · ${pL(e.stats.sizeBytes)}`
 				});
-				let n = await Jz(t, this.abort.signal);
+				let n = await iB(t, this.abort.signal);
 				if (this.abort.signal.aborted) throw new DOMException("导入已取消", "AbortError");
 				this.busy = !1, this.el.hidden = !0, document.removeEventListener("keydown", this.onKeyDown), this.options.onToast(n.updated ? `已更新地图包：${n.pkg.name}` : `已导入地图包：${n.pkg.name}`);
 				try {
@@ -39232,12 +39323,12 @@ var oB = class {
 					this.busy = !1, this.setView("preview"), this.renderPreview(), this.options.onToast("已取消导入");
 					return;
 				}
-				if (e instanceof Vz || Hz(e)) {
-					let t = e instanceof Vz ? `需要约 ${sL(e.needed)}，已用 ${sL(e.usage)} / 配额 ${sL(e.quota)}。` : GI(e);
+				if (e instanceof Zz || Qz(e)) {
+					let t = e instanceof Zz ? `需要约 ${pL(e.needed)}，已用 ${pL(e.usage)} / 配额 ${pL(e.quota)}。` : ZI(e);
 					this.showError("浏览器存储空间不足", `${t} 请删除不用的地图包，或换一个更大的浏览器存储配额。已读取的数据还在这个窗口里。`);
 					return;
 				}
-				this.showError("导入地图包", GI(e));
+				this.showError("导入地图包", ZI(e));
 			} finally {
 				this.busy = !1, this.abort = null;
 			}
@@ -39259,8 +39350,8 @@ var oB = class {
 	revokeUrls() {
 		this.revokePreviewUrls();
 	}
-}, sB = "tml-packages", cB = `
-<div id="${sB}" class="tml-modal tml-packages-modal" role="dialog" aria-modal="true" aria-label="地图包管理" hidden>
+}, _B = "tml-packages", vB = `
+<div id="${_B}" class="tml-modal tml-packages-modal" role="dialog" aria-modal="true" aria-label="地图包管理" hidden>
   <div class="tml-modal-card tml-packages-card">
     <header class="tml-modal-head">
       <div class="tml-modal-heading">
@@ -39284,10 +39375,10 @@ function $(e, t, n) {
 	let r = document.createElement(e);
 	return t && (r.className = t), n != null && (r.textContent = n), r;
 }
-function lB(e) {
+function yB(e) {
 	return e.sourceLabel ? e.sourceLabel : e.source === "fandom" ? "Fandom 图片" : e.source === "mapgenie" ? "Map Genie 瓦片" : e.kind === "tiles" ? "瓦片" : "图片";
 }
-function uB(e) {
+function bB(e) {
 	if (e.tile) return {
 		index: e.tile.setIndex ?? 0,
 		id: "",
@@ -39300,7 +39391,7 @@ function uB(e) {
 		boundsByZoom: e.tile.boundsByZoom ?? {}
 	};
 }
-var dB = class {
+var xB = class {
 	options;
 	el;
 	listEl;
@@ -39330,10 +39421,10 @@ var dB = class {
 	};
 	constructor(e) {
 		this.options = e;
-		let t = document.getElementById(sB);
+		let t = document.getElementById(_B);
 		t && t.remove();
 		let n = document.createElement("template");
-		n.innerHTML = cB.trim(), document.body.append(n.content), this.el = document.getElementById(sB), this.listEl = document.getElementById("tml-packages-list"), this.imageInput = document.createElement("input"), this.imageInput.type = "file", this.imageInput.accept = ".png,.jpg,.jpeg,.webp,.avif,.gif,image/*", this.imageInput.hidden = !0, this.tilesInput = document.createElement("input"), this.tilesInput.type = "file", this.tilesInput.multiple = !0, this.tilesInput.setAttribute("webkitdirectory", ""), this.tilesInput.hidden = !0, this.attachInput = document.createElement("input"), this.attachInput.type = "file", this.attachInput.accept = ".json,.zip,application/json,application/zip", this.attachInput.hidden = !0, this.el.append(this.imageInput, this.tilesInput, this.attachInput), this.bind();
+		n.innerHTML = vB.trim(), document.body.append(n.content), this.el = document.getElementById(_B), this.listEl = document.getElementById("tml-packages-list"), this.imageInput = document.createElement("input"), this.imageInput.type = "file", this.imageInput.accept = ".png,.jpg,.jpeg,.webp,.avif,.gif,image/*", this.imageInput.hidden = !0, this.tilesInput = document.createElement("input"), this.tilesInput.type = "file", this.tilesInput.multiple = !0, this.tilesInput.setAttribute("webkitdirectory", ""), this.tilesInput.hidden = !0, this.attachInput = document.createElement("input"), this.attachInput.type = "file", this.attachInput.accept = ".json,.zip,application/json,application/zip", this.attachInput.hidden = !0, this.el.append(this.imageInput, this.tilesInput, this.attachInput), this.bind();
 	}
 	isOpen() {
 		return !this.el.hidden;
@@ -39374,8 +39465,8 @@ var dB = class {
 				let e = this.listEl.querySelector("[data-package-rename-input]");
 				e?.focus(), e?.select();
 			} else if (e === "rename-save") {
-				let e = await Zz(t, this.listEl.querySelector("[data-package-rename-input]")?.value ?? "").catch((e) => {
-					this.options.onToast(`重命名失败：${GI(e)}`);
+				let e = await sB(t, this.listEl.querySelector("[data-package-rename-input]")?.value ?? "").catch((e) => {
+					this.options.onToast(`重命名失败：${ZI(e)}`);
 				});
 				e && (this.options.onToast(`已重命名为 ${e.name}`), this.renamingId = void 0, await this.reload(), await this.options.onChanged(e));
 			} else if (e === "rename-cancel") this.renamingId = void 0, this.render();
@@ -39384,7 +39475,7 @@ var dB = class {
 					this.expandedId = void 0, this.expandedPkg = void 0, this.render();
 					return;
 				}
-				let e = await Lz(t);
+				let e = await qz(t);
 				if (!e) {
 					this.options.onToast("这个地图包已经不存在。"), await this.reload();
 					return;
@@ -39393,22 +39484,22 @@ var dB = class {
 			} else if (e === "delete") this.deletingId = t, this.renamingId = void 0, this.render();
 			else if (e === "delete-cancel") this.deletingId = void 0, this.render();
 			else if (e === "delete-confirm") try {
-				await nB(t), this.deletingId = void 0, this.expandedId === t && (this.expandedId = void 0, this.expandedPkg = void 0), this.options.onToast("地图包已删除"), this.options.onDeleted(t), await this.reload();
+				await fB(t), this.deletingId = void 0, this.expandedId === t && (this.expandedId = void 0, this.expandedPkg = void 0), this.options.onToast("地图包已删除"), this.options.onDeleted(t), await this.reload();
 			} catch (e) {
-				this.options.onToast(`删除失败：${GI(e)}`);
+				this.options.onToast(`删除失败：${ZI(e)}`);
 			}
 			else if (e === "replace-image") this.targetId = t, this.imageInput.click();
 			else if (e === "remove-image") this.removingImageId = t, this.render();
 			else if (e === "remove-image-cancel") this.removingImageId = void 0, this.render();
 			else if (e === "remove-image-confirm") {
-				let e = await $z(t).catch((e) => {
-					this.options.onToast(`移除底图失败：${GI(e)}`);
+				let e = await lB(t).catch((e) => {
+					this.options.onToast(`移除底图失败：${ZI(e)}`);
 				});
 				e && (this.removingImageId = void 0, this.expandedPkg = e, this.options.onToast("已移除底图，地点和笔记都还在"), await this.reload(), await this.options.onChanged(e));
 			} else if (e === "replace-tiles") this.targetId = t, this.tilesInput.click();
 			else if (e === "attach-data") this.targetId = t, this.attachInput.click();
 			else if (e === "open-image") {
-				let e = this.expandedPkg?.id === t ? this.expandedPkg : await Lz(t);
+				let e = this.expandedPkg?.id === t ? this.expandedPkg : await qz(t);
 				if (!e?.image) return;
 				let n = URL.createObjectURL(e.image);
 				window.open(n, "_blank") || this.options.onToast("浏览器拦截了新窗口"), window.setTimeout(() => URL.revokeObjectURL(n), 6e4);
@@ -39416,7 +39507,7 @@ var dB = class {
 		}
 	}
 	async reload() {
-		this.loading = !0, this.metas = await Mz(), this.loading = !1, this.expandedId && (this.expandedPkg = await Lz(this.expandedId), this.expandedPkg || (this.expandedId = void 0)), this.render();
+		this.loading = !0, this.metas = await Hz(), this.loading = !1, this.expandedId && (this.expandedPkg = await qz(this.expandedId), this.expandedPkg || (this.expandedId = void 0)), this.render();
 	}
 	render() {
 		if (this.revokeThumbUrls(), this.listEl.replaceChildren(), this.loading) this.listEl.append($("p", "tml-empty-small", "正在读取地图包…"));
@@ -39436,7 +39527,7 @@ var dB = class {
 			this.thumbUrls.push(t);
 			let n = document.createElement("img");
 			n.src = t, n.alt = "", r.append(n);
-		} else r.append(fB(e.kind === "tiles" ? "grid" : "image"));
+		} else r.append(SB(e.kind === "tiles" ? "grid" : "image"));
 		let i = $("div", "tml-package-info"), a = $("div", "tml-package-title-row");
 		if (this.renamingId === e.id) {
 			let n = document.createElement("input");
@@ -39444,18 +39535,18 @@ var dB = class {
 				e.key === "Enter" ? t.querySelector("[data-package-action=\"rename-save\"]")?.click() : e.key === "Escape" && t.querySelector("[data-package-action=\"rename-cancel\"]")?.click();
 			}), a.append(n);
 		} else a.append($("strong", "tml-package-name", e.name));
-		a.append($("span", "tml-package-type", lB(e))), e.missingAsset === "image" && a.append($("span", "tml-badge is-warning", "缺底图")), e.missingAsset === "tiles" && a.append($("span", "tml-badge is-warning", "缺瓦片")), i.append(a);
+		a.append($("span", "tml-package-type", yB(e))), e.missingAsset === "image" && a.append($("span", "tml-badge is-warning", "缺底图")), e.missingAsset === "tiles" && a.append($("span", "tml-badge is-warning", "缺瓦片")), i.append(a);
 		let o = $("div", "tml-package-facts"), s = [
-			`${cL(e.markerCount)} 地点`,
-			e.regionCount ? `${cL(e.regionCount)} 区域` : "",
-			`${cL(e.categoryCount)} 分类`,
-			sL(e.sizeBytes),
-			`${cL(e.fileCount)} 个文件`
+			`${mL(e.markerCount)} 地点`,
+			e.regionCount ? `${mL(e.regionCount)} 区域` : "",
+			`${mL(e.categoryCount)} 分类`,
+			pL(e.sizeBytes),
+			`${mL(e.fileCount)} 个文件`
 		].filter(Boolean);
 		if (o.append($("span", void 0, s.join(" · "))), i.append(o), e.kind === "tiles") {
-			let t = e.tileCount && e.tileCount > 0 ? `瓦片 ${cL(e.tileCount)} 张${e.tileZoomMin == null ? "" : ` · z${e.tileZoomMin}–z${e.tileZoomMax}`}${e.missingTiles ? ` · 缺 ${cL(e.missingTiles)}` : ""}` : e.remoteTiles ? "在线瓦片" : "未关联瓦片";
+			let t = e.tileCount && e.tileCount > 0 ? `瓦片 ${mL(e.tileCount)} 张${e.tileZoomMin == null ? "" : ` · z${e.tileZoomMin}–z${e.tileZoomMax}`}${e.missingTiles ? ` · 缺 ${mL(e.missingTiles)}` : ""}` : e.remoteTiles ? "在线瓦片" : "未关联瓦片";
 			i.append($("span", "tml-package-asset", t));
-		} else e.hasImage ? i.append($("span", "tml-package-asset", `底图 ${e.imageName || ""}${e.imageWidth ? ` · ${cL(e.imageWidth)}×${cL(e.imageHeight ?? 0)}` : ""}`)) : i.append($("span", "tml-package-asset is-missing", "没有底图"));
+		} else e.hasImage ? i.append($("span", "tml-package-asset", `底图 ${e.imageName || ""}${e.imageWidth ? ` · ${mL(e.imageWidth)}×${mL(e.imageHeight ?? 0)}` : ""}`)) : i.append($("span", "tml-package-asset is-missing", "没有底图"));
 		let c = $("div", "tml-package-actions"), l = (e, t, n = !1) => {
 			let r = $("button", `tml-mini${n ? " tml-primary" : ""}`, e);
 			r.type = "button", r.dataset.packageAction = t, c.append(r);
@@ -39484,10 +39575,10 @@ var dB = class {
 			let o = $("div", "tml-package-image-copy");
 			o.append($("strong", void 0, e.imageName || "当前底图"));
 			let s = [
-				e.imageWidth && e.imageHeight ? `${cL(e.imageWidth)}×${cL(e.imageHeight)}` : "",
-				sL(e.image.size),
-				iL(e.imageSource),
-				rL(e.imageFit)
+				e.imageWidth && e.imageHeight ? `${mL(e.imageWidth)}×${mL(e.imageHeight)}` : "",
+				pL(e.image.size),
+				uL(e.imageSource),
+				lL(e.imageFit)
 			].filter(Boolean);
 			o.append($("span", "tml-image-meta", s.join(" · ")));
 			let c = $("div", "tml-package-actions"), l = $("button", "tml-mini", "更换底图");
@@ -39528,7 +39619,7 @@ var dB = class {
 			let i = document.createElement("input");
 			i.type = "text", i.value = n.template, i.placeholder = "http://127.0.0.1:8000/{z}/{y}/{x}.jpg", i.addEventListener("change", () => {
 				let t = i.value.trim();
-				t && (!/\{z\}/.test(t) || !/\{x\}/.test(t) || !/\{y\}/.test(t)) ? (this.options.onToast("瓦片模板必须同时包含 {z}、{x}、{y}"), i.value = n.template) : Xz(e.id, { tile: {
+				t && (!/\{z\}/.test(t) || !/\{x\}/.test(t) || !/\{y\}/.test(t)) ? (this.options.onToast("瓦片模板必须同时包含 {z}、{x}、{y}"), i.value = n.template) : oB(e.id, { tile: {
 					...n,
 					template: t
 				} }).then(async (e) => {
@@ -39539,9 +39630,9 @@ var dB = class {
 		return t;
 	}
 	async replaceImage(e, t) {
-		let n = await Lz(e);
+		let n = await qz(e);
 		if (n) try {
-			let r = await $I(t, t.name), i = await eL(t), a = n.kind === "image" && n.markers.length === 0 && n.source === "manual", o = await Qz(e, {
+			let r = await aL(t, t.name), i = await oL(t), a = n.kind === "image" && n.markers.length === 0 && n.source === "manual", o = await cB(e, {
 				image: t,
 				imageType: t.type,
 				imageName: t.name,
@@ -39558,16 +39649,16 @@ var dB = class {
 			});
 			o && (this.expandedPkg = o, this.options.onToast("底图已更换"), await this.reload(), await this.options.onChanged(o));
 		} catch (e) {
-			this.options.onToast(`更换底图失败：${GI(e)}`);
+			this.options.onToast(`更换底图失败：${ZI(e)}`);
 		}
 	}
 	async replaceTiles(e, t) {
-		let n = await Lz(e);
+		let n = await qz(e);
 		if (!n) return;
-		let r = uB(n);
+		let r = bB(n);
 		if (!r) this.options.onToast("这个地图包缺少瓦片配置。");
 		else try {
-			let i = JR(kR(t, n.name).files, r, n.tile?.setCount ?? 1);
+			let i = iz(zR(t, n.name).files, r, n.tile?.setCount ?? 1);
 			if (!i.tileFiles || Object.keys(i.tileFiles).length === 0) {
 				this.options.onToast("这个文件夹里没有找到 z/x/y 结构的瓦片。");
 				return;
@@ -39579,25 +39670,25 @@ var dB = class {
 				coverageMaxZoom: i.stats?.maxZoom,
 				expectedCount: i.stats?.expected,
 				missingCount: i.stats?.missing
-			}, o = await tB(e, i.tileFiles, a);
+			}, o = await dB(e, i.tileFiles, a);
 			o && (this.expandedPkg = o, this.options.onToast(`已关联 ${Object.keys(i.tileFiles).length.toLocaleString("zh-CN")} 张瓦片`), await this.reload(), await this.options.onChanged(o));
 		} catch (e) {
-			this.options.onToast(`关联瓦片失败：${GI(e)}`);
+			this.options.onToast(`关联瓦片失败：${ZI(e)}`);
 		}
 	}
 	async attachData(e, t) {
-		let n = await Lz(e);
+		let n = await qz(e);
 		if (n) {
 			if (n.markers.length > 0) this.options.onToast("这个地图包已经地点数据；请用重新导入同一个包来更新。");
 			else try {
 				let r;
-				r = /\.zip$/i.test(t.name) ? await AR(t) : kR([t], t.name.replace(/\.[^.]+$/, ""));
-				let i = await cz(r);
+				r = /\.zip$/i.test(t.name) ? await BR(t) : zR([t], t.name.replace(/\.[^.]+$/, ""));
+				let i = await vz(r);
 				if (i.pkg.kind !== "image" || i.pkg.markers.length === 0) {
 					this.options.onToast("这不是可贴到图片底图上的 Fandom 地点数据。");
 					return;
 				}
-				let a = await Xz(e, {
+				let a = await oB(e, {
 					name: n.nameLocked ? n.name : i.pkg.name,
 					source: i.pkg.source,
 					sourceKey: i.pkg.sourceKey,
@@ -39617,7 +39708,7 @@ var dB = class {
 				});
 				a && (this.expandedPkg = a, this.options.onToast(`已关联 ${a.markers.length.toLocaleString("zh-CN")} 个地点`), await this.reload(), await this.options.onChanged(a));
 			} catch (e) {
-				this.options.onToast(`关联数据失败：${GI(e)}`);
+				this.options.onToast(`关联数据失败：${ZI(e)}`);
 			}
 		}
 	}
@@ -39626,7 +39717,7 @@ var dB = class {
 		this.thumbUrls = [];
 	}
 };
-function fB(e) {
+function SB(e) {
 	let t = document.createElementNS("http://www.w3.org/2000/svg", "svg");
 	t.setAttribute("viewBox", "0 0 24 24"), t.setAttribute("fill", "none"), t.setAttribute("stroke", "currentColor"), t.setAttribute("stroke-width", "1.6"), t.setAttribute("aria-hidden", "true");
 	let n = e === "grid" ? [
@@ -39646,7 +39737,7 @@ function fB(e) {
 	return t;
 }
 // src/layer-types.ts
-var pB = "tavern-map-layer", mB = {
+var CB = "tavern-map-layer", wB = {
 	version: 1,
 	showLabels: !0,
 	showRegions: !0,
@@ -39655,9 +39746,9 @@ var pB = "tavern-map-layer", mB = {
 	sourceLinkText: {},
 	updatedAt: Date.now()
 };
-function hB(e) {
-	let t = e.chatMetadata?.[pB];
-	if (!t || typeof t != "object" || t.version !== 1) return structuredClone(mB);
+function TB(e) {
+	let t = e.chatMetadata?.[CB];
+	if (!t || typeof t != "object" || t.version !== 1) return structuredClone(wB);
 	let n = t, r = n.view, i = r && Number.isFinite(r.cx) && Number.isFinite(r.cy) && Number.isFinite(r.zoom) ? {
 		cx: r.cx,
 		cy: r.cy,
@@ -39674,7 +39765,7 @@ function hB(e) {
 		kind: e.kind === "wikipedia" || e.kind === "official" || e.kind === "review" || e.kind === "source" ? e.kind : "custom"
 	}))])) : {};
 	return {
-		...structuredClone(mB),
+		...structuredClone(wB),
 		...n,
 		version: 1,
 		packageId: typeof n.packageId == "string" ? n.packageId : void 0,
@@ -39703,24 +39794,25 @@ function hB(e) {
 			y: n.userPosition.y
 		} : void 0,
 		atPlaceId: typeof n.atPlaceId == "string" ? n.atPlaceId : void 0,
-		itinerariesByPackage: _B(n.itinerariesByPackage),
+		itinerariesByPackage: DB(n.itinerariesByPackage),
 		nearbyRadius: typeof n.nearbyRadius == "number" && Number.isFinite(n.nearbyRadius) ? Math.min(.8, Math.max(.001, n.nearbyRadius)) : void 0,
 		selectedRegionId: typeof n.selectedRegionId == "string" ? n.selectedRegionId : void 0,
 		currentRegionId: typeof n.currentRegionId == "string" ? n.currentRegionId : void 0,
 		hiddenCategories: Array.isArray(n.hiddenCategories) ? n.hiddenCategories.filter((e) => typeof e == "string") : [],
 		showLabels: typeof n.showLabels != "boolean" || n.showLabels,
 		showRegions: typeof n.showRegions != "boolean" || n.showRegions,
+		showRoads: n.showRoads === !0,
 		notes: {
 			...Object.fromEntries(Object.entries(sI()).filter(([e]) => e.startsWith("layer:"))),
 			...a
 		},
 		links: s,
 		sourceLinkText: o,
-		context: yB(n.context),
+		context: AB(n.context),
 		updatedAt: typeof n.updatedAt == "number" && Number.isFinite(n.updatedAt) ? n.updatedAt : Date.now()
 	};
 }
-function gB(e) {
+function EB(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	if (t.version !== 1 || typeof t.packageId != "string" || !t.packageId || !Array.isArray(t.stops) || t.stops.length < 2) return;
@@ -39744,11 +39836,11 @@ function gB(e) {
 		updatedAt: typeof t.updatedAt == "number" && Number.isFinite(t.updatedAt) ? t.updatedAt : Date.now()
 	};
 }
-function _B(e) {
+function DB(e) {
 	if (!e || typeof e != "object") return;
 	let t = {};
 	for (let [n, r] of Object.entries(e)) {
-		let e = gB(r);
+		let e = EB(r);
 		n && e && (t[n] = {
 			...e,
 			packageId: n
@@ -39756,7 +39848,7 @@ function _B(e) {
 	}
 	return Object.keys(t).length > 0 ? t : void 0;
 }
-function vB(e) {
+function OB(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	if (typeof t.start != "string" || typeof t.destination != "string" || typeof t.total != "string" || !Array.isArray(t.stops) || !Array.isArray(t.legs)) return;
@@ -39790,14 +39882,27 @@ function vB(e) {
 		legs: r
 	};
 }
-function yB(e) {
+function kB(e) {
+	if (!e || typeof e != "object") return;
+	let t = e;
+	if (typeof t.name == "string" && Number.isFinite(t.distancePercent)) return {
+		name: t.name,
+		type: typeof t.type == "string" && t.type ? t.type : void 0,
+		on: t.on === !0,
+		distancePercent: t.distancePercent,
+		distanceCells: Number.isFinite(t.distanceCells) ? t.distanceCells : void 0,
+		direction: typeof t.direction == "string" && t.direction ? t.direction : void 0
+	};
+}
+function AB(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	if (typeof t.mapName != "string" || !t.mapName) return;
 	let n = t.position && Number.isFinite(t.position.x) && Number.isFinite(t.position.y) ? {
 		x: t.position.x,
 		y: t.position.y,
-		region: typeof t.position.region == "string" ? t.position.region : void 0
+		region: typeof t.position.region == "string" ? t.position.region : void 0,
+		road: kB(t.position.road)
 	} : void 0, r = Array.isArray(t.nearby) ? t.nearby.filter((e) => !!e && typeof e.id == "string" && typeof e.name == "string" && Number.isFinite(e.x) && Number.isFinite(e.y) && typeof e.direction == "string" && Number.isFinite(e.distancePercent)).map((e) => ({
 		id: e.id,
 		name: e.name,
@@ -39830,7 +39935,7 @@ function yB(e) {
 		sourceMaterial: typeof t.sourceMaterial == "string" && t.sourceMaterial.trim() ? t.sourceMaterial : void 0,
 		wikiTexts: Array.isArray(t.wikiTexts) ? t.wikiTexts.filter((e) => !!e && typeof e.title == "string" && typeof e.text == "string") : void 0,
 		nearby: r && r.length > 0 ? r : void 0,
-		itinerary: vB(t.itinerary),
+		itinerary: OB(t.itinerary),
 		nearbyAnchor: t.nearbyAnchor === "my position" || t.nearbyAnchor === "at place" || t.nearbyAnchor === "view center" ? t.nearbyAnchor : void 0,
 		nearbyScope: t.nearbyScope === "view" || t.nearbyScope === "map" || t.nearbyScope === "radius" ? t.nearbyScope : void 0,
 		nearbyCoords: t.nearbyCoords !== !1,
@@ -39839,9 +39944,9 @@ function yB(e) {
 		updatedAt: typeof t.updatedAt == "number" && Number.isFinite(t.updatedAt) ? t.updatedAt : Date.now()
 	};
 }
-function bB(e, t) {
+function jB(e, t) {
 	if (t.updatedAt = Date.now(), e.chatMetadata) {
-		if (e.chatMetadata[pB] = {
+		if (e.chatMetadata[CB] = {
 			...t,
 			notes: {}
 		}, uI(), e.saveMetadata) try {
@@ -39854,11 +39959,11 @@ function bB(e, t) {
 	}
 }
 // src/settings.ts
-var xB = "tavern-map", SB = [
+var MB = "tavern-map", NB = [
 	"en",
 	"ja",
 	"zh"
-], CB = {
+], PB = {
 	enabled: !0,
 	provider: "osm",
 	wikiLangs: ["en"],
@@ -39898,20 +40003,20 @@ var xB = "tavern-map", SB = [
 	layerFavoriteWiki: !1,
 	layerAutoExpandWiki: !0
 };
-function wB(e) {
-	let t = e.extensionSettings?.[xB];
-	if (!t || typeof t != "object") return { ...CB };
-	let n = t, r = (e, t, n, r) => typeof e != "number" || !Number.isFinite(e) ? t : Math.min(r, Math.max(n, e)), i = n.wikiLang, a = Array.isArray(n.wikiLangs) ? n.wikiLangs : typeof i == "string" ? [i] : [], o = Array.from(new Set(a.filter((e) => typeof e == "string" && SB.includes(e)))).slice(0, 5), s = typeof n.realMapContext == "boolean" ? n.realMapContext : CB.realMapContext, c = typeof n.layerMapContext == "boolean" ? n.layerMapContext : CB.layerMapContext;
+function FB(e) {
+	let t = e.extensionSettings?.[MB];
+	if (!t || typeof t != "object") return { ...PB };
+	let n = t, r = (e, t, n, r) => typeof e != "number" || !Number.isFinite(e) ? t : Math.min(r, Math.max(n, e)), i = n.wikiLang, a = Array.isArray(n.wikiLangs) ? n.wikiLangs : typeof i == "string" ? [i] : [], o = Array.from(new Set(a.filter((e) => typeof e == "string" && NB.includes(e)))).slice(0, 5), s = typeof n.realMapContext == "boolean" ? n.realMapContext : PB.realMapContext, c = typeof n.layerMapContext == "boolean" ? n.layerMapContext : PB.layerMapContext;
 	return {
-		enabled: typeof n.enabled == "boolean" ? n.enabled : CB.enabled,
+		enabled: typeof n.enabled == "boolean" ? n.enabled : PB.enabled,
 		provider: "osm",
-		wikiLangs: o.length > 0 ? o : [...CB.wikiLangs],
-		radiusM: r(n.radiusM, CB.radiusM, 25, 1e3),
-		maxNearby: Math.round(r(n.maxNearby, CB.maxNearby, 0, 12)),
-		depth: Math.round(r(n.depth, CB.depth, 0, 10)),
+		wikiLangs: o.length > 0 ? o : [...PB.wikiLangs],
+		radiusM: r(n.radiusM, PB.radiusM, 25, 1e3),
+		maxNearby: Math.round(r(n.maxNearby, PB.maxNearby, 0, 12)),
+		depth: Math.round(r(n.depth, PB.depth, 0, 10)),
 		showPois: typeof n.showPois != "boolean" || n.showPois,
-		showRoutePois: typeof n.showRoutePois == "boolean" ? n.showRoutePois : CB.showRoutePois,
-		routePoiRadiusM: Math.round(r(n.routePoiRadiusM, CB.routePoiRadiusM, 25, 500)),
+		showRoutePois: typeof n.showRoutePois == "boolean" ? n.showRoutePois : PB.showRoutePois,
+		routePoiRadiusM: Math.round(r(n.routePoiRadiusM, PB.routePoiRadiusM, 25, 500)),
 		realMapContext: !c && s,
 		layerMapContext: c,
 		realNoteAI: n.realNoteAI !== !1,
@@ -39931,9 +40036,9 @@ function wB(e) {
 		layerNearbyNotes: n.layerNearbyNotes === !0,
 		layerNearbySource: n.layerNearbySource === !0,
 		layerNearbyWiki: n.layerNearbyWiki === !0,
-		layerNearbyMax: Math.round(r(n.layerNearbyMax, CB.layerNearbyMax, 1, 50)),
-		layerItineraryPoiRadius: r(n.layerItineraryPoiRadius, CB.layerItineraryPoiRadius, .01, .4),
-		layerItineraryPoiMax: Math.round(r(n.layerItineraryPoiMax, CB.layerItineraryPoiMax, 1, 30)),
+		layerNearbyMax: Math.round(r(n.layerNearbyMax, PB.layerNearbyMax, 1, 50)),
+		layerItineraryPoiRadius: r(n.layerItineraryPoiRadius, PB.layerItineraryPoiRadius, .01, .4),
+		layerItineraryPoiMax: Math.round(r(n.layerItineraryPoiMax, PB.layerItineraryPoiMax, 1, 30)),
 		layerFavoritesAI: n.layerFavoritesAI === !0,
 		layerFavoriteType: n.layerFavoriteType !== !1,
 		layerFavoriteCoords: n.layerFavoriteCoords !== !1,
@@ -39943,14 +40048,14 @@ function wB(e) {
 		layerAutoExpandWiki: n.layerAutoExpandWiki !== !1
 	};
 }
-function TB(e, t) {
-	e.extensionSettings && (e.extensionSettings[xB] = { ...t }, e.saveSettingsDebounced?.());
+function IB(e, t) {
+	e.extensionSettings && (e.extensionSettings[MB] = { ...t }, e.saveSettingsDebounced?.());
 }
 // src/favorites-store.ts
-var EB = "tavern-map:favorites:v1";
-function DB() {
+var LB = "tavern-map:favorites:v1";
+function RB() {
 	try {
-		let e = localStorage.getItem(EB);
+		let e = localStorage.getItem(LB);
 		if (!e) return [];
 		let t = JSON.parse(e);
 		return Array.isArray(t) ? t.filter((e) => !!e && typeof e == "object" && typeof e.key == "string" && typeof e.name == "string") : [];
@@ -39958,40 +40063,40 @@ function DB() {
 		return [];
 	}
 }
-function OB(e) {
+function zB(e) {
 	try {
-		localStorage.setItem(EB, JSON.stringify(e));
+		localStorage.setItem(LB, JSON.stringify(e));
 	} catch {}
 }
-function kB() {
-	return DB().sort((e, t) => t.savedAt - e.savedAt);
+function BB() {
+	return RB().sort((e, t) => t.savedAt - e.savedAt);
 }
-function AB(e) {
-	return DB().find((t) => t.key === e);
+function VB(e) {
+	return RB().find((t) => t.key === e);
 }
-function jB(e) {
-	return !!AB(e);
+function HB(e) {
+	return !!VB(e);
 }
-function MB(e) {
-	let t = DB().filter((t) => t.key !== e.key);
+function UB(e) {
+	let t = RB().filter((t) => t.key !== e.key);
 	return t.push({
 		...e,
 		savedAt: Date.now()
-	}), OB(t), t;
+	}), zB(t), t;
 }
-function NB(e) {
-	let t = DB().filter((t) => t.key !== e);
-	return OB(t), t;
+function WB(e) {
+	let t = RB().filter((t) => t.key !== e);
+	return zB(t), t;
 }
-function PB(e) {
-	return jB(e.key) ? (NB(e.key), !1) : (MB(e), !0);
+function GB(e) {
+	return HB(e.key) ? (WB(e.key), !1) : (UB(e), !0);
 }
-function FB(e, t) {
+function KB(e, t) {
 	return `layer:${e}:${t}`;
 }
 // src/layer-pin-store.ts
-var IB = "tavern-map:layer-pins:v1", LB = "tavern-map:custom-pin", RB = "tavern-map:custom-pin-group", zB = "#e9a15b";
-function BB(e) {
+var qB = "tavern-map:layer-pins:v1", JB = "tavern-map:custom-pin", YB = "tavern-map:custom-pin-group", XB = "#e9a15b";
+function ZB(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	if (Number.isFinite(t.x) && Number.isFinite(t.y)) return {
@@ -39999,10 +40104,10 @@ function BB(e) {
 		y: Math.min(1, Math.max(0, t.y))
 	};
 }
-function VB(e) {
-	return Array.isArray(e) ? e.map((e) => BB(e)).filter((e) => !!e).slice(-10) : [];
+function QB(e) {
+	return Array.isArray(e) ? e.map((e) => ZB(e)).filter((e) => !!e).slice(-10) : [];
 }
-function HB(e) {
+function $B(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	if (typeof t.id == "string" && typeof t.title == "string" && typeof t.url == "string") return {
@@ -40021,9 +40126,9 @@ function HB(e) {
 		status: typeof t.status == "string" ? t.status : void 0
 	};
 }
-function UB(e) {
+function eV(e) {
 	if (!e || typeof e != "object") return;
-	let t = e, n = BB(t);
+	let t = e, n = ZB(t);
 	if (n && typeof t.id == "string" && t.id && typeof t.name == "string" && t.name.trim() && typeof t.categoryId == "string" && t.categoryId) return {
 		id: t.id,
 		name: t.name.trim(),
@@ -40031,7 +40136,7 @@ function UB(e) {
 		x: n.x,
 		y: n.y,
 		custom: !0,
-		links: Array.isArray(t.links) ? t.links.map((e) => HB(e)).filter((e) => !!e) : [],
+		links: Array.isArray(t.links) ? t.links.map((e) => $B(e)).filter((e) => !!e) : [],
 		description: typeof t.description == "string" ? t.description : void 0,
 		sourceId: typeof t.sourceId == "string" ? t.sourceId : void 0,
 		sourceUrl: typeof t.sourceUrl == "string" ? t.sourceUrl : void 0,
@@ -40040,17 +40145,17 @@ function UB(e) {
 		updatedAt: typeof t.updatedAt == "number" && Number.isFinite(t.updatedAt) ? t.updatedAt : Date.now()
 	};
 }
-function WB(e) {
+function tV(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	return {
-		past: VB(t.past),
-		future: VB(t.future)
+		past: QB(t.past),
+		future: QB(t.future)
 	};
 }
-function GB() {
+function nV() {
 	try {
-		let e = localStorage.getItem(IB);
+		let e = localStorage.getItem(qB);
 		if (!e) return {
 			version: 1,
 			maps: {}
@@ -40067,24 +40172,24 @@ function GB() {
 		};
 	}
 }
-function KB(e) {
+function rV(e) {
 	try {
-		localStorage.setItem(IB, JSON.stringify(e));
+		localStorage.setItem(qB, JSON.stringify(e));
 	} catch (e) {
 		console.warn("[tavern-map] pin edits save failed", e);
 	}
 }
-function qB(e) {
-	let t = JB();
+function iV(e) {
+	let t = aV();
 	if (!e || typeof e != "object") return t;
 	let n = e, r = {};
 	if (n.overrides && typeof n.overrides == "object") for (let [e, t] of Object.entries(n.overrides)) {
-		let n = BB(t);
+		let n = ZB(t);
 		e && n && (r[e] = n);
 	}
-	let i = Array.isArray(n.customPins) ? n.customPins.map((e) => UB(e)).filter((e) => !!e) : [], a = {};
+	let i = Array.isArray(n.customPins) ? n.customPins.map((e) => eV(e)).filter((e) => !!e) : [], a = {};
 	if (n.history && typeof n.history == "object") for (let [e, t] of Object.entries(n.history)) {
-		let n = WB(t);
+		let n = tV(t);
 		e && n && (n.past.length > 0 || n.future.length > 0) && (a[e] = n);
 	}
 	return {
@@ -40095,7 +40200,7 @@ function qB(e) {
 		updatedAt: typeof n.updatedAt == "number" && Number.isFinite(n.updatedAt) ? n.updatedAt : Date.now()
 	};
 }
-function JB() {
+function aV() {
 	return {
 		version: 1,
 		overrides: {},
@@ -40104,34 +40209,34 @@ function JB() {
 		updatedAt: Date.now()
 	};
 }
-function YB(e) {
-	return e ? qB(GB().maps[e]) : JB();
+function oV(e) {
+	return e ? iV(nV().maps[e]) : aV();
 }
-function XB(e, t) {
+function sV(e, t) {
 	if (!e) return;
-	let n = GB();
-	t.updatedAt = Date.now(), n.maps[e] = qB(t), KB(n);
+	let n = nV();
+	t.updatedAt = Date.now(), n.maps[e] = iV(t), rV(n);
 }
-function ZB(e) {
+function cV(e) {
 	if (!e) return;
-	let t = GB();
-	delete t.maps[e], KB(t);
+	let t = nV();
+	delete t.maps[e], rV(t);
 }
 // src/layer-ai-store.ts
-var QB = "tavern-map:layer-place-ai:v1", $B = [
+var lV = "tavern-map:layer-place-ai:v1", uV = [
 	"source",
 	"wiki",
 	"note"
 ];
-function eV(e) {
+function dV(e) {
 	if (!e || typeof e != "object") return;
 	let t = e, n = {};
-	for (let e of $B) typeof t[e] == "boolean" && (n[e] = t[e]);
+	for (let e of uV) typeof t[e] == "boolean" && (n[e] = t[e]);
 	return Object.keys(n).length > 0 ? n : void 0;
 }
-function tV() {
+function fV() {
 	try {
-		let e = localStorage.getItem(QB);
+		let e = localStorage.getItem(lV);
 		if (!e) return {
 			version: 1,
 			maps: {}
@@ -40148,51 +40253,51 @@ function tV() {
 		};
 	}
 }
-function nV(e) {
+function pV(e) {
 	try {
-		localStorage.setItem(QB, JSON.stringify(e));
+		localStorage.setItem(lV, JSON.stringify(e));
 	} catch (e) {
 		console.warn("[tavern-map] place AI flags save failed", e);
 	}
 }
-function rV(e) {
+function mV(e) {
 	if (!e) return {};
-	let t = tV().maps[e];
+	let t = fV().maps[e];
 	if (!t || typeof t != "object") return {};
 	let n = {};
 	for (let [e, r] of Object.entries(t)) {
 		if (!e) continue;
-		let t = eV(r);
+		let t = dV(r);
 		t && (n[e] = t);
 	}
 	return n;
 }
-function iV(e, t) {
+function hV(e, t) {
 	if (!e) return;
-	let n = tV(), r = {};
+	let n = fV(), r = {};
 	for (let [e, n] of Object.entries(t)) {
 		if (!e) continue;
-		let t = eV(n);
+		let t = dV(n);
 		t && (r[e] = t);
 	}
-	Object.keys(r).length > 0 ? n.maps[e] = r : delete n.maps[e], nV(n);
+	Object.keys(r).length > 0 ? n.maps[e] = r : delete n.maps[e], pV(n);
 }
-function aV(e) {
+function gV(e) {
 	if (!e) return;
-	let t = tV();
-	delete t.maps[e], nV(t);
+	let t = fV();
+	delete t.maps[e], pV(t);
 }
 // src/layer-window.ts
-var oV = "(max-width: 640px)";
-function sV(e, t, n) {
+var _V = "(max-width: 640px)";
+function vV(e, t, n) {
 	return Math.min(n, Math.max(t, e));
 }
-var cV = class {
+var yV = class {
 	panel;
 	header;
 	options;
 	resizeObserver;
-	mobileQuery = window.matchMedia(oV);
+	mobileQuery = window.matchMedia(_V);
 	rect = null;
 	drag;
 	saved = !1;
@@ -40270,7 +40375,7 @@ var cV = class {
 	}
 	resizeRect(e, t, n, r) {
 		let i = window.innerWidth, a = window.innerHeight, o = this.options.margin, s = i - o * 2, c = a - o * 2, l = Math.min(this.options.minWidth, s), u = Math.min(this.options.minHeight, c), { left: d, top: f, width: p, height: m } = e;
-		return t.includes("e") && (p = e.width + n), t.includes("s") && (m = e.height + r), t.includes("w") && (p = e.width - n, d = e.left + n), t.includes("n") && (m = e.height - r, f = e.top + r), p = sV(p, l, s), m = sV(m, u, c), t.includes("w") && (d = e.left + e.width - p), t.includes("n") && (f = e.top + e.height - m), this.clampRect({
+		return t.includes("e") && (p = e.width + n), t.includes("s") && (m = e.height + r), t.includes("w") && (p = e.width - n, d = e.left + n), t.includes("n") && (m = e.height - r, f = e.top + r), p = vV(p, l, s), m = vV(m, u, c), t.includes("w") && (d = e.left + e.width - p), t.includes("n") && (f = e.top + e.height - m), this.clampRect({
 			left: d,
 			top: f,
 			width: p,
@@ -40278,12 +40383,12 @@ var cV = class {
 		});
 	}
 	clampRect(e) {
-		let t = window.innerWidth, n = window.innerHeight, r = this.options.margin, i = Math.max(1, t - r * 2), a = Math.max(1, n - r * 2), o = sV(e.width, Math.min(this.options.minWidth, i), i), s = sV(e.height, Math.min(this.options.minHeight, a), a);
+		let t = window.innerWidth, n = window.innerHeight, r = this.options.margin, i = Math.max(1, t - r * 2), a = Math.max(1, n - r * 2), o = vV(e.width, Math.min(this.options.minWidth, i), i), s = vV(e.height, Math.min(this.options.minHeight, a), a);
 		return {
 			width: o,
 			height: s,
-			left: sV(e.left, r, Math.max(r, t - o - r)),
-			top: sV(e.top, r, Math.max(r, n - s - r))
+			left: vV(e.left, r, Math.max(r, t - o - r)),
+			top: vV(e.top, r, Math.max(r, n - s - r))
 		};
 	}
 	defaultRect() {
@@ -40324,10 +40429,10 @@ var cV = class {
 			localStorage.setItem(this.options.storageKey, JSON.stringify(this.rect));
 		} catch {}
 	}
-}, lV = "tavern-map:layer-positions:v1", uV = "tavern-map:real-positions:v1";
-function dV() {
+}, bV = "tavern-map:layer-positions:v1", xV = "tavern-map:real-positions:v1";
+function SV() {
 	try {
-		let e = localStorage.getItem(lV);
+		let e = localStorage.getItem(bV);
 		if (!e) return {
 			positions: {},
 			lastPackage: {}
@@ -40345,12 +40450,12 @@ function dV() {
 		};
 	}
 }
-function fV(e) {
+function CV(e) {
 	try {
-		localStorage.setItem(lV, JSON.stringify(e));
+		localStorage.setItem(bV, JSON.stringify(e));
 	} catch {}
 }
-function pV(e) {
+function wV(e) {
 	let t = e;
 	try {
 		let e = t.getCurrentChatId?.();
@@ -40358,8 +40463,8 @@ function pV(e) {
 	} catch {}
 	return typeof e.chatId == "string" && e.chatId.trim() ? e.chatId : "default";
 }
-function mV(e, t) {
-	let n = pV(e), r = dV(), i = r.positions[n]?.[t] ?? (n === "default" ? r.positions["*"]?.[t] : void 0);
+function TV(e, t) {
+	let n = wV(e), r = SV(), i = r.positions[n]?.[t] ?? (n === "default" ? r.positions["*"]?.[t] : void 0);
 	if (i && Number.isFinite(i.x) && Number.isFinite(i.y)) return {
 		x: Math.min(1, Math.max(0, i.x)),
 		y: Math.min(1, Math.max(0, i.y)),
@@ -40367,25 +40472,25 @@ function mV(e, t) {
 		nearbyRadius: typeof i.nearbyRadius == "number" && Number.isFinite(i.nearbyRadius) ? Math.min(.8, Math.max(.001, i.nearbyRadius)) : void 0
 	};
 }
-function hV(e, t, n) {
-	let r = dV(), i = pV(e), a = r.positions[i] ?? (r.positions[i] = {});
+function EV(e, t, n) {
+	let r = SV(), i = wV(e), a = r.positions[i] ?? (r.positions[i] = {});
 	if (n) {
 		a[t] = n;
 		let e = r.positions["*"] ?? (r.positions["*"] = {});
 		e[t] = n, r.lastPackage["*"] = t;
 	} else delete a[t], i === "default" && delete r.positions["*"]?.[t];
-	r.lastPackage[i] = t, fV(r);
+	r.lastPackage[i] = t, CV(r);
 }
-function gV(e, t) {
-	let n = pV(e), r = dV(), i = r.views?.[n]?.[t], a = r.views?.["*"]?.[t], o = i ?? a;
+function DV(e, t) {
+	let n = wV(e), r = SV(), i = r.views?.[n]?.[t], a = r.views?.["*"]?.[t], o = i ?? a;
 	if (o && Number.isFinite(o.cx) && Number.isFinite(o.cy) && Number.isFinite(o.zoom)) return {
 		cx: o.cx,
 		cy: o.cy,
 		zoom: o.zoom
 	};
 }
-function _V(e, t, n) {
-	let r = dV(), i = pV(e), a = r.views ??= {};
+function OV(e, t, n) {
+	let r = SV(), i = wV(e), a = r.views ??= {};
 	a[i] ??= {}, a[i][t] = {
 		cx: n.cx,
 		cy: n.cy,
@@ -40394,22 +40499,22 @@ function _V(e, t, n) {
 		cx: n.cx,
 		cy: n.cy,
 		zoom: n.zoom
-	}, fV(r);
+	}, CV(r);
 }
-function vV(e, t) {
-	let n = dV();
+function kV(e, t) {
+	let n = SV();
 	for (let e of Object.values(n.positions)) delete e[t];
 	for (let e of Object.values(n.views ?? {})) delete e[t];
 	for (let [e, r] of Object.entries(n.lastPackage)) r === t && delete n.lastPackage[e];
-	fV(n);
+	CV(n);
 }
-function yV(e) {
-	let t = pV(e), n = dV();
+function AV(e) {
+	let t = wV(e), n = SV();
 	return n.lastPackage[t] ?? (t === "default" ? n.lastPackage["*"] : void 0);
 }
-function bV() {
+function jV() {
 	try {
-		let e = localStorage.getItem(uV);
+		let e = localStorage.getItem(xV);
 		if (!e) return {};
 		let t = JSON.parse(e);
 		return t && typeof t == "object" ? t : {};
@@ -40417,8 +40522,8 @@ function bV() {
 		return {};
 	}
 }
-function xV(e) {
-	let t = pV(e), n = bV(), r = n[t], i = n["*"], a = r && i ? (i.updatedAt ?? 0) > (r.updatedAt ?? 0) ? i : r : r ?? i;
+function MV(e) {
+	let t = wV(e), n = jV(), r = n[t], i = n["*"], a = r && i ? (i.updatedAt ?? 0) > (r.updatedAt ?? 0) ? i : r : r ?? i;
 	if (!(!a || !Number.isFinite(a.lat) || !Number.isFinite(a.lng) || Math.abs(a.lat) > 90 || Math.abs(a.lng) > 180)) return {
 		lat: a.lat,
 		lng: a.lng,
@@ -40426,33 +40531,37 @@ function xV(e) {
 		updatedAt: typeof a.updatedAt == "number" && Number.isFinite(a.updatedAt) ? a.updatedAt : void 0
 	};
 }
-function SV(e, t) {
+function NV(e, t) {
 	if (!Number.isFinite(t.lat) || !Number.isFinite(t.lng) || Math.abs(t.lat) > 90 || Math.abs(t.lng) > 180) return;
-	let n = bV(), r = pV(e), i = {
+	let n = jV(), r = wV(e), i = {
 		...t,
 		updatedAt: t.updatedAt ?? Date.now()
 	};
 	n[r] = i, n["*"] = i;
 	try {
-		localStorage.setItem(uV, JSON.stringify(n));
+		localStorage.setItem(xV, JSON.stringify(n));
 	} catch {}
 }
 // src/layer-map.ts
-var CV = "tm-layer", wV = .94, TV = 1.7, EV = 11, DV = 12, OV = 8, kV = 8, AV = 10.8, jV = 14, MV = 8, NV = .025, PV = 48, FV = 340, IV = 268435456, LV = 8, RV = {
-	id: LB,
+var PV = "tm-layer", FV = .94, IV = 1.7, LV = 11, RV = 12, zV = 8, BV = 8, VV = 10.8, HV = [
+	13,
+	14,
+	15
+], UV = .004, WV = 8, GV = .025, KV = 48, qV = 340, JV = 268435456, YV = 8, XV = {
+	id: JB,
 	name: "我的图钉",
-	groupId: RB,
-	color: zB,
+	groupId: YB,
+	color: XB,
 	order: 9999
-}, zV = {
-	id: RB,
+}, ZV = {
+	id: YB,
 	name: "我的",
 	order: 9998
 };
-function BV(e) {
+function QV(e) {
 	return `layer-linktext:${e}`;
 }
-var VV = /* @__PURE__ */ new Set([
+var $V = /* @__PURE__ */ new Set([
 	"references",
 	"reference",
 	"参考文献",
@@ -40469,15 +40578,15 @@ var VV = /* @__PURE__ */ new Set([
 	"注释",
 	"註釋"
 ]);
-function HV(e) {
+function eH(e) {
 	let t = (e.textContent ?? "").replace(/\[.*?\]/g, " ").replace(/edit/gi, " ").replace(/[\s_]+/g, " ").trim().toLowerCase();
-	return VV.has(t);
+	return $V.has(t);
 }
-function UV(e) {
+function tH(e) {
 	e.querySelectorAll(".references, .reflist, .reference-list, .mw-references-wrap, ol.references, li.reference, #References").forEach((e) => e.remove());
 	let t = Array.from(e.querySelectorAll("h2, h3, h4, h5, h6"));
 	for (let e of t) {
-		if (!e.isConnected || !HV(e)) continue;
+		if (!e.isConnected || !eH(e)) continue;
 		let t = Number(e.tagName.slice(1)), n = e;
 		for (; n;) {
 			let r = n.nextElementSibling;
@@ -40486,49 +40595,49 @@ function UV(e) {
 		}
 	}
 }
-var WV = "tavern-tile", GV = "tml-layer-tiles", KV = "tml-layer-tiles", qV = "tml-layer-remote-tiles", JV = "tml-layer-remote-tiles", YV = /* @__PURE__ */ new Map(), XV = !1;
-function ZV(e, t) {
+var nH = "tavern-tile", rH = "tml-layer-tiles", iH = "tml-layer-tiles", aH = "tml-layer-remote-tiles", oH = "tml-layer-remote-tiles", sH = /* @__PURE__ */ new Map(), cH = !1;
+function lH(e, t) {
 	return [e * 360 - 180, Math.atan(Math.sinh(Math.PI * (1 - 2 * t))) * 180 / Math.PI];
 }
-function QV(e, t) {
+function uH(e, t) {
 	let n = (e + 180) / 360, r = Math.sin(t * Math.PI / 180);
 	return {
 		x: n,
 		y: .5 - Math.log((1 + r) / (1 - r)) / (4 * Math.PI)
 	};
 }
-function $V(e, t, n, r) {
+function dH(e, t, n, r) {
 	return e.replace(/\{z\}/g, String(t)).replace(/\{x\}/g, String(n)).replace(/\{y\}/g, String(r));
 }
-var eH = /* @__PURE__ */ new Map();
-function tH(e) {
-	let t = eH.get(e);
-	return t || (t = Lz(e).then((t) => (t && YV.has(e) && YV.set(e, t), t)).finally(() => {
-		window.setTimeout(() => eH.delete(e), 2e3);
-	}), eH.set(e, t)), t;
+var fH = /* @__PURE__ */ new Map();
+function pH(e) {
+	let t = fH.get(e);
+	return t || (t = qz(e).then((t) => (t && sH.has(e) && sH.set(e, t), t)).finally(() => {
+		window.setTimeout(() => fH.delete(e), 2e3);
+	}), fH.set(e, t)), t;
 }
-function nH() {
-	XV || (XV = !0, kn(WV, async (e) => {
-		let t = new URL(e.url), n = decodeURIComponent(t.hostname), [r, i, a] = t.pathname.replace(/^\/+/, "").split("/").map((e) => Number(e)), o = YV.get(n);
+function mH() {
+	cH || (cH = !0, kn(nH, async (e) => {
+		let t = new URL(e.url), n = decodeURIComponent(t.hostname), [r, i, a] = t.pathname.replace(/^\/+/, "").split("/").map((e) => Number(e)), o = sH.get(n);
 		if (!o || !Number.isFinite(r) || !Number.isFinite(i) || !Number.isFinite(a)) throw Error("Local tile is unavailable");
 		let s = `${r}/${a}/${i}`, c = o.tileFiles?.[s];
 		if (c) try {
 			return { data: await c.arrayBuffer() };
 		} catch (e) {
-			let t = (await tH(n))?.tileFiles?.[s];
+			let t = (await pH(n))?.tileFiles?.[s];
 			if (!t) throw e;
 			return { data: await t.arrayBuffer() };
 		}
 		let l = o.tile?.template?.trim();
 		if (l) {
-			let e = await fetch($V(l, r, i, a));
+			let e = await fetch(dH(l, r, i, a));
 			if (e.ok) return { data: await e.arrayBuffer() };
 		}
 		throw Error(`Local tile ${r}/${i}/${a} is missing`);
 	}));
 }
-var rH = `
-<section id="${CV}" class="tml-panel" aria-label="Tavern Map 图层地图" hidden>
+var hH = `
+<section id="${PV}" class="tml-panel" aria-label="Tavern Map 图层地图" hidden>
   <header class="tml-head">
     <div class="tml-title">
       <span>Tavern Map</span>
@@ -40591,6 +40700,7 @@ var rH = `
         <div class="tml-toolbar-actions">
           <button type="button" class="tml-tool active" data-action="labels" aria-pressed="true">标签</button>
           <button type="button" class="tml-tool active" data-action="regions" aria-pressed="true">区域</button>
+          <button type="button" class="tml-tool" data-action="roads" aria-pressed="false" title="显示这张地图自带的道路线" hidden>道路</button>
           <button type="button" class="tml-tool tml-add-pin" data-action="add-pin" title="在地图上添加自己的图钉" aria-label="添加图钉">＋ 图钉</button>
           <button type="button" class="tml-tool tml-route-tool" data-action="itinerary" title="规划或查看行程" aria-label="行程">行程</button>
           <button type="button" class="tml-tool tml-history-tool" data-action="undo-pin" title="撤销选中图钉的移动" aria-label="撤销图钉移动" disabled>↶</button>
@@ -40747,13 +40857,13 @@ var rH = `
     </footer>
   </div>
 </div>
-`, iH = class {
+`, gH = class {
 	ctx;
 	callbacks;
 	state;
 	pkg = null;
 	metas = [];
-	pinEdits = JB();
+	pinEdits = aV();
 	placeAIFlags = {};
 	itinerary = null;
 	itineraryDraft = null;
@@ -40806,6 +40916,8 @@ var rH = `
 	markerRegionCache = /* @__PURE__ */ new Map();
 	regionLabelCache = /* @__PURE__ */ new Map();
 	streetLabelCache = /* @__PURE__ */ new Map();
+	roadIndexCache;
+	currentRoadCache;
 	tileMoving = !1;
 	markerIndex = /* @__PURE__ */ new Map();
 	labelCells = /* @__PURE__ */ new Set();
@@ -40919,12 +41031,12 @@ var rH = `
 		!r && !i && this.closeImagePanel();
 	};
 	constructor(e, t) {
-		this.ctx = e, this.callbacks = t, this.state = hB(e), this.mount(), this.windowController = new cV(this.panelEl, this.panelEl.querySelector(".tml-head"), { storageKey: "tavern-map:layer-window:v1" }), this.importUI = new oB({
+		this.ctx = e, this.callbacks = t, this.state = TB(e), this.mount(), this.windowController = new yV(this.panelEl, this.panelEl.querySelector(".tml-head"), { storageKey: "tavern-map:layer-window:v1" }), this.importUI = new gB({
 			onImported: async (e) => {
 				this.lastRemovedImage = null, this.panelEl.hidden = !1, this.active = !0, this.windowController.open(), await this.refreshPackages(), await this.loadPackage(e.id), this.callbacks.onChange();
 			},
 			onToast: (e) => this.toast(e)
-		}), this.packagesUI = new dB({
+		}), this.packagesUI = new xB({
 			onOpen: async (e) => {
 				this.panelEl.hidden = !1, this.active = !0, this.windowController.open(), await this.refreshPackages(), await this.loadPackage(e);
 			},
@@ -40932,14 +41044,14 @@ var rH = `
 				this.lastRemovedImage = null, await this.refreshPackages(), this.pkg?.id === e.id && (await this.loadPackage(e.id), this.callbacks.onChange());
 			},
 			onDeleted: (e) => {
-				ZB(e), aV(e), this.state.itinerariesByPackage && delete this.state.itinerariesByPackage[e], this.pkg?.id === e && (YV.delete(e), this.closeImagePanel(), this.state.packageId === e && (this.state.packageId = void 0), this.state.positionsByPackage && delete this.state.positionsByPackage[e], this.state.viewsByPackage && delete this.state.viewsByPackage[e], vV(this.ctx, e), this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.persist(!0), this.pkg = null, this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.image = null, this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.renderEmpty("这个地图包已删除。可以重新导入，或选择另一个地图包。"), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.renderRouteStopHandles(), this.requestDraw()), this.refreshPackages();
+				cV(e), gV(e), this.state.itinerariesByPackage && delete this.state.itinerariesByPackage[e], this.pkg?.id === e && (sH.delete(e), this.closeImagePanel(), this.state.packageId === e && (this.state.packageId = void 0), this.state.positionsByPackage && delete this.state.positionsByPackage[e], this.state.viewsByPackage && delete this.state.viewsByPackage[e], kV(this.ctx, e), this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.persist(!0), this.pkg = null, this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.image = null, this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.renderEmpty("这个地图包已删除。可以重新导入，或选择另一个地图包。"), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.renderRouteStopHandles(), this.requestDraw()), this.refreshPackages();
 			},
 			onImport: () => this.openImport(),
 			onToast: (e) => this.toast(e)
 		}), this.bind(), this.renderDetail(), this.renderCategories(), this.syncHeaderImage();
 	}
 	contextText() {
-		return BI(this.state);
+		return VI(this.state);
 	}
 	isOpen() {
 		return !this.panelEl.hidden;
@@ -40948,8 +41060,8 @@ var rH = `
 		this.ctx = this.liveContext(), this.pkg && (this.renderDetail(), this.renderItineraryShelf(), this.refreshContext());
 	}
 	async open() {
-		this.panelEl.hidden = !1, this.active = !0, this.closeImagePanel(), this.closeLightbox(), this.windowController.open(), this.ctx = this.liveContext(), this.state = hB(this.ctx), this.panelEl.style.zIndex = "10000", await this.refreshPackages();
-		let e = yV(this.ctx), t = (this.state.packageId && this.metas.some((e) => e.id === this.state.packageId) ? this.state.packageId : e && this.metas.some((t) => t.id === e) ? e : this.metas[0]?.id) ?? void 0;
+		this.panelEl.hidden = !1, this.active = !0, this.closeImagePanel(), this.closeLightbox(), this.windowController.open(), this.ctx = this.liveContext(), this.state = TB(this.ctx), this.panelEl.style.zIndex = "10000", await this.refreshPackages();
+		let e = AV(this.ctx), t = (this.state.packageId && this.metas.some((e) => e.id === this.state.packageId) ? this.state.packageId : e && this.metas.some((t) => t.id === e) ? e : this.metas[0]?.id) ?? void 0;
 		t ? await this.loadPackage(t) : (this.pkg = null, this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.renderEmpty("还没有地图包。点右上角“导入”读取本地 Fandom 或 Map Genie 数据。"), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.requestDraw()), this.observeViewport(), window.requestAnimationFrame(() => {
 			this.resizeCanvas(), this.requestDraw();
 		});
@@ -40958,10 +41070,10 @@ var rH = `
 		this.closeImagePanel(), this.closeLightbox(), this.cancelPlacements(), this.itineraryEdit && this.cancelItineraryEditing(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.panelEl.hidden = !0, this.active = !1, this.drawFrame &&= (window.cancelAnimationFrame(this.drawFrame), 0), this.persist(!0), this.hideSearch(), this.callbacks.onClosed?.();
 	}
 	handleChatChanged() {
-		uI(), this.closeImagePanel(), this.closeLightbox(), this.cancelPlacements(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.ctx = this.liveContext(), this.state = hB(this.ctx), this.pkg = null, this.pinEdits = JB(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.active ? this.open() : (this.renderDetail(), this.renderCategories());
+		uI(), this.closeImagePanel(), this.closeLightbox(), this.cancelPlacements(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.ctx = this.liveContext(), this.state = TB(this.ctx), this.pkg = null, this.pinEdits = aV(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.active ? this.open() : (this.renderDetail(), this.renderCategories());
 	}
 	clearChat() {
-		this.closeImagePanel(), this.closeLightbox(), this.cancelPlacements(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.state = structuredClone(mB), this.state.notes = Object.fromEntries(Object.entries(sI()).filter(([e]) => e.startsWith("layer:"))), this.state.updatedAt = Date.now(), this.pkg = null, this.pinEdits = JB(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.image = null, this.imageUrl = null, this.syncHeaderImage(), this.active = !1, this.panelEl.hidden = !0, this.saveNow(), this.callbacks.onChange();
+		this.closeImagePanel(), this.closeLightbox(), this.cancelPlacements(), this.gridPanelOpen && this.closeGridPanel(), this.aligning && this.cancelAlign(), this.importUI?.close(), this.packagesUI?.close(), this.state = structuredClone(wB), this.state.notes = Object.fromEntries(Object.entries(sI()).filter(([e]) => e.startsWith("layer:"))), this.state.updatedAt = Date.now(), this.pkg = null, this.pinEdits = aV(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.image = null, this.imageUrl = null, this.syncHeaderImage(), this.active = !1, this.panelEl.hidden = !0, this.saveNow(), this.callbacks.onChange();
 	}
 	liveContext() {
 		let e = window.SillyTavern;
@@ -40972,11 +41084,11 @@ var rH = `
 		return this.ctx;
 	}
 	mount() {
-		if (!document.getElementById(CV)) {
+		if (!document.getElementById(PV)) {
 			let e = document.createElement("template");
-			e.innerHTML = rH.trim(), document.body.append(e.content);
+			e.innerHTML = hH.trim(), document.body.append(e.content);
 		}
-		this.panelEl = document.getElementById(CV), this.canvasEl = document.getElementById("tml-canvas"), this.maplibreEl = document.getElementById("tml-maplibre"), this.viewportEl = document.getElementById("tml-viewport"), this.packageSelectEl = document.getElementById("tml-package"), this.layerPaneEl = document.getElementById("tml-layer-pane"), this.favoritesEl = document.getElementById("tml-favorites"), this.favoriteCountEl = document.getElementById("tml-favorite-count"), this.categoriesEl = document.getElementById("tml-categories"), this.categoryFilterEl = document.getElementById("tml-filter"), this.detailEl = document.getElementById("tml-detail"), this.emptyEl = document.getElementById("tml-empty"), this.searchEl = document.getElementById("tml-search"), this.searchResultsEl = document.getElementById("tml-search-results"), this.visibleCountEl = document.getElementById("tml-visible-count"), this.zoomEl = document.getElementById("tml-zoom"), this.scaleEl = document.getElementById("tml-scale"), this.packageInfoEl = document.getElementById("tml-package-info"), this.attributionEl = document.getElementById("tml-attribution"), this.contextStatusEl = document.getElementById("tml-context-status"), this.contextModalEl = document.getElementById("tml-context"), this.contextTextEl = document.getElementById("tml-context-text"), this.contextTokensEl = document.getElementById("tml-context-tokens"), this.positionEl = document.getElementById("tml-position"), this.nearbyEl = document.getElementById("tml-nearby"), this.placeBarEl = document.getElementById("tml-place-bar"), this.placeTextEl = document.getElementById("tml-place-text"), this.routeStopsEl = document.getElementById("tml-route-stops"), this.routeShelfEl = document.getElementById("tml-route-shelf"), this.gridPanelEl = document.getElementById("tml-grid-panel"), this.userStampEl = document.getElementById("tml-user-stamp"), this.gridOriginHandleEl = document.getElementById("tml-grid-origin"), this.gridScaleHandleEl = document.getElementById("tml-grid-scale"), this.gridShowEl = document.getElementById("tml-grid-show"), this.gridCellEl = document.getElementById("tml-grid-cell"), this.gridRangeEl = document.getElementById("tml-grid-range"), this.gridXEl = document.getElementById("tml-grid-x"), this.gridYEl = document.getElementById("tml-grid-y"), this.contextPositionEl = document.getElementById("tml-context-position"), this.contextXEl = document.getElementById("tml-context-x"), this.contextYEl = document.getElementById("tml-context-y"), this.contextInjectEl = document.getElementById("tml-context-inject"), this.contextGridEl = document.getElementById("tml-context-grid");
+		this.panelEl = document.getElementById(PV), this.canvasEl = document.getElementById("tml-canvas"), this.maplibreEl = document.getElementById("tml-maplibre"), this.viewportEl = document.getElementById("tml-viewport"), this.packageSelectEl = document.getElementById("tml-package"), this.layerPaneEl = document.getElementById("tml-layer-pane"), this.favoritesEl = document.getElementById("tml-favorites"), this.favoriteCountEl = document.getElementById("tml-favorite-count"), this.categoriesEl = document.getElementById("tml-categories"), this.categoryFilterEl = document.getElementById("tml-filter"), this.detailEl = document.getElementById("tml-detail"), this.emptyEl = document.getElementById("tml-empty"), this.searchEl = document.getElementById("tml-search"), this.searchResultsEl = document.getElementById("tml-search-results"), this.visibleCountEl = document.getElementById("tml-visible-count"), this.zoomEl = document.getElementById("tml-zoom"), this.scaleEl = document.getElementById("tml-scale"), this.packageInfoEl = document.getElementById("tml-package-info"), this.attributionEl = document.getElementById("tml-attribution"), this.contextStatusEl = document.getElementById("tml-context-status"), this.contextModalEl = document.getElementById("tml-context"), this.contextTextEl = document.getElementById("tml-context-text"), this.contextTokensEl = document.getElementById("tml-context-tokens"), this.positionEl = document.getElementById("tml-position"), this.nearbyEl = document.getElementById("tml-nearby"), this.placeBarEl = document.getElementById("tml-place-bar"), this.placeTextEl = document.getElementById("tml-place-text"), this.routeStopsEl = document.getElementById("tml-route-stops"), this.routeShelfEl = document.getElementById("tml-route-shelf"), this.gridPanelEl = document.getElementById("tml-grid-panel"), this.userStampEl = document.getElementById("tml-user-stamp"), this.gridOriginHandleEl = document.getElementById("tml-grid-origin"), this.gridScaleHandleEl = document.getElementById("tml-grid-scale"), this.gridShowEl = document.getElementById("tml-grid-show"), this.gridCellEl = document.getElementById("tml-grid-cell"), this.gridRangeEl = document.getElementById("tml-grid-range"), this.gridXEl = document.getElementById("tml-grid-x"), this.gridYEl = document.getElementById("tml-grid-y"), this.contextPositionEl = document.getElementById("tml-context-position"), this.contextXEl = document.getElementById("tml-context-x"), this.contextYEl = document.getElementById("tml-context-y"), this.contextInjectEl = document.getElementById("tml-context-inject"), this.contextGridEl = document.getElementById("tml-context-grid");
 		let e = this.positionEl.parentElement;
 		e && e.insertBefore(this.gridPanelEl, this.positionEl), this.headerImageEl = document.getElementById("tml-header-image"), this.headerImageEmptyEl = document.getElementById("tml-header-image-empty"), this.headerImageButtonEl = this.panelEl.querySelector("[data-action=\"image-panel\"]"), this.imagePanelEl = document.getElementById("tml-image-panel"), this.imagePanelBodyEl = document.getElementById("tml-image-panel-body"), this.lightboxEl = document.getElementById("tml-image-lightbox"), this.lightboxImageEl = document.getElementById("tml-lightbox-image"), this.alignBarEl = document.getElementById("tml-align-bar"), this.imageInput = document.createElement("input"), this.imageInput.type = "file", this.imageInput.accept = ".png,.jpg,.jpeg,.webp,.avif,.gif,image/*", this.imageInput.hidden = !0, this.tilesInput = document.createElement("input"), this.tilesInput.type = "file", this.tilesInput.multiple = !0, this.tilesInput.setAttribute("webkitdirectory", ""), this.tilesInput.hidden = !0, this.imagePanelEl.append(this.imageInput, this.tilesInput);
 	}
@@ -41000,8 +41112,8 @@ var rH = `
 				e ? (this.setUserPosition(e.x, e.y, e.id), this.showContextStatus()) : this.toast("先点开一个地点，再移动我过去");
 			} else n === "clear-position" ? (this.clearUserPosition(), this.renderContextControls()) : n === "grid" && (this.contextModalEl.hidden = !0, this.openGridPanel());
 		}), this.contextInjectEl.addEventListener("change", () => {
-			let e = wB(this.ctx);
-			e.layerMapContext = this.contextInjectEl.checked, e.layerMapContext && (e.realMapContext = !1), TB(this.ctx, e), this.callbacks.onSettingsChanged?.(), this.renderContextControls();
+			let e = FB(this.ctx);
+			e.layerMapContext = this.contextInjectEl.checked, e.layerMapContext && (e.realMapContext = !1), IB(this.ctx, e), this.callbacks.onSettingsChanged?.(), this.renderContextControls();
 		}), this.imagePanelEl.addEventListener("click", (e) => this.onImagePanelClick(e)), this.imagePanelEl.addEventListener("change", (e) => this.onImagePanelChange(e)), this.lightboxEl.addEventListener("click", (e) => {
 			let t = e.target;
 			(t.closest("[data-lightbox-action=\"close\"]") || t === this.lightboxEl) && this.closeLightbox();
@@ -41086,6 +41198,9 @@ var rH = `
 			case "regions":
 				this.state.showRegions = this.state.showRegions === !1, this.syncToolButtons(), this.persist(), this.requestDraw();
 				break;
+			case "roads":
+				this.state.showRoads = this.state.showRoads !== !0, this.syncToolButtons(), this.persist(), this.requestDraw();
+				break;
 			case "add-pin":
 				this.placingPin === "add" ? this.cancelPinPlacement() : this.startPinPlacement("add");
 				break;
@@ -41121,12 +41236,12 @@ var rH = `
 			this.contextPositionEl.textContent = "未设置；不会输出“我的位置”。", this.contextXEl.value = "", this.contextYEl.value = "";
 			return;
 		}
-		let t = this.regionForPoint(e.x, e.y)?.name;
-		this.contextPositionEl.textContent = `${this.pointText(e.x, e.y)}${t ? ` · ${t}` : ""}`, this.contextXEl.value = (e.x * 100).toFixed(2), this.contextYEl.value = (e.y * 100).toFixed(2);
+		let t = this.regionForPoint(e.x, e.y)?.name, n = this.currentRoad(), r = n ? ` · ${n.on ? "在路上" : "附近道路"}：${this.roadDisplayName(n.road.street)}` : "";
+		this.contextPositionEl.textContent = `${this.pointText(e.x, e.y)}${t ? ` · ${t}` : ""}${r}`, this.contextXEl.value = (e.x * 100).toFixed(2), this.contextYEl.value = (e.y * 100).toFixed(2);
 	}
 	renderContextControls() {
 		if (!this.contextInjectEl) return;
-		this.renderContextPosition(), this.contextInjectEl.checked = wB(this.ctx).layerMapContext;
+		this.renderContextPosition(), this.contextInjectEl.checked = FB(this.ctx).layerMapContext;
 		let e = this.gridConfig();
 		this.contextGridEl.textContent = e ? `已校准 · 坐标按格 · ${FI(e) ?? "距离按格（未设换算）"}` : "未校准；AI 使用地图百分比坐标";
 	}
@@ -41139,17 +41254,19 @@ var rH = `
 	}
 	syncToolButtons() {
 		let e = this.panelEl.querySelector("[data-action=\"labels\"]"), t = this.panelEl.querySelector("[data-action=\"regions\"]");
-		e?.classList.toggle("active", this.state.showLabels !== !1), e?.setAttribute("aria-pressed", String(this.state.showLabels !== !1)), t?.classList.toggle("active", this.state.showRegions !== !1), t?.setAttribute("aria-pressed", String(this.state.showRegions !== !1)), this.panelEl.querySelector("[data-action=\"grid\"]")?.classList.toggle("active", this.gridPanelOpen), this.panelEl.querySelector("[data-action=\"locate\"]")?.classList.toggle("active", this.placingUser || !!this.state.userPosition), this.panelEl.querySelector("[data-action=\"add-pin\"]")?.classList.toggle("active", this.placingPin === "add");
-		let n = this.panelEl.querySelector("[data-action=\"itinerary\"]");
-		if (n) {
+		e?.classList.toggle("active", this.state.showLabels !== !1), e?.setAttribute("aria-pressed", String(this.state.showLabels !== !1)), t?.classList.toggle("active", this.state.showRegions !== !1), t?.setAttribute("aria-pressed", String(this.state.showRegions !== !1));
+		let n = this.panelEl.querySelector("[data-action=\"roads\"]");
+		n && (n.hidden = !this.pkg?.streets?.length, n.classList.toggle("active", this.state.showRoads === !0), n.setAttribute("aria-pressed", String(this.state.showRoads === !0))), this.panelEl.querySelector("[data-action=\"grid\"]")?.classList.toggle("active", this.gridPanelOpen), this.panelEl.querySelector("[data-action=\"locate\"]")?.classList.toggle("active", this.placingUser || !!this.state.userPosition), this.panelEl.querySelector("[data-action=\"add-pin\"]")?.classList.toggle("active", this.placingPin === "add");
+		let r = this.panelEl.querySelector("[data-action=\"itinerary\"]");
+		if (r) {
 			let e = this.itinerary?.stops.length ?? this.itineraryDraft?.stops.length ?? 0;
-			n.textContent = e > 0 ? `行程 ${e}` : "行程", n.classList.toggle("active", this.itineraryEdit || this.routeShelfOpen);
+			r.textContent = e > 0 ? `行程 ${e}` : "行程", r.classList.toggle("active", this.itineraryEdit || this.routeShelfOpen);
 		}
-		let r = this.selectedMarker(), i = r ? this.pinHistoryFor(r.id) : void 0, a = this.panelEl.querySelector("[data-action=\"undo-pin\"]"), o = this.panelEl.querySelector("[data-action=\"redo-pin\"]");
-		a && (a.disabled = !i?.past.length), o && (o.disabled = !i?.future.length);
+		let i = this.selectedMarker(), a = i ? this.pinHistoryFor(i.id) : void 0, o = this.panelEl.querySelector("[data-action=\"undo-pin\"]"), s = this.panelEl.querySelector("[data-action=\"redo-pin\"]");
+		o && (o.disabled = !a?.past.length), s && (s.disabled = !a?.future.length);
 	}
 	async refreshPackages() {
-		if (this.metas = await Mz(), this.packageSelectEl.replaceChildren(), this.metas.length === 0) {
+		if (this.metas = await Hz(), this.packageSelectEl.replaceChildren(), this.metas.length === 0) {
 			let e = new Option("没有地图包", "");
 			this.packageSelectEl.append(e), this.packageSelectEl.disabled = !0;
 		} else {
@@ -41176,7 +41293,7 @@ var rH = `
 			...e,
 			custom: !0
 		}));
-		this.effectiveCategoryList = [...e.categories], this.effectiveGroupList = [...e.groups], r.length > 0 && (this.effectiveCategoryList.some((e) => e.id === RV.id) || this.effectiveCategoryList.push(RV), this.effectiveGroupList.some((e) => e.id === zV.id) || this.effectiveGroupList.push(zV)), this.effectiveMarkerList = [...n, ...r];
+		this.effectiveCategoryList = [...e.categories], this.effectiveGroupList = [...e.groups], r.length > 0 && (this.effectiveCategoryList.some((e) => e.id === XV.id) || this.effectiveCategoryList.push(XV), this.effectiveGroupList.some((e) => e.id === ZV.id) || this.effectiveGroupList.push(ZV)), this.effectiveMarkerList = [...n, ...r];
 		for (let e of this.effectiveMarkerList) this.effectiveMarkerMap.set(e.id, e);
 		this.markerRegionCache.clear(), this.buildMarkerIndex();
 	}
@@ -41193,13 +41310,13 @@ var rH = `
 		return e.custom ? this.customPinRecord(e.id)?.links ?? e.links ?? [] : this.state.links?.[e.id] ?? [];
 	}
 	async loadPackage(e) {
-		let t = await Lz(e);
+		let t = await qz(e);
 		if (!t) {
-			this.pkg = null, this.pinEdits = JB(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.renderEmpty("地图包读取失败或已不存在。"), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.requestDraw();
+			this.pkg = null, this.pinEdits = aV(), this.placeAIFlags = {}, this.itinerary = null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.rebuildEffectiveMarkers(), this.clearImageResources(), this.setTileMapVisible(!1), this.clearTileCaches(), this.syncHeaderImage(), this.renderEmpty("地图包读取失败或已不存在。"), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.requestDraw();
 			return;
 		}
 		let n = this.state.packageId !== t.id;
-		if (n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null, this.packageLoadToken += 1), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.pkg && this.pkg.id !== t.id && YV.delete(this.pkg.id), this.pkg = t, this.pinEdits = YB(t.id), this.placeAIFlags = rV(t.id), this.itinerary = this.state.itinerariesByPackage?.[t.id] ?? null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.routeExpandedLeg = 0, this.rebuildEffectiveMarkers(), this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.atPlaceId && !this.markerById(this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.state.selectedMarkerId && !this.markerById(this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !this.markerById(this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.rebuildEffectiveMarkers(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.renderItineraryShelf(), this.requestDraw(), t.kind === "tiles") {
+		if (n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null, this.packageLoadToken += 1), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.pkg && this.pkg.id !== t.id && sH.delete(this.pkg.id), this.pkg = t, this.pinEdits = oV(t.id), this.placeAIFlags = mV(t.id), this.itinerary = this.state.itinerariesByPackage?.[t.id] ?? null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.routeExpandedLeg = 0, this.rebuildEffectiveMarkers(), this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.atPlaceId && !this.markerById(this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.state.selectedMarkerId && !this.markerById(this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !this.markerById(this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.roadIndexCache = void 0, this.currentRoadCache = void 0, this.rebuildEffectiveMarkers(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.renderItineraryShelf(), this.requestDraw(), t.kind === "tiles") {
 			this.clearImageResources();
 			let e = this.packageLoadToken;
 			this.loadTileMap(t, e).catch((e) => {
@@ -41314,14 +41431,14 @@ var rH = `
 		} else this.loadFullImage(e);
 	}
 	normalizedToLngLat(e, t) {
-		return ZV(e, t);
+		return lH(e, t);
 	}
 	lngLatToNormalized(e, t) {
-		return QV(e, t);
+		return uH(e, t);
 	}
 	async ensureTileMap() {
 		if (this.maplibreMap) return this.maplibreMap;
-		nH();
+		mH();
 		let e = new kF({
 			container: this.maplibreEl,
 			style: {
@@ -41373,7 +41490,7 @@ var rH = `
 	tileBoundsLngLat(e) {
 		let t = this.tileBoundsNormalized(e);
 		if (!t) return;
-		let [n, r] = ZV(t.minX, t.minY), [i, a] = ZV(t.maxX, t.maxY);
+		let [n, r] = lH(t.minX, t.minY), [i, a] = lH(t.maxX, t.maxY);
 		return [
 			n,
 			a,
@@ -41385,18 +41502,18 @@ var rH = `
 		let t = await this.ensureTileMap(), n = e.tile;
 		if (!n) return;
 		let r = n.coverageMinZoom ?? n.minZoom ?? 0, i = Math.max(r, n.coverageMaxZoom ?? n.maxZoom ?? r), a = r, o = i;
-		YV.set(e.id, e), t.getLayer(JV) && t.removeLayer(JV), t.getSource(qV) && t.removeSource(qV), t.getLayer(KV) && t.removeLayer(KV), t.getSource(GV) && t.removeSource(GV);
+		sH.set(e.id, e), t.getLayer(oH) && t.removeLayer(oH), t.getSource(aH) && t.removeSource(aH), t.getLayer(iH) && t.removeLayer(iH), t.getSource(rH) && t.removeSource(rH);
 		let s = this.tileBoundsLngLat(e), c = {
 			type: "raster",
-			tiles: [`${WV}://${encodeURIComponent(e.id)}/{z}/{x}/{y}`],
+			tiles: [`${nH}://${encodeURIComponent(e.id)}/{z}/{x}/{y}`],
 			tileSize: 256,
 			minzoom: a,
 			maxzoom: o
 		};
-		s && (c.bounds = s), t.addSource(GV, c), t.addLayer({
-			id: KV,
+		s && (c.bounds = s), t.addSource(rH, c), t.addLayer({
+			id: iH,
 			type: "raster",
-			source: GV,
+			source: rH,
 			paint: {
 				"raster-opacity": 1,
 				"raster-fade-duration": 0
@@ -41411,10 +41528,10 @@ var rH = `
 				minzoom: i + 1,
 				maxzoom: l
 			};
-			s && (e.bounds = s), t.addSource(qV, e), t.addLayer({
-				id: JV,
+			s && (e.bounds = s), t.addSource(aH, e), t.addLayer({
+				id: oH,
 				type: "raster",
-				source: qV,
+				source: aH,
 				paint: {
 					"raster-opacity": 1,
 					"raster-fade-duration": 0
@@ -41548,7 +41665,7 @@ var rH = `
 	}
 	draw() {
 		let e = this.canvasEl, t = e.clientWidth || 1, n = e.clientHeight || 1, r = e.getContext("2d");
-		r && (r.clearRect(0, 0, t, n), this.pkg ? (this.pkg.kind === "image" ? (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawImageMap(r, t, n)) : this.maplibreMap || (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawTileMap(r, t, n)), this.drawGrid(r, t, n), this.drawRegions(r, t, n), this.drawItineraryLine(r, t, n), this.labelCells.clear(), this.drawRegionLabels(r, t, n), this.drawStreetLabels(r, t, n), this.drawMarkers(r, t, n), this.drawItineraryPoiRings(r, t, n), this.drawUserRadius(r, t, n), this.updateUserStamp(), this.positionRouteStopHandles(), this.updateGridHandles(), this.updateStatus()) : (r.fillStyle = "#0a0f14", r.fillRect(0, 0, t, n), this.updateStatus()));
+		r && (r.clearRect(0, 0, t, n), this.pkg ? (this.pkg.kind === "image" ? (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawImageMap(r, t, n)) : this.maplibreMap || (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawTileMap(r, t, n)), this.drawGrid(r, t, n), this.drawRegions(r, t, n), this.drawRoads(r, t, n), this.drawItineraryLine(r, t, n), this.labelCells.clear(), this.drawRegionLabels(r, t, n), this.drawStreetLabels(r, t, n), this.drawMarkers(r, t, n), this.drawItineraryPoiRings(r, t, n), this.drawUserRadius(r, t, n), this.updateUserStamp(), this.positionRouteStopHandles(), this.updateGridHandles(), this.updateStatus()) : (r.fillStyle = "#0a0f14", r.fillRect(0, 0, t, n), this.updateStatus()));
 	}
 	drawGrid(e, t, n) {
 		let r = this.pkg?.grid;
@@ -41573,7 +41690,7 @@ var rH = `
 	drawImageMap(e, t, n) {
 		let r = this.pkg;
 		if (!r) return;
-		let i = Math.min(t / r.width, n / r.height) * wV * this.view.zoom, a = this.aligning && this.alignRect ? this.alignRect : nL(r), o = a.w * r.width * i, s = a.h * r.height * i, c = t / 2 + (a.x - this.view.cx) * r.width * i, l = n / 2 + (a.y - this.view.cy) * r.height * i, u = this.image ?? this.imagePreview;
+		let i = Math.min(t / r.width, n / r.height) * FV * this.view.zoom, a = this.aligning && this.alignRect ? this.alignRect : cL(r), o = a.w * r.width * i, s = a.h * r.height * i, c = t / 2 + (a.x - this.view.cx) * r.width * i, l = n / 2 + (a.y - this.view.cy) * r.height * i, u = this.image ?? this.imagePreview;
 		u ? (e.save(), this.aligning && (e.globalAlpha = .82), e.drawImage(u, c, l, o, s), e.restore(), this.aligning && (e.save(), e.strokeStyle = "rgba(230,181,106,0.85)", e.setLineDash([7, 5]), e.lineWidth = 1.5, e.strokeRect(c, l, o, s), e.restore())) : (e.fillStyle = "#101820", e.fillRect(c, l, o, s), e.save(), e.strokeStyle = "rgba(255,255,255,0.08)", e.lineWidth = 1, e.strokeRect(c + .5, l + .5, o - 1, s - 1), e.fillStyle = "#95a3ae", e.font = "12px system-ui, sans-serif", e.textAlign = "center", e.fillText(r.image ? "底图加载中…" : "还没有底图 · 点顶栏“底图”补图", t / 2, n / 2), e.restore());
 	}
 	tileCountAt(e) {
@@ -41606,7 +41723,7 @@ var rH = `
 	}
 	startTileLoad(e, t) {
 		let n = () => {
-			if (this.tileLoads >= LV) {
+			if (this.tileLoads >= YV) {
 				this.tileQueue.push(n);
 				return;
 			}
@@ -41619,8 +41736,8 @@ var rH = `
 		n();
 	}
 	evictTiles() {
-		if (!(this.tileCacheBytes <= IV)) for (let [e, t] of this.tileCache) {
-			if (this.tileCacheBytes <= IV) break;
+		if (!(this.tileCacheBytes <= JV)) for (let [e, t] of this.tileCache) {
+			if (this.tileCacheBytes <= JV) break;
 			if (!(t instanceof HTMLImageElement)) continue;
 			this.tileCacheBytes -= t.naturalWidth * t.naturalHeight * 4, this.tileCache.delete(e);
 			let n = this.tileFileUrls.get(e);
@@ -41637,7 +41754,7 @@ var rH = `
 	}
 	drawRegions(e, t, n) {
 		let r = this.pkg;
-		if (!r || this.state.showRegions === !1 || r.kind === "tiles" && this.view.zoom < this.tileZoomThreshold(OV)) return;
+		if (!r || this.state.showRegions === !1 || r.kind === "tiles" && this.view.zoom < this.tileZoomThreshold(zV)) return;
 		let i = (e, r) => this.project(e, r, t, n);
 		r.regions.forEach((t, n) => {
 			let r = t.id === this.state.selectedRegionId, a = t.id === this.state.currentRegionId, o = this.categoryColor(`region-${n}`);
@@ -41679,7 +41796,7 @@ var rH = `
 	drawRegionLabels(e, t, n) {
 		let r = this.pkg;
 		if (!r || this.state.showRegions === !1 || r.regions.length === 0) return;
-		let i = r.kind === "tiles" ? this.tileZoomThreshold(kV) : kV;
+		let i = r.kind === "tiles" ? this.tileZoomThreshold(BV) : BV;
 		if (this.view.zoom < i) return;
 		let a = this.view.zoom, o = r.kind === "tiles" ? Math.max(11, Math.min(17, 10 + (a - 7) * 1.15)) : 12;
 		for (let i of r.regions) {
@@ -41749,11 +41866,11 @@ var rH = `
 		if (s) return s.setTransform(a, 0, 0, a, 0, 0), s.beginPath(), s.arc(15, 15, 11, 0, Math.PI * 2), s.fillStyle = e.color || "#e6b56a", s.fill(), s.lineWidth = 1.2, s.strokeStyle = "rgba(255,255,255,0.82)", s.stroke(), s.font = `400 15px "${this.iconFontFamily}"`, s.textAlign = "center", s.textBaseline = "middle", s.fillStyle = "#fff", s.fillText(r, 15, 15.5), this.markerIconCache.set(e.id, o), o;
 	}
 	shouldCluster(e, t) {
-		return t < 500 ? !1 : e.kind === "image" ? this.view.zoom < 1.55 : this.view.zoom < this.tileZoomThreshold(AV);
+		return t < 500 ? !1 : e.kind === "image" ? this.view.zoom < 1.55 : this.view.zoom < this.tileZoomThreshold(VV);
 	}
 	tileZoomThreshold(e) {
 		let t = this.pkg?.tile?.minZoom;
-		return t == null || !Number.isFinite(t) ? e : Math.min(e, e - MV + t);
+		return t == null || !Number.isFinite(t) ? e : Math.min(e, e - WV + t);
 	}
 	drawMarkerClusters(e, t, n, r, i) {
 		let a = /* @__PURE__ */ new Map();
@@ -41789,8 +41906,89 @@ var rH = `
 		}) : (this.view.cx = e, this.view.cy = t, this.view.zoom = Math.min(8, this.view.zoom * 1.8), this.clampView(), this.state.view = this.view, this.persist(), this.requestDraw());
 	}
 	streetRank(e) {
-		let t = (e.type ?? "").toLowerCase();
-		return t === "main" ? 0 : t === "major" ? 1 : 2;
+		return UI(e.type);
+	}
+	roadIndex() {
+		let e = this.pkg;
+		if (!e?.streets?.length) return;
+		let t = e.kind === "image" ? e.height / e.width : 1, n = this.roadIndexCache;
+		if (n && n.streets === e.streets && n.yScale === t) return n.index;
+		let r = GI(e.streets, t);
+		return this.roadIndexCache = {
+			streets: e.streets,
+			yScale: t,
+			index: r
+		}, r;
+	}
+	currentRoad() {
+		let e = this.state.userPosition, t = this.roadIndex();
+		if (!e || !t) return;
+		let n = this.nearbyRadiusMapUnits(), r = `${this.pkg?.id}:${e.x}:${e.y}:${n}`;
+		this.currentRoadCache?.key !== r && (this.currentRoadCache = {
+			key: r,
+			road: KI(t, e.x, e.y, n)
+		});
+		let i = this.currentRoadCache.road;
+		if (i) return {
+			road: i,
+			on: i.distance <= this.mapSpan().w * UV
+		};
+	}
+	roadDisplayName(e) {
+		return e.name || (e.type ? `无名道路（${e.type}）` : "无名道路");
+	}
+	drawRoads(e, t, n) {
+		if (!this.pkg?.streets?.length || this.state.showRoads !== !0) return;
+		let r = this.roadIndex();
+		if (!r) return;
+		let [i, a] = this.unproject(-16, -16, t, n), [o, s] = this.unproject(t + 16, n + 16, t, n);
+		if (![
+			i,
+			a,
+			o,
+			s
+		].every(Number.isFinite)) return;
+		let c = qI(r, {
+			minX: Math.min(i, o),
+			maxX: Math.max(i, o),
+			minY: Math.min(a, s) * r.yScale,
+			maxY: Math.max(a, s) * r.yScale
+		}), l = this.currentRoad(), u = [
+			{
+				width: 3.2,
+				color: "rgba(255, 196, 92, 0.85)",
+				dash: []
+			},
+			{
+				width: 2.4,
+				color: "rgba(255, 222, 150, 0.8)",
+				dash: []
+			},
+			{
+				width: 1.6,
+				color: "rgba(250, 240, 214, 0.75)",
+				dash: [5, 4]
+			}
+		];
+		e.save(), e.lineJoin = "round", e.lineCap = "round";
+		let d = (r) => {
+			e.beginPath(), r.points.forEach(([r, i], a) => {
+				let [o, s] = this.project(r, i, t, n);
+				a === 0 ? e.moveTo(o, s) : e.lineTo(o, s);
+			});
+		};
+		for (let t of [
+			2,
+			1,
+			0
+		]) {
+			let n = u[t];
+			for (let i of c) {
+				let a = r.streets[i];
+				this.streetRank(a) === t && a !== l?.road.street && (d(a), e.setLineDash(n.dash), e.lineWidth = n.width + 2, e.strokeStyle = "rgba(24, 16, 10, 0.55)", e.stroke(), e.lineWidth = n.width, e.strokeStyle = n.color, e.stroke());
+			}
+		}
+		l?.on && c.includes(r.streets.indexOf(l.road.street)) && (d(l.road.street), e.setLineDash([]), e.lineWidth = 7, e.strokeStyle = "rgba(16, 24, 32, 0.6)", e.stroke(), e.lineWidth = 4.5, e.strokeStyle = "rgba(92, 214, 255, 0.95)", e.stroke()), e.restore();
 	}
 	streetLabelAnchor(e) {
 		let t = this.streetLabelCache.get(e.id);
@@ -41820,29 +42018,30 @@ var rH = `
 		let r = this.pkg;
 		if (!r?.streets?.length || this.state.showLabels === !1 || this.tileMoving) return;
 		let i = this.view.zoom, a = /* @__PURE__ */ new Set(), o = [...r.streets].sort((e, t) => this.streetRank(e) - this.streetRank(t) || e.name.localeCompare(t.name)), s = 0;
-		for (let r of o) {
-			let o = this.streetRank(r);
-			if (i < (o === 0 ? 13 : o === 1 ? 14 : 15)) continue;
-			let c = r.name.toLocaleLowerCase();
-			if (a.has(c)) continue;
-			let l = this.streetLabelAnchor(r);
-			if (!l) continue;
-			let [u, d] = this.project(l.x, l.y, t, n);
-			if (!Number.isFinite(u) || !Number.isFinite(d) || u < -60 || d < -30 || u > t + 60 || d > n + 30) continue;
-			let f = o === 0 ? 13 : o === 1 ? 12 : 11;
-			e.save(), e.font = `${o === 2 ? "" : "600 "}${f}px Georgia, "Times New Roman", serif`, e.textAlign = "center", e.textBaseline = "middle";
-			let p = e.measureText(r.name), m = Math.min(150, Math.max(18, p.width / 2 + 3)), h = f / 2 + 3, g = this.labelCellKeys(u - m, d - h, m * 2, h * 2);
-			if (g.some((e) => this.labelCells.has(e))) e.restore();
+		for (let c of o) {
+			if (!c.name) continue;
+			let o = this.streetRank(c), l = HV[o] ?? HV[2];
+			if (i < (r.kind === "tiles" ? this.tileZoomThreshold(l) : l)) continue;
+			let u = c.name.toLocaleLowerCase();
+			if (a.has(u)) continue;
+			let d = this.streetLabelAnchor(c);
+			if (!d) continue;
+			let [f, p] = this.project(d.x, d.y, t, n);
+			if (!Number.isFinite(f) || !Number.isFinite(p) || f < -60 || p < -30 || f > t + 60 || p > n + 30) continue;
+			let m = o === 0 ? 13 : o === 1 ? 12 : 11;
+			e.save(), e.font = `${o === 2 ? "" : "600 "}${m}px Georgia, "Times New Roman", serif`, e.textAlign = "center", e.textBaseline = "middle";
+			let h = e.measureText(c.name), g = Math.min(150, Math.max(18, h.width / 2 + 3)), _ = m / 2 + 3, v = this.labelCellKeys(f - g, p - _, g * 2, _ * 2);
+			if (v.some((e) => this.labelCells.has(e))) e.restore();
 			else {
-				for (let e of g) this.labelCells.add(e);
-				if (a.add(c), e.translate(u, d), e.rotate(l.angle), e.lineJoin = "round", e.lineWidth = 3, e.strokeStyle = "rgba(31,20,29,0.9)", e.strokeText(r.name, 0, 0), e.fillStyle = o === 0 ? "#eadfc6" : "#d8cfb8", e.fillText(r.name, 0, 0), e.restore(), s += 1, s >= 120) break;
+				for (let e of v) this.labelCells.add(e);
+				if (a.add(u), e.translate(f, p), e.rotate(d.angle), e.lineJoin = "round", e.lineWidth = 3, e.strokeStyle = "rgba(31,20,29,0.9)", e.strokeText(c.name, 0, 0), e.fillStyle = o === 0 ? "#eadfc6" : "#d8cfb8", e.fillText(c.name, 0, 0), e.restore(), s += 1, s >= 120) break;
 			}
 		}
 	}
 	drawMarkers(e, t, n) {
 		let r = this.pkg;
 		if (!r) return;
-		let i = new Set(this.state.hiddenCategories ?? []), a = new Map(this.effectiveCategoryList.map((e) => [e.id, e])), o = this.state.selectedMarkerId, s = this.favoriteMarkerIds, c = r.kind === "image" ? TV : this.tileZoomThreshold(r.streets?.length ? jV : EV), l = this.state.showLabels !== !1 && this.view.zoom >= c, u = this.markersInView(t, n).filter((e) => !i.has(e.categoryId));
+		let i = new Set(this.state.hiddenCategories ?? []), a = new Map(this.effectiveCategoryList.map((e) => [e.id, e])), o = this.state.selectedMarkerId, s = this.favoriteMarkerIds, c = r.kind === "image" ? IV : this.tileZoomThreshold(LV), l = this.state.showLabels !== !1 && this.view.zoom >= c, u = this.markersInView(t, n).filter((e) => !i.has(e.categoryId));
 		this.clusterHitAreas = [];
 		let d = this.shouldCluster(r, u.length) ? this.drawMarkerClusters(e, u, t, n, o) : /* @__PURE__ */ new Set();
 		for (let r of u) {
@@ -41910,7 +42109,7 @@ var rH = `
 	}
 	labelCellKeys(e, t, n, r) {
 		if (!Number.isFinite(e) || !Number.isFinite(t) || !Number.isFinite(n) || !Number.isFinite(r) || n <= 0 || r <= 0) return [];
-		let i = Math.floor(e / PV), a = Math.floor((e + n) / PV), o = Math.floor(t / PV), s = Math.floor((t + r) / PV);
+		let i = Math.floor(e / KV), a = Math.floor((e + n) / KV), o = Math.floor(t / KV), s = Math.floor((t + r) / KV);
 		if (!Number.isFinite(i) || !Number.isFinite(a) || !Number.isFinite(o) || !Number.isFinite(s) || (a - i + 1) * (s - o + 1) > 512) return [];
 		let c = [];
 		for (let e = i; e <= a; e += 1) for (let t = o; t <= s; t += 1) c.push(`${e}:${t}`);
@@ -41924,7 +42123,7 @@ var rH = `
 			return [n.x, n.y];
 		}
 		if (i.kind === "image") {
-			let a = Math.min(n / i.width, r / i.height) * wV * this.view.zoom;
+			let a = Math.min(n / i.width, r / i.height) * FV * this.view.zoom;
 			return [n / 2 + (e - this.view.cx) * i.width * a, r / 2 + (t - this.view.cy) * i.height * a];
 		}
 		let a = this.tileScale();
@@ -41938,7 +42137,7 @@ var rH = `
 			return [r.x, r.y];
 		}
 		if (i.kind === "image") {
-			let a = Math.min(n / i.width, r / i.height) * wV * this.view.zoom;
+			let a = Math.min(n / i.width, r / i.height) * FV * this.view.zoom;
 			return [this.view.cx + (e - n / 2) / (i.width * a), this.view.cy + (t - r / 2) / (i.height * a)];
 		}
 		let a = this.tileScale();
@@ -41996,8 +42195,8 @@ var rH = `
 		if (this.aligning) {
 			if (!this.alignDrag || !this.alignStartPointer || !this.alignStartRect || !this.alignRect || !this.pkg) return;
 			e.preventDefault();
-			let t = e.clientX - this.alignStartPointer.x, n = e.clientY - this.alignStartPointer.y, r = this.canvasEl.clientWidth || 1, i = this.canvasEl.clientHeight || 1, a = Math.min(r / this.pkg.width, i / this.pkg.height) * wV * this.view.zoom;
-			this.alignRect = lL({
+			let t = e.clientX - this.alignStartPointer.x, n = e.clientY - this.alignStartPointer.y, r = this.canvasEl.clientWidth || 1, i = this.canvasEl.clientHeight || 1, a = Math.min(r / this.pkg.width, i / this.pkg.height) * FV * this.view.zoom;
+			this.alignRect = hL({
 				...this.alignStartRect,
 				x: this.alignStartRect.x + t / (this.pkg.width * a),
 				y: this.alignStartRect.y + n / (this.pkg.height * a)
@@ -42029,7 +42228,7 @@ var rH = `
 			let e = this.tileScale();
 			this.view.cx -= t / e, this.view.cy -= n / e;
 		} else if (this.pkg) {
-			let e = Math.min(r / this.pkg.width, i / this.pkg.height) * wV * this.view.zoom;
+			let e = Math.min(r / this.pkg.width, i / this.pkg.height) * FV * this.view.zoom;
 			this.view.cx -= t / (this.pkg.width * e), this.view.cy -= n / (this.pkg.height * e);
 		}
 		this.clampView(), this.dragX = e.clientX, this.dragY = e.clientY, this.requestDraw();
@@ -42108,7 +42307,7 @@ var rH = `
 	buildMarkerIndex() {
 		this.markerIndex.clear();
 		for (let e of this.effectiveMarkerList) {
-			let t = `${Math.floor(e.x / NV)}:${Math.floor(e.y / NV)}`, n = this.markerIndex.get(t);
+			let t = `${Math.floor(e.x / GV)}:${Math.floor(e.y / GV)}`, n = this.markerIndex.get(t);
 			n ? n.push(e) : this.markerIndex.set(t, [e]);
 		}
 	}
@@ -42116,7 +42315,7 @@ var rH = `
 		if (!this.pkg) return [];
 		let [n, r] = this.unproject(-24, -24, e, t), [i, a] = this.unproject(e + 24, t + 24, e, t), o = Math.min(n, i), s = Math.max(n, i), c = Math.min(r, a), l = Math.max(r, a);
 		if (!Number.isFinite(o) || !Number.isFinite(s) || !Number.isFinite(c) || !Number.isFinite(l)) return [];
-		let u = Math.floor(o / NV), d = Math.floor(s / NV), f = Math.floor(c / NV), p = Math.floor(l / NV);
+		let u = Math.floor(o / GV), d = Math.floor(s / GV), f = Math.floor(c / GV), p = Math.floor(l / GV);
 		if (!Number.isFinite(u) || !Number.isFinite(d) || !Number.isFinite(f) || !Number.isFinite(p) || (d - u + 1) * (p - f + 1) > 8192) return [];
 		let m = [];
 		for (let e = u; e <= d; e += 1) for (let t = f; t <= p; t += 1) {
@@ -42127,7 +42326,7 @@ var rH = `
 	}
 	hitMarker(e, t) {
 		if (!this.pkg) return;
-		let n = this.canvasEl.clientWidth || 1, r = this.canvasEl.clientHeight || 1, i = new Set(this.state.hiddenCategories ?? []), a, o = DV, s = this.markersInView(n, r);
+		let n = this.canvasEl.clientWidth || 1, r = this.canvasEl.clientHeight || 1, i = new Set(this.state.hiddenCategories ?? []), a, o = RV, s = this.markersInView(n, r);
 		for (let c of s) {
 			if (i.has(c.categoryId)) continue;
 			let [s, l] = this.project(c.x, c.y, n, r), u = Math.hypot(s - e, l - t);
@@ -42140,7 +42339,7 @@ var rH = `
 		if (!n || this.state.showRegions === !1 || n.regions.length === 0) return;
 		let r = this.canvasEl.clientWidth || 1, i = this.canvasEl.clientHeight || 1, [a, o] = this.unproject(e, t, r, i), s, c = Infinity;
 		for (let e of n.regions) for (let t of e.polygons) {
-			if (!sH(a, o, t)) continue;
+			if (!yH(a, o, t)) continue;
 			let n = Infinity, r = -Infinity, i = Infinity, l = -Infinity;
 			for (let [e, a] of t) n = Math.min(n, e), r = Math.max(r, e), i = Math.min(i, a), l = Math.max(l, a);
 			let u = Math.max(0, r - n) * Math.max(0, l - i);
@@ -42180,12 +42379,12 @@ var rH = `
 	}
 	categoryColor(e) {
 		let t = this.categoryById(e);
-		return t ? t.color : cH[[...e].reduce((e, t) => e + t.charCodeAt(0), 0) % cH.length];
+		return t ? t.color : bH[[...e].reduce((e, t) => e + t.charCodeAt(0), 0) % bH.length];
 	}
 	renderCategories() {
 		if (!this.categoriesEl) return;
 		if (this.categoriesEl.replaceChildren(), !this.pkg) {
-			this.categoriesEl.append(oH("div", "tml-empty-small", "导入地图包后显示分类。"));
+			this.categoriesEl.append(vH("div", "tml-empty-small", "导入地图包后显示分类。"));
 			return;
 		}
 		let e = this.categoryFilterEl.value.trim().toLowerCase(), t = new Set(this.state.hiddenCategories ?? []), n = /* @__PURE__ */ new Map();
@@ -42227,13 +42426,13 @@ var rH = `
 			}
 			this.categoriesEl.append(s);
 		}
-		this.categoriesEl.childElementCount === 0 && this.categoriesEl.append(oH("div", "tml-empty-small", "没有匹配的分类。"));
+		this.categoriesEl.childElementCount === 0 && this.categoriesEl.append(vH("div", "tml-empty-small", "没有匹配的分类。"));
 	}
 	renderDetail() {
 		if (!this.detailEl) return;
 		this.detailEl.replaceChildren();
 		let e = this.pkg;
-		if (!e) this.detailEl.append(oH("div", "tml-empty-small", "导入一张地图，然后点地图上的地点。"));
+		if (!e) this.detailEl.append(vH("div", "tml-empty-small", "导入一张地图，然后点地图上的地点。"));
 		else {
 			if (this.state.selectedMarkerId) {
 				let e = this.markerById(this.state.selectedMarkerId);
@@ -42249,12 +42448,12 @@ var rH = `
 					return;
 				}
 			}
-			this.detailEl.append(oH("div", "tml-empty-small", "点地图上的地点查看详情；也可以搜索或使用左侧分类。"));
+			this.detailEl.append(vH("div", "tml-empty-small", "点地图上的地点查看详情；也可以搜索或使用左侧分类。"));
 		}
 	}
 	markerDetail(e) {
 		let t = this.pkg;
-		if (!t) return oH("div", "tml-empty-small", "");
+		if (!t) return vH("div", "tml-empty-small", "");
 		let n = this.categoryById(e.categoryId), r = this.regionForMarker(e), i = this.state.atPlaceId === e.id, a = this.markerFavorite(e), o = document.createElement("article");
 		o.className = "tml-detail-card";
 		let s = document.createElement("header");
@@ -42297,16 +42496,16 @@ var rH = `
 		return b.append(x, S), o.append(b), o;
 	}
 	markerFavoriteKey(e) {
-		return FB(this.pkg?.id ?? "", e.id);
+		return KB(this.pkg?.id ?? "", e.id);
 	}
 	markerFavorite(e) {
 		let t = this.markerFavoriteKey(e);
-		return kB().find((e) => e.key === t);
+		return BB().find((e) => e.key === t);
 	}
 	toggleMarkerFavorite(e) {
 		let t = this.pkg;
 		if (!t) return;
-		let n = PB({
+		let n = GB({
 			key: this.markerFavoriteKey(e),
 			kind: "layer",
 			mapId: t.id,
@@ -42323,13 +42522,13 @@ var rH = `
 	}
 	refreshFavoriteMarkerIds() {
 		let e = this.pkg;
-		this.favoriteMarkerIds = new Set(e ? kB().filter((t) => t.kind === "layer" && t.mapId === e.id).map((e) => e.markerId).filter((e) => !!e) : []);
+		this.favoriteMarkerIds = new Set(e ? BB().filter((t) => t.kind === "layer" && t.mapId === e.id).map((e) => e.markerId).filter((e) => !!e) : []);
 	}
 	renderFavorites() {
 		if (!this.favoritesEl) return;
 		this.refreshFavoriteMarkerIds();
-		let e = this.pkg, t = kB().filter((t) => t.kind === "layer" && e && t.mapId === e.id);
-		if (this.favoriteCountEl.textContent = String(t.length), this.favoritesEl.replaceChildren(), !e || t.length === 0) this.favoritesEl.append(oH("div", "tml-empty-small", "还没有收藏这个地图的地点。点开地点后点 ☆ 收藏。"));
+		let e = this.pkg, t = BB().filter((t) => t.kind === "layer" && e && t.mapId === e.id);
+		if (this.favoriteCountEl.textContent = String(t.length), this.favoritesEl.replaceChildren(), !e || t.length === 0) this.favoritesEl.append(vH("div", "tml-empty-small", "还没有收藏这个地图的地点。点开地点后点 ☆ 收藏。"));
 		else for (let e of t) {
 			let t = document.createElement("div");
 			t.className = "tml-favorite-row";
@@ -42343,12 +42542,12 @@ var rH = `
 			});
 			let o = document.createElement("button");
 			o.type = "button", o.className = "tml-star-toggle active", o.textContent = "★", o.title = "取消收藏", o.addEventListener("click", () => {
-				NB(e.key), this.refreshContext(), this.renderFavorites(), this.renderDetail(), this.requestDraw();
+				WB(e.key), this.refreshContext(), this.renderFavorites(), this.renderDetail(), this.requestDraw();
 			}), t.append(r, o), this.favoritesEl.append(t);
 		}
 	}
 	regionDetail(e) {
-		if (!this.pkg) return oH("div", "tml-empty-small", "");
+		if (!this.pkg) return vH("div", "tml-empty-small", "");
 		let t = this.effectiveMarkerList.filter((t) => this.regionForMarker(t)?.id === e.id).length, n = document.createElement("article");
 		n.className = "tml-detail-card";
 		let r = document.createElement("header");
@@ -42387,14 +42586,14 @@ var rH = `
 			title: e.sourceTitle || e.name,
 			url: e.sourceUrl
 		}] : []), a = this.userLinksFor(e);
-		i.length === 0 && t.append(oH("div", "tml-link-source-empty", a.length === 0 ? "源数据没有链接。可以添加 Wikipedia、官网、点评页或自定义链接。" : "源数据没有链接。下面是你在本机添加的链接。"));
+		i.length === 0 && t.append(vH("div", "tml-link-source-empty", a.length === 0 ? "源数据没有链接。可以添加 Wikipedia、官网、点评页或自定义链接。" : "源数据没有链接。下面是你在本机添加的链接。"));
 		for (let n of i) {
 			let r = `${e.id}:${n.id}`, i = this.state.sourceLinkText?.[r], a = this.linkTextValue(n);
-			a === void 0 && i?.text && cI(BV(n.url), i.text), t.append(this.linkRow(e, n, !0, r, a ?? i?.text, i?.status));
+			a === void 0 && i?.text && cI(QV(n.url), i.text), t.append(this.linkRow(e, n, !0, r, a ?? i?.text, i?.status));
 		}
 		for (let n of a) {
 			let r = this.linkTextValue(n);
-			r === void 0 && n.text && cI(BV(n.url), n.text), t.append(this.linkRow(e, n, !1, void 0, r ?? n.text, n.status));
+			r === void 0 && n.text && cI(QV(n.url), n.text), t.append(this.linkRow(e, n, !1, void 0, r ?? n.text, n.status));
 		}
 		if (this.linkDraftVisible) t.append(this.linkEditor(e));
 		else {
@@ -42416,7 +42615,7 @@ var rH = `
 		l.className = "tml-link-title", l.textContent = t.title;
 		let u = document.createElement("div");
 		u.className = "tml-link-status";
-		let d = wB(this.ctx).layerAutoExpandWiki, f = i ?? t.text;
+		let d = FB(this.ctx).layerAutoExpandWiki, f = i ?? t.text;
 		u.textContent = a && /失败|错误|没有可读取/.test(a) || !f ? a ?? (n ? "导入链接" : "未抓取") : `已缓存正文 · ${f.length} 字`, c.append(l, u);
 		let p = document.createElement("div");
 		p.className = "tml-link-actions";
@@ -42451,7 +42650,7 @@ var rH = `
 		return o.append(s, c, p), m && o.append(m), o;
 	}
 	storeLinkText(e, t, n, r, i, a) {
-		if (r.trim() && cI(BV(e.url), r), t && n) {
+		if (r.trim() && cI(QV(e.url), r), t && n) {
 			let e = this.state.sourceLinkText ?? (this.state.sourceLinkText = {});
 			e[n] = {
 				text: r,
@@ -42529,7 +42728,7 @@ var rH = `
 			if (!i) throw Error("没有可读取的正文");
 			this.storeLinkText(t, n, r, i, `已抓取 · ${i.length} 字`, e);
 		} catch (i) {
-			this.storeLinkText(t, n, r, "", `抓取失败：${GI(i)}。可打开原页后手动粘贴。`, e);
+			this.storeLinkText(t, n, r, "", `抓取失败：${ZI(i)}。可打开原页后手动粘贴。`, e);
 		}
 		this.renderDetail(), this.state.selectedMarkerId === e.id && this.refreshContext();
 	}
@@ -42562,7 +42761,7 @@ var rH = `
 	}
 	htmlText(e) {
 		let t = new DOMParser().parseFromString(e, "text/html");
-		return t.querySelectorAll("script, style, nav, footer, header, aside, noscript, .navbox, .toc, .mw-editsection, sup.reference, .reference, .mw-jump-link").forEach((e) => e.remove()), UV(t), (t.querySelector(".mw-parser-output, #mw-content-text, article, main, body")?.textContent ?? "").replace(/\s+/g, " ").trim();
+		return t.querySelectorAll("script, style, nav, footer, header, aside, noscript, .navbox, .toc, .mw-editsection, sup.reference, .reference, .mw-jump-link").forEach((e) => e.remove()), tH(t), (t.querySelector(".mw-parser-output, #mw-content-text, article, main, body")?.textContent ?? "").replace(/\s+/g, " ").trim();
 	}
 	markerSourceKey(e) {
 		return `layer-source:${this.pkg?.id ?? ""}:${e.id}`;
@@ -42572,16 +42771,16 @@ var rH = `
 		return t === void 0 ? e.description ?? "" : t;
 	}
 	setMarkerSource(e, t) {
-		cI(this.markerSourceKey(e), t), wB(this.liveContext()).layerSourceAI && this.refreshContext();
+		cI(this.markerSourceKey(e), t), FB(this.liveContext()).layerSourceAI && this.refreshContext();
 	}
 	savePlaceAIFlagsForMap() {
-		this.pkg && iV(this.pkg.id, this.placeAIFlags);
+		this.pkg && hV(this.pkg.id, this.placeAIFlags);
 	}
 	placeAIPartAllowed(e, t) {
 		return this.placeAIFlags[e.id]?.[t] !== !1;
 	}
 	aiPartGloballyEnabled(e) {
-		let t = wB(this.liveContext()), n = t.layerNearbyAI, r = t.layerFavoritesAI;
+		let t = FB(this.liveContext()), n = t.layerNearbyAI, r = t.layerFavoritesAI;
 		return e === "source" ? t.layerSourceAI || n && t.layerNearbySource || r && t.layerFavoriteSource : e === "wiki" ? t.layerWikiAI || n && t.layerNearbyWiki || r && t.layerFavoriteWiki : t.layerNoteAI || n && t.layerNearbyNotes || r && t.layerFavoriteNote;
 	}
 	setPlaceAIPart(e, t, n) {
@@ -42628,7 +42827,7 @@ var rH = `
 		return s.className = "tml-ai-toggle-row", s.append(this.aiContentToggle(e, "source")), t.append(n, s, r, i, a), t;
 	}
 	linkTextValue(e) {
-		let t = oI(BV(e.url));
+		let t = oI(QV(e.url));
 		return t === void 0 ? void 0 : t;
 	}
 	notePrefix() {
@@ -42693,7 +42892,7 @@ var rH = `
 		if (!this.pkg) return;
 		let n, r = Infinity;
 		for (let i of this.pkg.regions) for (let a of i.polygons) {
-			if (!sH(e, t, a)) continue;
+			if (!yH(e, t, a)) continue;
 			let o = Infinity, s = -Infinity, c = Infinity, l = -Infinity;
 			for (let [e, t] of a) o = Math.min(o, e), s = Math.max(s, e), c = Math.min(c, t), l = Math.max(l, t);
 			let u = Math.max(0, s - o) * Math.max(0, l - c);
@@ -42796,7 +42995,7 @@ var rH = `
 		let t = this.pkg;
 		if (!t || !e.layerFavoritesAI) return [];
 		let n = new Map(this.effectiveCategoryList.map((e) => [e.id, e]));
-		return kB().filter((e) => e.kind === "layer" && e.mapId === t.id).map((t) => {
+		return BB().filter((e) => e.kind === "layer" && e.mapId === t.id).map((t) => {
 			let r = t.markerId ? this.markerById(t.markerId) : void 0, i = r ? this.regionForMarker(r)?.name : void 0, a = r ? n.get(r.categoryId)?.name : t.category;
 			return {
 				key: t.key,
@@ -42953,7 +43152,7 @@ var rH = `
 	itineraryPois(e) {
 		let t = /* @__PURE__ */ new Map(), n = this.itineraryLegs(e);
 		if (n.length === 0) return t;
-		let r = wB(this.liveContext()), i = Math.min(.4, Math.max(.01, r.layerItineraryPoiRadius || .08)), a = Math.min(30, Math.max(1, r.layerItineraryPoiMax || 8)), o = new Set(this.state.hiddenCategories ?? []), s = this.mapSpan(), c = new Set(e.stops.map((e) => e.markerId).filter((e) => !!e)), l = n.flatMap((e) => [e.from, e.to]), u = [];
+		let r = FB(this.liveContext()), i = Math.min(.4, Math.max(.01, r.layerItineraryPoiRadius || .08)), a = Math.min(30, Math.max(1, r.layerItineraryPoiMax || 8)), o = new Set(this.state.hiddenCategories ?? []), s = this.mapSpan(), c = new Set(e.stops.map((e) => e.markerId).filter((e) => !!e)), l = n.flatMap((e) => [e.from, e.to]), u = [];
 		for (let e of this.effectiveMarkerList) {
 			if (o.has(e.categoryId) || c.has(e.id) || l.some((t) => Math.hypot((t.x - e.x) / Math.max(1e-8, s.w), (t.y - e.y) / Math.max(1e-8, s.h)) <= .01)) continue;
 			let t;
@@ -43149,14 +43348,14 @@ var rH = `
 		}
 		let u = document.createElement("div");
 		if (u.className = "tml-route-body", !e) {
-			if (u.append(oH("div", "tml-route-empty", "点“规划行程”后，在地图上依次点击起点、经停点和终点；最后一个点就是终点。")), this.state.userPosition) {
+			if (u.append(vH("div", "tml-route-empty", "点“规划行程”后，在地图上依次点击起点、经停点和终点；最后一个点就是终点。")), this.state.userPosition) {
 				let e = this.routeActionButton("从我的位置开始", "start-here", !0);
 				e.classList.add("tml-route-start-here"), u.append(e);
 			}
 			this.routeShelfEl.append(u), this.renderRouteStopHandles();
 			return;
 		}
-		if (e.stops.length === 0) u.append(oH("div", "tml-route-empty", "点击地图放第一站。点到地点图钉会用地点名称；点空白地图会生成自由经停点。"));
+		if (e.stops.length === 0) u.append(vH("div", "tml-route-empty", "点击地图放第一站。点到地点图钉会用地点名称；点空白地图会生成自由经停点。"));
 		else {
 			if (n && !this.itineraryEdit) {
 				let e = document.createElement("div");
@@ -43194,7 +43393,7 @@ var rH = `
 					let e = document.createElement("div");
 					e.className = "tml-route-pois";
 					let t = r.get(a) ?? [];
-					if (t.length === 0) e.append(oH("div", "tml-route-poi-empty", "这段沿线暂无地点。"));
+					if (t.length === 0) e.append(vH("div", "tml-route-poi-empty", "这段沿线暂无地点。"));
 					else for (let n of t) {
 						let t = document.createElement("button");
 						t.type = "button", t.className = "tml-route-poi", t.textContent = `${n.marker.name}${this.categoryById(n.marker.categoryId) ? ` · ${this.categoryById(n.marker.categoryId)?.name}` : ""}`, t.title = `沿程 ${this.itineraryDistanceLabel(p.from, n.projected)}`, t.addEventListener("click", () => {
@@ -43220,7 +43419,7 @@ var rH = `
 			}, this.saveItineraryToState(this.itinerary), this.renderItineraryShelf());
 		}), f.append(p, document.createTextNode("把本次行程发给 AI"));
 		let m = document.createElement("span");
-		m.className = "tml-route-hint", m.textContent = this.itineraryEdit ? "完成前是草稿，不会进入 AI；收起列表后可拖站点" : `每段沿线 ±${Math.round((wB(this.liveContext()).layerItineraryPoiRadius || .08) * 100)}% · 最多 ${wB(this.liveContext()).layerItineraryPoiMax || 8} 个地点`, d.append(f, m), u.append(d), this.routeShelfEl.append(u), this.renderRouteStopHandles();
+		m.className = "tml-route-hint", m.textContent = this.itineraryEdit ? "完成前是草稿，不会进入 AI；收起列表后可拖站点" : `每段沿线 ±${Math.round((FB(this.liveContext()).layerItineraryPoiRadius || .08) * 100)}% · 最多 ${FB(this.liveContext()).layerItineraryPoiMax || 8} 个地点`, d.append(f, m), u.append(d), this.routeShelfEl.append(u), this.renderRouteStopHandles();
 	}
 	routeActionButton(e, t, n = !1, r = "") {
 		let i = document.createElement("button");
@@ -43329,31 +43528,39 @@ var rH = `
 			this.state.context = void 0, this.persist(), this.renderPositionCard(), this.renderNearby(), this.callbacks.onChange();
 			return;
 		}
-		let n = wB(this.liveContext()), r = this.markerById(this.state.atPlaceId), i = r ? this.regionForMarker(r) : void 0, a = r ? this.categoryById(r.categoryId) : void 0, o = this.state.userPosition, s = o ? this.regionForPoint(o.x, o.y) : void 0, c = o ? this.buildNearby(o, n, this.state.atPlaceId) : [], l = this.itinerary ? this.itineraryContext(this.itinerary) : void 0, u = n.layerNoteAI && r && this.placeAIPartAllowed(r, "note") ? this.markerNoteValue(r) : void 0, d = this.favoriteContext(n), f = {
+		let n = FB(this.liveContext()), r = this.markerById(this.state.atPlaceId), i = r ? this.regionForMarker(r) : void 0, a = r ? this.categoryById(r.categoryId) : void 0, o = this.state.userPosition, s = o ? this.regionForPoint(o.x, o.y) : void 0, c = o ? this.currentRoad() : void 0, l = this.gridConfig(), u = o ? this.buildNearby(o, n, this.state.atPlaceId) : [], d = this.itinerary ? this.itineraryContext(this.itinerary) : void 0, f = n.layerNoteAI && r && this.placeAIPartAllowed(r, "note") ? this.markerNoteValue(r) : void 0, p = this.favoriteContext(n), m = {
 			mapName: t.name,
 			position: o ? {
 				x: o.x,
 				y: o.y,
-				region: s?.name
+				region: s?.name,
+				road: c ? {
+					name: c.road.street.name,
+					type: c.road.street.type,
+					on: c.on,
+					distancePercent: c.road.distance / this.mapSpan().w * 100,
+					distanceCells: l ? MI(o, c.road, l) : void 0,
+					direction: c.on ? void 0 : this.directionFor(c.road.x - o.x, (c.road.y - o.y) * (t.kind === "image" ? t.height / t.width : 1))
+				} : void 0
 			} : void 0,
 			currentPlace: r?.name,
 			currentX: r?.x,
 			currentY: r?.y,
 			category: a?.name,
 			region: i?.name,
-			note: u?.trim() || void 0,
+			note: f?.trim() || void 0,
 			sourceMaterial: r && n.layerSourceAI && this.placeAIPartAllowed(r, "source") && this.markerSourceValue(r).trim() || void 0,
 			wikiTexts: r ? this.contextWikiTexts(r, n) : void 0,
-			favorites: d.length > 0 ? d : void 0,
-			itinerary: l,
-			nearby: c.length > 0 ? c : void 0,
+			favorites: p.length > 0 ? p : void 0,
+			itinerary: d,
+			nearby: u.length > 0 ? u : void 0,
 			nearbyAnchor: o ? "my position" : void 0,
 			nearbyScope: "radius",
 			nearbyCoords: n.layerNearbyCoords,
 			grid: this.gridConfig() ? { ...this.gridConfig() } : void 0,
 			updatedAt: Date.now()
 		};
-		this.state.context = f, this.persist(), this.contextStatusEl.textContent = f.currentPlace || f.position || f.nearby || f.favorites ? "图层上下文：已生成" : "图层上下文：待机", this.contextStatusEl.title = f.currentPlace ? "所在地点会进入图层地图 AI 上下文" : "拖动“我”到地点，或调整附近范围后生成", e && this.renderPositionCard(), this.renderNearby(), this.routeShelfEl && this.renderItineraryShelf(), this.contextModalEl.hidden || (this.renderContextControls(), this.renderContextPreview()), this.callbacks.onChange();
+		this.state.context = m, this.persist(), this.contextStatusEl.textContent = m.currentPlace || m.position || m.nearby || m.favorites ? "图层上下文：已生成" : "图层上下文：待机", this.contextStatusEl.title = m.currentPlace ? "所在地点会进入图层地图 AI 上下文" : "拖动“我”到地点，或调整附近范围后生成", e && this.renderPositionCard(), this.renderNearby(), this.routeShelfEl && this.renderItineraryShelf(), this.contextModalEl.hidden || (this.renderContextControls(), this.renderContextPreview()), this.callbacks.onChange();
 	}
 	renderPositionCard() {
 		if (!this.positionEl) return;
@@ -43472,7 +43679,7 @@ var rH = `
 		this.placingUser = !1, this.placingPin = null, this.placingPinId = void 0, this.placeBarEl && (this.placeBarEl.hidden = !0), this.syncToolButtons();
 	}
 	savePinEditsForMap() {
-		this.pkg && XB(this.pkg.id, this.pinEdits);
+		this.pkg && sV(this.pkg.id, this.pinEdits);
 	}
 	pinHistoryFor(e) {
 		return this.pinEdits.history[e];
@@ -43510,7 +43717,7 @@ var rH = `
 			y: n.y
 		}, this.persist());
 		let i = this.markerFavorite(r);
-		i && MB({
+		i && UB({
 			...i,
 			x: n.x,
 			y: n.y,
@@ -43582,7 +43789,7 @@ var rH = `
 		let n = Date.now(), r = {
 			id: `custom:${n}:${Math.random().toString(36).slice(2, 7)}`,
 			name: `我的图钉 ${this.pinEdits.customPins.length + 1}`,
-			categoryId: LB,
+			categoryId: JB,
 			x: Math.min(1, Math.max(0, e)),
 			y: Math.min(1, Math.max(0, t)),
 			custom: !0,
@@ -43590,7 +43797,7 @@ var rH = `
 			createdAt: n,
 			updatedAt: n
 		};
-		this.pinEdits.customPins.push(r), this.state.hiddenCategories = (this.state.hiddenCategories ?? []).filter((e) => e !== LB), this.rebuildEffectiveMarkers(), this.savePinEditsForMap(), this.selectMarker(r, !0), this.renderCategories(), this.updateStatus(), this.updatePackageInfo(), this.toast("已添加我的图钉；可以在详情里改名、加链接和写笔记");
+		this.pinEdits.customPins.push(r), this.state.hiddenCategories = (this.state.hiddenCategories ?? []).filter((e) => e !== JB), this.rebuildEffectiveMarkers(), this.savePinEditsForMap(), this.selectMarker(r, !0), this.renderCategories(), this.updateStatus(), this.updatePackageInfo(), this.toast("已添加我的图钉；可以在详情里改名、加链接和写笔记");
 	}
 	customPinNameSection(e, t) {
 		let n = document.createElement("div");
@@ -43609,7 +43816,7 @@ var rH = `
 		let n = this.markerNoteKey(t), r = this.markerSourceKey(t);
 		lI(n), lI(r), delete this.state.notes?.[n];
 		for (let n of [this.itinerary, this.itineraryDraft]) if (n) for (let r of n.stops) r.markerId === e && (r.x = t.x, r.y = t.y, r.name = t.name, r.markerId = void 0);
-		this.itinerary && this.saveItineraryToState(this.itinerary), this.pinEdits.customPins = this.pinEdits.customPins.filter((t) => t.id !== e), delete this.pinEdits.history[e], this.placeAIFlags[e] && (delete this.placeAIFlags[e], this.savePlaceAIFlagsForMap()), this.state.selectedMarkerId = void 0, this.state.atPlaceId === e && (this.state.atPlaceId = void 0), NB(this.markerFavoriteKey(t)), this.rebuildEffectiveMarkers(), this.savePinEditsForMap(), this.refreshContext(), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.updateStatus(), this.updatePackageInfo(), this.persist(), this.requestDraw(), this.syncToolButtons(), this.toast(`已删除 ${t.name}`);
+		this.itinerary && this.saveItineraryToState(this.itinerary), this.pinEdits.customPins = this.pinEdits.customPins.filter((t) => t.id !== e), delete this.pinEdits.history[e], this.placeAIFlags[e] && (delete this.placeAIFlags[e], this.savePlaceAIFlagsForMap()), this.state.selectedMarkerId = void 0, this.state.atPlaceId === e && (this.state.atPlaceId = void 0), WB(this.markerFavoriteKey(t)), this.rebuildEffectiveMarkers(), this.savePinEditsForMap(), this.refreshContext(), this.renderCategories(), this.renderFavorites(), this.renderDetail(), this.updateStatus(), this.updatePackageInfo(), this.persist(), this.requestDraw(), this.syncToolButtons(), this.toast(`已删除 ${t.name}`);
 	}
 	resetPinPosition(e) {
 		let t = this.markerById(e), n = this.pkg?.markers.find((t) => t.id === e);
@@ -43707,11 +43914,11 @@ var rH = `
 				cx: this.view.cx,
 				cy: this.view.cy,
 				zoom: this.view.zoom
-			}, _V(this.ctx, e, this.view);
+			}, OV(this.ctx, e, this.view);
 		}
 		let t = this.state.positionsByPackage ?? (this.state.positionsByPackage = {}), n = this.state.userPosition;
 		if (!n) {
-			delete t[e], hV(this.ctx, e);
+			delete t[e], EV(this.ctx, e);
 			return;
 		}
 		let r = {
@@ -43720,20 +43927,20 @@ var rH = `
 			atPlaceId: this.state.atPlaceId,
 			nearbyRadius: this.state.nearbyRadius
 		};
-		t[e] = r, hV(this.ctx, e, r);
+		t[e] = r, EV(this.ctx, e, r);
 	}
 	restoreUserPosition(e) {
-		let t = this.state.viewsByPackage?.[e] ?? gV(this.ctx, e);
+		let t = this.state.viewsByPackage?.[e] ?? DV(this.ctx, e);
 		t && (this.state.viewsByPackage ??= {}, this.state.viewsByPackage[e] = t, this.state.view = t, this.view = {
 			cx: t.cx,
 			cy: t.cy,
 			zoom: t.zoom
 		});
-		let n = this.state.positionsByPackage?.[e] ?? mV(this.ctx, e);
+		let n = this.state.positionsByPackage?.[e] ?? TV(this.ctx, e);
 		n ? (this.state.positionsByPackage ??= {}, this.state.positionsByPackage[e] = n, this.state.userPosition = {
 			x: n.x,
 			y: n.y
-		}, this.state.atPlaceId = n.atPlaceId, n.nearbyRadius != null && (this.state.nearbyRadius = n.nearbyRadius)) : (this.state.userPosition = void 0, this.state.atPlaceId = void 0, hV(this.ctx, e));
+		}, this.state.atPlaceId = n.atPlaceId, n.nearbyRadius != null && (this.state.nearbyRadius = n.nearbyRadius)) : (this.state.userPosition = void 0, this.state.atPlaceId = void 0, EV(this.ctx, e));
 	}
 	persist(e = !1) {
 		this.rememberUserPosition(), this.saveTimer !== void 0 && window.clearTimeout(this.saveTimer), this.state.view = this.view, e ? this.saveNow() : this.saveTimer = window.setTimeout(() => {
@@ -43741,7 +43948,7 @@ var rH = `
 		}, 250);
 	}
 	saveNow() {
-		this.state.view = this.view, this.rememberUserPosition(), bB(this.ctx, this.state);
+		this.state.view = this.view, this.rememberUserPosition(), jB(this.ctx, this.state);
 	}
 	onSearchInput() {
 		let e = this.searchEl.value.trim().toLowerCase();
@@ -43900,8 +44107,8 @@ var rH = `
 	async saveGridNow() {
 		let e = this.pkg;
 		if (!e?.grid) return;
-		let t = await Xz(e.id, { grid: { ...e.grid } }).catch((e) => {
-			this.toast(`保存网格失败：${GI(e)}`);
+		let t = await oB(e.id, { grid: { ...e.grid } }).catch((e) => {
+			this.toast(`保存网格失败：${ZI(e)}`);
 		});
 		t && this.pkg?.id === t.id && (this.pkg = {
 			...t,
@@ -43959,7 +44166,7 @@ var rH = `
 			this.imagePanelEl.style.top = `${Math.round(a)}px`;
 			return;
 		}
-		let t = this.headerImageButtonEl.getBoundingClientRect(), n = Math.min(FV, window.innerWidth - 16), r = Math.min(this.imagePanelEl.offsetHeight || 440, window.innerHeight - 16), i = Math.min(window.innerWidth - n - 8, Math.max(8, t.right - n)), a = t.bottom + 6;
+		let t = this.headerImageButtonEl.getBoundingClientRect(), n = Math.min(qV, window.innerWidth - 16), r = Math.min(this.imagePanelEl.offsetHeight || 440, window.innerHeight - 16), i = Math.min(window.innerWidth - n - 8, Math.max(8, t.right - n)), a = t.bottom + 6;
 		a + r > window.innerHeight - 8 && (a = Math.max(8, t.top - r - 6)), this.imagePanelEl.style.left = `${Math.round(i)}px`, this.imagePanelEl.style.top = `${Math.round(a)}px`, this.imagePanelEl.style.width = `${Math.round(n)}px`, this.imagePanelEl.style.right = "auto", this.imagePanelEl.style.bottom = "auto", this.imagePanelEl.style.maxHeight = "min(72vh, 620px)";
 	}
 	onImagePanelClick(e) {
@@ -44013,7 +44220,7 @@ var rH = `
 		let e = this.pkg;
 		if (this.imagePanelBodyEl.replaceChildren(), !e) return;
 		if (this.imageBusy) {
-			this.imagePanelBodyEl.append(aH("p", "tml-empty-small", "正在读取图片，请稍候…"));
+			this.imagePanelBodyEl.append(_H("p", "tml-empty-small", "正在读取图片，请稍候…"));
 			return;
 		}
 		if (e.kind === "tiles") {
@@ -44021,76 +44228,76 @@ var rH = `
 			return;
 		}
 		if (e.image) {
-			let t = aH("div", "tml-image-panel-preview");
+			let t = _H("div", "tml-image-panel-preview");
 			if (this.imageUrl) {
 				let n = document.createElement("img");
 				n.src = this.imageUrl, n.alt = e.imageName || "当前底图", t.append(n);
 			}
 			let n = document.createElement("button");
 			n.type = "button", n.className = "tml-mini tml-image-view", n.dataset.imageAction = "view", n.textContent = "查看大图", t.append(n), this.imagePanelBodyEl.append(t);
-			let r = aH("strong", "tml-image-panel-name", e.imageName || "当前底图");
+			let r = _H("strong", "tml-image-panel-name", e.imageName || "当前底图");
 			r.title = e.imageName || "", this.imagePanelBodyEl.append(r);
 			let i = [
-				e.imageWidth && e.imageHeight ? `${cL(e.imageWidth)}×${cL(e.imageHeight)}` : "",
-				sL(e.image.size),
-				iL(e.imageSource),
-				rL(e.imageFit)
+				e.imageWidth && e.imageHeight ? `${mL(e.imageWidth)}×${mL(e.imageHeight)}` : "",
+				pL(e.image.size),
+				uL(e.imageSource),
+				lL(e.imageFit)
 			].filter(Boolean);
-			this.imagePanelBodyEl.append(aH("span", "tml-image-meta", i.join(" · ")));
-			let a = aL(e);
-			a && this.imagePanelBodyEl.append(aH("p", "tml-hint", a));
-			let o = aH("label", "tml-image-fit-row");
-			o.append(aH("span", void 0, "显示"));
+			this.imagePanelBodyEl.append(_H("span", "tml-image-meta", i.join(" · ")));
+			let a = dL(e);
+			a && this.imagePanelBodyEl.append(_H("p", "tml-hint", a));
+			let o = _H("label", "tml-image-fit-row");
+			o.append(_H("span", void 0, "显示"));
 			let s = document.createElement("select");
 			s.dataset.imageAction = "fit", s.className = "tml-select", s.append(new Option("铺满地图", "stretch"), new Option("保持比例", "contain")), e.imageFit === "custom" && s.append(new Option("手动对齐", "custom")), s.value = e.imageFit ?? "stretch", o.append(s), this.imagePanelBodyEl.append(o);
-			let c = aH("div", "tml-image-panel-actions"), l = aH("button", "tml-btn", "更换底图");
+			let c = _H("div", "tml-image-panel-actions"), l = _H("button", "tml-btn", "更换底图");
 			l.type = "button", l.dataset.imageAction = "replace";
-			let u = aH("button", "tml-btn tml-danger-text", "移除底图");
+			let u = _H("button", "tml-btn tml-danger-text", "移除底图");
 			if (u.type = "button", u.dataset.imageAction = "remove", c.append(l, u), this.effectiveMarkerList.length > 0) {
-				let e = aH("button", "tml-btn", "对齐底图");
+				let e = _H("button", "tml-btn", "对齐底图");
 				e.type = "button", e.dataset.imageAction = "align", c.append(e);
 			}
 			if (this.imagePanelBodyEl.append(c), this.imageRemovePending) {
-				let e = aH("div", "tml-image-confirm");
-				e.append(aH("span", void 0, "移除底图后，地点、链接和笔记都会保留，之后可以再补。"));
-				let t = aH("div", "tml-image-panel-actions"), n = aH("button", "tml-mini tml-danger-text", "确认移除");
+				let e = _H("div", "tml-image-confirm");
+				e.append(_H("span", void 0, "移除底图后，地点、链接和笔记都会保留，之后可以再补。"));
+				let t = _H("div", "tml-image-panel-actions"), n = _H("button", "tml-mini tml-danger-text", "确认移除");
 				n.type = "button", n.dataset.imageAction = "remove-confirm";
-				let r = aH("button", "tml-mini", "取消");
+				let r = _H("button", "tml-mini", "取消");
 				r.type = "button", r.dataset.imageAction = "remove-cancel", t.append(n, r), e.append(t), this.imagePanelBodyEl.append(e);
 			}
 			if (this.imagePageUrl(e)) {
-				let t = aH("button", "tml-link-inline", e.imageSource === "fandom-url" || e.attribution?.includes("Fandom 页面") ? "打开 Fandom 图片页" : "打开源数据图片页");
+				let t = _H("button", "tml-link-inline", e.imageSource === "fandom-url" || e.attribution?.includes("Fandom 页面") ? "打开 Fandom 图片页" : "打开源数据图片页");
 				t.type = "button", t.dataset.imageAction = "open-source", this.imagePanelBodyEl.append(t);
 			}
-			this.imagePanelBodyEl.append(aH("p", "tml-hint", "底图只保存在本机，不会上传；换图不会改动地点、笔记或链接。"));
+			this.imagePanelBodyEl.append(_H("p", "tml-hint", "底图只保存在本机，不会上传；换图不会改动地点、笔记或链接。"));
 			return;
 		}
-		let t = aH("div", "tml-image-panel-empty");
-		t.append(aH("strong", void 0, "这张地图还没有底图"), aH("p", void 0, "选一张本地图片，或继续只用点位浏览。"));
-		let n = aH("div", "tml-image-panel-actions"), r = aH("button", "tml-btn tml-primary", "选择底图");
+		let t = _H("div", "tml-image-panel-empty");
+		t.append(_H("strong", void 0, "这张地图还没有底图"), _H("p", void 0, "选一张本地图片，或继续只用点位浏览。"));
+		let n = _H("div", "tml-image-panel-actions"), r = _H("button", "tml-btn tml-primary", "选择底图");
 		if (r.type = "button", r.dataset.imageAction = "replace", n.append(r), t.append(n), this.imagePanelBodyEl.append(t), this.imagePageUrl(e)) {
-			let t = aH("button", "tml-link-inline", e.imageSource === "fandom-url" || e.attribution?.includes("Fandom 页面") ? "打开 Fandom 图片页" : "打开源数据图片页");
+			let t = _H("button", "tml-link-inline", e.imageSource === "fandom-url" || e.attribution?.includes("Fandom 页面") ? "打开 Fandom 图片页" : "打开源数据图片页");
 			t.type = "button", t.dataset.imageAction = "open-source", this.imagePanelBodyEl.append(t);
 		}
 	}
 	renderTilePanel(e) {
-		let t = e.tile, n = Object.keys(e.tileFiles ?? {}).length, r = aH("div", "tml-image-panel-tiles");
-		r.append(aH("strong", void 0, t?.setName || "瓦片底图"), aH("span", "tml-image-meta", n > 0 ? `${cL(n)} 张瓦片 · 层级 ${t?.coverageMinZoom ?? t?.minZoom ?? "—"}–${t?.coverageMaxZoom ?? t?.maxZoom ?? "—"}${t?.missingCount ? ` · 缺 ${cL(t.missingCount)} 张` : ""}` : "还没有关联瓦片")), this.imagePanelBodyEl.append(r);
-		let i = aH("div", "tml-image-panel-actions"), a = aH("button", "tml-btn tml-primary", "重新选择瓦片文件夹");
+		let t = e.tile, n = Object.keys(e.tileFiles ?? {}).length, r = _H("div", "tml-image-panel-tiles");
+		r.append(_H("strong", void 0, t?.setName || "瓦片底图"), _H("span", "tml-image-meta", n > 0 ? `${mL(n)} 张瓦片 · 层级 ${t?.coverageMinZoom ?? t?.minZoom ?? "—"}–${t?.coverageMaxZoom ?? t?.maxZoom ?? "—"}${t?.missingCount ? ` · 缺 ${mL(t.missingCount)} 张` : ""}` : "还没有关联瓦片")), this.imagePanelBodyEl.append(r);
+		let i = _H("div", "tml-image-panel-actions"), a = _H("button", "tml-btn tml-primary", "重新选择瓦片文件夹");
 		if (a.type = "button", a.dataset.imageAction = "replace-tiles", i.append(a), this.imagePanelBodyEl.append(i), t) {
-			let e = aH("label", "tml-field");
-			e.append(aH("span", void 0, "瓦片 URL 模板（本地瓦片可留空）"));
+			let e = _H("label", "tml-field");
+			e.append(_H("span", void 0, "瓦片 URL 模板（本地瓦片可留空）"));
 			let n = document.createElement("input");
-			n.type = "text", n.value = t.template, n.placeholder = "http://127.0.0.1:8000/{z}/{y}/{x}.jpg", n.dataset.imageAction = "tile-template", e.append(n), this.imagePanelBodyEl.append(e), t.setCount && t.setCount > 1 && this.imagePanelBodyEl.append(aH("p", "tml-hint", `这个地图包有 ${t.setCount} 个瓦片组，当前使用「${t.setName || "默认"}」。需要其他组时重新导入并在高级选项里选择。`));
+			n.type = "text", n.value = t.template, n.placeholder = "http://127.0.0.1:8000/{z}/{y}/{x}.jpg", n.dataset.imageAction = "tile-template", e.append(n), this.imagePanelBodyEl.append(e), t.setCount && t.setCount > 1 && this.imagePanelBodyEl.append(_H("p", "tml-hint", `这个地图包有 ${t.setCount} 个瓦片组，当前使用「${t.setName || "默认"}」。需要其他组时重新导入并在高级选项里选择。`));
 		}
-		this.imagePanelBodyEl.append(aH("p", "tml-hint", "瓦片只保存在本机，不会请求 Map Genie 线上数据。"));
+		this.imagePanelBodyEl.append(_H("p", "tml-hint", "瓦片只保存在本机，不会请求 Map Genie 线上数据。"));
 	}
 	async replaceImage(e) {
 		let t = this.pkg;
 		if (t && !this.imageBusy) {
 			this.imageBusy = !0, this.renderImagePanel();
 			try {
-				let n = await $I(e, e.name), r = await eL(e), i = t.kind === "image" && t.markers.length === 0 && t.source === "manual", a = await Qz(t.id, {
+				let n = await aL(e, e.name), r = await oL(e), i = t.kind === "image" && t.markers.length === 0 && t.source === "manual", a = await cB(t.id, {
 					image: e,
 					imageType: e.type,
 					imageName: e.name,
@@ -44107,7 +44314,7 @@ var rH = `
 				});
 				a && (this.pkg = a, this.imageBusy = !1, this.updatePackageInfo(), this.loadImage(a), this.syncHeaderImage(), this.renderImagePanel(), await this.refreshPackages(), this.toast("底图已更换，地点和笔记没有变化"));
 			} catch (e) {
-				this.imageBusy = !1, this.renderImagePanel(), this.toast(`更换底图失败：${GI(e)}`);
+				this.imageBusy = !1, this.renderImagePanel(), this.toast(`更换底图失败：${ZI(e)}`);
 			}
 		}
 	}
@@ -44130,7 +44337,7 @@ var rH = `
 		if (t.image) {
 			this.imageBusy = !0, this.renderImagePanel();
 			try {
-				let n = await $z(e.id);
+				let n = await lB(e.id);
 				n && (this.lastRemovedImage = {
 					pkgId: e.id,
 					image: t.image,
@@ -44149,7 +44356,7 @@ var rH = `
 					onClick: () => void this.undoRemoveImage()
 				}));
 			} catch (e) {
-				this.imageBusy = !1, this.renderImagePanel(), this.toast(`移除底图失败：${GI(e)}`);
+				this.imageBusy = !1, this.renderImagePanel(), this.toast(`移除底图失败：${ZI(e)}`);
 			}
 		}
 	}
@@ -44160,7 +44367,7 @@ var rH = `
 			this.lastRemovedImage = null, this.toast("已经切换到另一个地图包，不能撤销上一次移除");
 			return;
 		}
-		let n = await Qz(e.id, {
+		let n = await cB(e.id, {
 			image: t.image,
 			imageType: t.type,
 			imageName: t.name,
@@ -44174,7 +44381,7 @@ var rH = `
 			thumbnail: t.thumbnail,
 			imageLocked: !0
 		}).catch((e) => {
-			this.toast(`撤销失败：${GI(e)}`);
+			this.toast(`撤销失败：${ZI(e)}`);
 		});
 		n && (this.lastRemovedImage = null, this.pkg = n, this.updatePackageInfo(), this.loadImage(n), this.syncHeaderImage(), this.renderImagePanel(), await this.refreshPackages(), this.toast("底图已恢复"));
 	}
@@ -44185,14 +44392,14 @@ var rH = `
 			this.startAlign();
 			return;
 		}
-		let n = await eB(t.id, e).catch((e) => {
-			this.toast(`保存显示方式失败：${GI(e)}`);
+		let n = await uB(t.id, e).catch((e) => {
+			this.toast(`保存显示方式失败：${ZI(e)}`);
 		});
 		n && (this.pkg = n, this.renderImagePanel(), this.requestDraw());
 	}
 	startAlign() {
 		let e = this.pkg;
-		!e?.image || e.kind !== "image" ? this.toast("这张地图没有图片底图，无法对齐") : this.image ? e.markers.length === 0 ? this.toast("这张底图还没有地点数据；先关联 JSON 再对齐") : (this.closeImagePanel(), this.imageRemovePending = !1, this.alignRect = { ...nL(e) }, this.alignStartRect = null, this.alignStartPointer = null, this.alignDrag = !1, this.aligning = !0, this.alignBarEl.hidden = !1, this.panelEl.classList.add("tml-aligning"), this.canvasEl.style.cursor = "move", this.requestDraw()) : this.toast("底图还在加载，请稍候再对齐");
+		!e?.image || e.kind !== "image" ? this.toast("这张地图没有图片底图，无法对齐") : this.image ? e.markers.length === 0 ? this.toast("这张底图还没有地点数据；先关联 JSON 再对齐") : (this.closeImagePanel(), this.imageRemovePending = !1, this.alignRect = { ...cL(e) }, this.alignStartRect = null, this.alignStartPointer = null, this.alignDrag = !1, this.aligning = !0, this.alignBarEl.hidden = !1, this.panelEl.classList.add("tml-aligning"), this.canvasEl.style.cursor = "move", this.requestDraw()) : this.toast("底图还在加载，请稍候再对齐");
 	}
 	resetAlign() {
 		this.aligning && (this.alignRect = {
@@ -44208,16 +44415,16 @@ var rH = `
 	async finishAlign() {
 		let e = this.pkg;
 		if (!e || !this.alignRect) return;
-		let t = lL(this.alignRect), n = await eB(e.id, "custom", t).catch((e) => {
-			this.toast(`保存对齐失败：${GI(e)}`);
+		let t = hL(this.alignRect), n = await uB(e.id, "custom", t).catch((e) => {
+			this.toast(`保存对齐失败：${ZI(e)}`);
 		});
 		n && (this.pkg = n, this.aligning = !1, this.alignDrag = !1, this.alignStartPointer = null, this.alignStartRect = null, this.alignRect = null, this.alignBarEl.hidden = !0, this.panelEl.classList.remove("tml-aligning"), this.canvasEl.style.cursor = "grab", this.syncHeaderImage(), this.requestDraw(), this.toast("底图对齐已保存"));
 	}
 	zoomAlign(e, t, n) {
 		let r = this.pkg;
 		if (!r || !this.alignRect) return;
-		let i = this.canvasEl.clientWidth || 1, a = this.canvasEl.clientHeight || 1, o = Math.min(i / r.width, a / r.height) * wV * this.view.zoom, s = this.view.cx + (e - i / 2) / (r.width * o), c = this.view.cy + (t - a / 2) / (r.height * o), l = this.alignRect, u = (s - l.x) / l.w, d = (c - l.y) / l.h, f = Math.min(6, Math.max(.05, l.w * n)), p = Math.min(6, Math.max(.05, l.h * (f / l.w)));
-		this.alignRect = lL({
+		let i = this.canvasEl.clientWidth || 1, a = this.canvasEl.clientHeight || 1, o = Math.min(i / r.width, a / r.height) * FV * this.view.zoom, s = this.view.cx + (e - i / 2) / (r.width * o), c = this.view.cy + (t - a / 2) / (r.height * o), l = this.alignRect, u = (s - l.x) / l.w, d = (c - l.y) / l.h, f = Math.min(6, Math.max(.05, l.w * n)), p = Math.min(6, Math.max(.05, l.h * (f / l.w)));
+		this.alignRect = hL({
 			x: s - u * f,
 			y: c - d * p,
 			w: f,
@@ -44257,7 +44464,7 @@ var rH = `
 		else {
 			this.imageBusy = !0, this.renderImagePanel();
 			try {
-				let r = JR(kR(e, t.name).files, n, t.tile?.setCount ?? 1);
+				let r = iz(zR(e, t.name).files, n, t.tile?.setCount ?? 1);
 				if (!r.tileFiles || Object.keys(r.tileFiles).length === 0) throw Error("这个文件夹里没有找到 z/x/y 结构的瓦片");
 				let i = {
 					...t.tile,
@@ -44266,10 +44473,10 @@ var rH = `
 					coverageMaxZoom: r.stats?.maxZoom,
 					expectedCount: r.stats?.expected,
 					missingCount: r.stats?.missing
-				}, a = await tB(t.id, r.tileFiles, i);
+				}, a = await dB(t.id, r.tileFiles, i);
 				a && (this.pkg = a, this.imageBusy = !1, this.updatePackageInfo(), this.clearTileCaches(), this.renderImagePanel(), this.syncHeaderImage(), await this.refreshPackages(), this.requestDraw(), this.toast(`已关联 ${Object.keys(r.tileFiles).length.toLocaleString("zh-CN")} 张瓦片`));
 			} catch (e) {
-				this.imageBusy = !1, this.renderImagePanel(), this.toast(`关联瓦片失败：${GI(e)}`);
+				this.imageBusy = !1, this.renderImagePanel(), this.toast(`关联瓦片失败：${ZI(e)}`);
 			}
 		}
 	}
@@ -44280,11 +44487,11 @@ var rH = `
 			this.toast("瓦片模板必须同时包含 {z}、{x}、{y}"), this.renderImagePanel();
 			return;
 		}
-		let n = await Xz(t.id, { tile: {
+		let n = await oB(t.id, { tile: {
 			...t.tile,
 			template: e
 		} }).catch((e) => {
-			this.toast(`保存瓦片模板失败：${GI(e)}`);
+			this.toast(`保存瓦片模板失败：${ZI(e)}`);
 		});
 		n && (this.pkg = n, this.updatePackageInfo(), this.requestDraw(), this.toast("瓦片 URL 模板已保存"));
 	}
@@ -44307,15 +44514,15 @@ var rH = `
 		uI(), this.maplibreMap?.remove(), this.maplibreMap = null, this.maplibreReady = null, this.windowController?.dispose(), this.importUI?.dispose(), this.packagesUI?.dispose(), this.offs.forEach((e) => e()), this.offs.length = 0, this.saveTimer !== void 0 && window.clearTimeout(this.saveTimer), this.resizeObserver && this.resizeObserver.disconnect(), this.drawFrame && window.cancelAnimationFrame(this.drawFrame), this.imageUrl && URL.revokeObjectURL(this.imageUrl), this.headerImageUrl && URL.revokeObjectURL(this.headerImageUrl), this.lightboxUrl && URL.revokeObjectURL(this.lightboxUrl), this.clearTileCaches(), this.panelEl?.remove(), this.imagePanelEl?.remove(), this.lightboxEl?.remove(), this.contextModalEl?.remove();
 	}
 };
-function aH(e, t, n) {
+function _H(e, t, n) {
 	let r = document.createElement(e);
 	return t && (r.className = t), n != null && (r.textContent = n), r;
 }
-function oH(e, t, n) {
+function vH(e, t, n) {
 	let r = document.createElement(e);
 	return r.className = t, r.textContent = n, r;
 }
-function sH(e, t, n) {
+function yH(e, t, n) {
 	let r = !1;
 	for (let i = 0, a = n.length - 1; i < n.length; a = i, i += 1) {
 		let [o, s] = n[i], [c, l] = n[a];
@@ -44323,7 +44530,7 @@ function sH(e, t, n) {
 	}
 	return r;
 }
-var cH = [
+var bH = [
 	"#e6b56a",
 	"#78c6c0",
 	"#e78282",
@@ -44346,36 +44553,36 @@ var cH = [
 	"#e57373"
 ];
 // src/providers.ts
-async function lH(e, t) {
+async function xH(e, t) {
 	if (!e || t == null) return;
 	let n = e === "N" ? "node" : e === "W" ? "way" : e === "R" ? "relation" : void 0;
 	if (n) try {
-		let e = (await HI(`https://api.openstreetmap.org/api/0.6/${n}/${t}.json`, void 0, 3e3)).elements?.[0]?.tags;
+		let e = (await JI(`https://api.openstreetmap.org/api/0.6/${n}/${t}.json`, void 0, 3e3)).elements?.[0]?.tags;
 		return e?.["name:zh"] || e?.["name:zh-Hans"] || e?.["name:zh-Hant"];
 	} catch (e) {
 		console.warn("[tavern-map] OSM name:zh lookup failed", e);
 		return;
 	}
 }
-var uH = /* @__PURE__ */ new Map();
-async function dH(e, t) {
+var SH = /* @__PURE__ */ new Map();
+async function CH(e, t) {
 	let n = `${e.toFixed(5)},${t.toFixed(5)}`;
-	if (uH.has(n)) return uH.get(n);
+	if (SH.has(n)) return SH.get(n);
 	try {
 		let r = new URL("https://photon.komoot.io/reverse");
 		r.searchParams.set("lat", e.toFixed(6)), r.searchParams.set("lon", t.toFixed(6)), r.searchParams.set("lang", "en");
-		let i = (await HI(r, void 0, 6e3)).features?.[0]?.properties, a = i?.type === "street" ? i.name?.trim() || void 0 : i?.street?.trim() || void 0;
-		return a && uH.set(n, a), a;
+		let i = (await JI(r, void 0, 6e3)).features?.[0]?.properties, a = i?.type === "street" ? i.name?.trim() || void 0 : i?.street?.trim() || void 0;
+		return a && SH.set(n, a), a;
 	} catch (e) {
 		console.warn("[tavern-map] reverse street lookup failed", e);
 		return;
 	}
 }
-async function fH(e, t) {
+async function wH(e, t) {
 	try {
 		let n = new URL("https://photon.komoot.io/reverse");
 		n.searchParams.set("lat", e.toFixed(6)), n.searchParams.set("lon", t.toFixed(6)), n.searchParams.set("lang", "en");
-		let r = (await HI(n)).features?.[0];
+		let r = (await JI(n)).features?.[0];
 		if (r?.properties) {
 			let n = r.properties, i = [
 				n.street,
@@ -44384,7 +44591,7 @@ async function fH(e, t) {
 				n.city,
 				n.state,
 				n.country
-			].filter(Boolean).join(", "), a = n.name || n.street || n.city || "Unknown place", o = await lH(n.osm_type, n.osm_id);
+			].filter(Boolean).join(", "), a = n.name || n.street || n.city || "Unknown place", o = await xH(n.osm_type, n.osm_id);
 			return {
 				id: `osm:${n.osm_type ?? "?"}/${n.osm_id ?? "?"}`,
 				name: a,
@@ -44398,13 +44605,13 @@ async function fH(e, t) {
 	} catch (e) {
 		console.warn("[tavern-map] Photon reverse failed, falling back", e);
 	}
-	return pH(e, t);
+	return TH(e, t);
 }
-async function pH(e, t) {
+async function TH(e, t) {
 	try {
 		let n = new URL("https://api.bigdatacloud.net/data/reverse-geocode-client");
 		n.searchParams.set("latitude", String(e)), n.searchParams.set("longitude", String(t)), n.searchParams.set("localityLanguage", "en");
-		let r = await HI(n), i = [
+		let r = await JI(n), i = [
 			r.locality,
 			r.city,
 			r.principalSubdivision,
@@ -44426,53 +44633,53 @@ async function pH(e, t) {
 		};
 	}
 }
-var mH = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], hH = 250, gH = 3e5, _H = /* @__PURE__ */ new Map();
-async function vH(e, t, n) {
-	let r = Math.round(Math.min(1e3, Math.max(25, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = _H.get(i);
-	if (a && Date.now() - a.at < gH) return a.places;
-	let o = `[out:json][timeout:20];(node(around:${r},${e},${t})[name];way(around:${r},${e},${t})[name];);out center 40;`, s = mH.map(async (n) => {
+var EH = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], DH = 250, OH = 3e5, kH = /* @__PURE__ */ new Map();
+async function AH(e, t, n) {
+	let r = Math.round(Math.min(1e3, Math.max(25, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = kH.get(i);
+	if (a && Date.now() - a.at < OH) return a.places;
+	let o = `[out:json][timeout:20];(node(around:${r},${e},${t})[name];way(around:${r},${e},${t})[name];);out center 40;`, s = EH.map(async (n) => {
 		try {
-			let a = await HI(n, {
+			let a = await JI(n, {
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({ data: o })
 			}, 1e4);
-			return yH(i, SH(a, e, t, r).slice(0, 12));
+			return jH(i, PH(a, e, t, r).slice(0, 12));
 		} catch (e) {
-			throw console.warn(`[tavern-map] Overpass ${n} failed`, GI(e)), e;
+			throw console.warn(`[tavern-map] Overpass ${n} failed`, ZI(e)), e;
 		}
 	}), c, l = new Promise((n, i) => {
 		c = window.setTimeout(() => {
-			bH(e, t, r).then((e) => {
+			MH(e, t, r).then((e) => {
 				console.warn("[tavern-map] OSM API fallback used"), n(e);
 			}, (e) => {
-				console.warn("[tavern-map] OSM API fallback failed", GI(e)), i(e);
+				console.warn("[tavern-map] OSM API fallback failed", ZI(e)), i(e);
 			});
 		}, 1200);
 	});
 	try {
 		let e = await Promise.any([Promise.any(s), l]);
-		return c !== void 0 && window.clearTimeout(c), yH(i, e);
+		return c !== void 0 && window.clearTimeout(c), jH(i, e);
 	} catch (e) {
-		throw c !== void 0 && window.clearTimeout(c), Error(`周边数据源暂时不可用（${GI(e)}）`);
+		throw c !== void 0 && window.clearTimeout(c), Error(`周边数据源暂时不可用（${ZI(e)}）`);
 	}
 }
-function yH(e, t) {
-	return _H.set(e, {
+function jH(e, t) {
+	return kH.set(e, {
 		at: Date.now(),
 		places: t
 	}), t;
 }
-async function bH(e, t, n) {
-	let r = Math.min(hH, Math.max(25, n)), i = r / 111320, a = r / (111320 * Math.max(.2, Math.cos(e * Math.PI / 180)));
-	return xH(await UI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
+async function MH(e, t, n) {
+	let r = Math.min(DH, Math.max(25, n)), i = r / 111320, a = r / (111320 * Math.max(.2, Math.cos(e * Math.PI / 180)));
+	return NH(await YI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
 		t - a,
 		e - i,
 		t + a,
 		e + i
 	].map((e) => e.toFixed(7)).join(",")}`, { headers: { Accept: "application/xml" } }, 25e3), e, t, r).slice(0, 12);
 }
-function xH(e, t, n, r) {
+function NH(e, t, n, r) {
 	let i = new DOMParser().parseFromString(e, "application/xml");
 	if (i.getElementsByTagName("parsererror").length > 0) throw Error("OSM XML 解析失败");
 	let a = /* @__PURE__ */ new Map();
@@ -44481,12 +44688,12 @@ function xH(e, t, n, r) {
 		t && Number.isFinite(n) && Number.isFinite(r) && a.set(t, {
 			lat: n,
 			lng: r,
-			tags: TH(e)
+			tags: LH(e)
 		});
 	}
 	let o = [];
 	for (let [e, i] of a) {
-		let a = CH(`node/${e}`, i.tags, i.lat, i.lng, t, n, r);
+		let a = FH(`node/${e}`, i.tags, i.lat, i.lng, t, n, r);
 		a && o.push(a);
 	}
 	for (let e of Array.from(i.getElementsByTagName("way"))) {
@@ -44498,25 +44705,25 @@ function xH(e, t, n, r) {
 			e && (s += e.lat, c += e.lng, l += 1);
 		}
 		if (l === 0) continue;
-		let u = CH(`way/${i}`, TH(e), s / l, c / l, t, n, r);
+		let u = FH(`way/${i}`, LH(e), s / l, c / l, t, n, r);
 		u && o.push(u);
 	}
-	return EH(o);
+	return RH(o);
 }
-function SH(e, t, n, r) {
+function PH(e, t, n, r) {
 	let i = [];
 	for (let a of e.elements ?? []) {
 		let e = a.center ?? a;
 		if (typeof e.lat != "number" || typeof e.lon != "number") continue;
-		let o = CH(`${a.type}/${a.id}`, a.tags ?? {}, e.lat, e.lon, t, n, r);
+		let o = FH(`${a.type}/${a.id}`, a.tags ?? {}, e.lat, e.lon, t, n, r);
 		o && i.push(o);
 	}
-	return EH(i);
+	return RH(i);
 }
-function CH(e, t, n, r, i, a, o) {
+function FH(e, t, n, r, i, a, o) {
 	let s = t["name:en"] || t.name;
 	if (!s) return;
-	let c = wH(t);
+	let c = IH(t);
 	if (!c) return;
 	let l = bI(i, a, n, r);
 	if (l > o) return;
@@ -44536,12 +44743,12 @@ function CH(e, t, n, r, i, a, o) {
 		cuisine: t.cuisine
 	};
 }
-function wH(e) {
+function IH(e) {
 	let t = e.tourism || e.historic || e.amenity || e.shop || e.leisure || e.office || e.place;
 	if (t) return t;
 	if (e.railway === "station" || e.railway === "halt") return "station";
 }
-function TH(e) {
+function LH(e) {
 	let t = {};
 	for (let n of Array.from(e.getElementsByTagName("tag"))) {
 		let e = n.getAttribute("k"), r = n.getAttribute("v");
@@ -44549,7 +44756,7 @@ function TH(e) {
 	}
 	return t;
 }
-function EH(e) {
+function RH(e) {
 	let t = /* @__PURE__ */ new Set();
 	return e.sort((e, t) => (e.distanceM ?? 0) - (t.distanceM ?? 0)).filter((e) => {
 		let n = `${e.name}|${e.lat.toFixed(3)}|${e.lng.toFixed(3)}`;
@@ -44557,8 +44764,8 @@ function EH(e) {
 	});
 }
 // src/poi.ts
-var DH = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], OH = 500, kH = 3e5, AH = /* @__PURE__ */ new Map();
-function jH(e) {
+var zH = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"], BH = 500, VH = 3e5, HH = /* @__PURE__ */ new Map();
+function UH(e) {
 	let t = e.amenity, n = e.shop, r = e.tourism, i = e.historic, a = e.leisure, o = e.railway, s = e.public_transport;
 	return [
 		"restaurant",
@@ -44599,11 +44806,11 @@ function jH(e) {
 		"place_of_worship"
 	].includes(t) || e.office || e.place ? "service" : "other";
 }
-function MH(e, t, n) {
+function WH(e, t, n) {
 	let r = e.center ?? e;
-	return typeof r.lat != "number" || typeof r.lon != "number" ? null : NH(`${e.type}/${e.id}`, e.tags ?? {}, r.lat, r.lon, t, n);
+	return typeof r.lat != "number" || typeof r.lon != "number" ? null : GH(`${e.type}/${e.id}`, e.tags ?? {}, r.lat, r.lon, t, n);
 }
-function NH(e, t, n, r, i, a) {
+function GH(e, t, n, r, i, a) {
 	let o = t["name:en"] || t.name;
 	if (!o) return null;
 	let s = t.tourism || t.historic || t.amenity || t.shop || t.leisure || t.office || t.place || t.railway;
@@ -44618,14 +44825,14 @@ function NH(e, t, n, r, i, a) {
 		lat: n,
 		lng: r,
 		distanceM: bI(i, a, n, r),
-		group: jH(t),
+		group: UH(t),
 		tags: t,
 		openingHours: t.opening_hours,
 		website: t.website || t["contact:website"],
 		cuisine: t.cuisine
 	};
 }
-function PH(e) {
+function KH(e) {
 	let t = (e ?? "").toLowerCase();
 	return [
 		"restaurant",
@@ -44670,14 +44877,14 @@ function PH(e) {
 		"marketplace"
 	].includes(t) ? "shopping" : "service";
 }
-function FH(e) {
+function qH(e) {
 	let t = /* @__PURE__ */ new Set();
 	return e.sort((e, t) => (e.distanceM ?? 0) - (t.distanceM ?? 0)).filter((e) => {
 		let n = `${e.name}|${e.lat.toFixed(3)}|${e.lng.toFixed(3)}`;
 		return !t.has(n) && (t.add(n), !0);
 	});
 }
-function IH(e) {
+function JH(e) {
 	let t = {};
 	for (let n of Array.from(e.getElementsByTagName("tag"))) {
 		let e = n.getAttribute("k"), r = n.getAttribute("v");
@@ -44685,8 +44892,8 @@ function IH(e) {
 	}
 	return t;
 }
-async function LH(e, t, n) {
-	let r = Math.min(250, Math.max(25, n)), i = r / 111320, a = r / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), o = await UI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
+async function YH(e, t, n) {
+	let r = Math.min(250, Math.max(25, n)), i = r / 111320, a = r / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), o = await YI(`https://api.openstreetmap.org/api/0.6/map?bbox=${[
 		t - a,
 		e - i,
 		t + a,
@@ -44699,12 +44906,12 @@ async function LH(e, t, n) {
 		t && Number.isFinite(n) && Number.isFinite(r) && c.set(t, {
 			lat: n,
 			lng: r,
-			tags: IH(e)
+			tags: JH(e)
 		});
 	}
 	let l = [];
 	for (let [n, r] of c) {
-		let i = NH(`node/${n}`, r.tags, r.lat, r.lng, e, t);
+		let i = GH(`node/${n}`, r.tags, r.lat, r.lng, e, t);
 		i && l.push(i);
 	}
 	for (let n of Array.from(s.getElementsByTagName("way"))) {
@@ -44716,14 +44923,14 @@ async function LH(e, t, n) {
 			t && (i += t.lat, a += t.lng, o += 1);
 		}
 		if (o === 0) continue;
-		let s = NH(`way/${r}`, IH(n), i / o, a / o, e, t);
+		let s = GH(`way/${r}`, JH(n), i / o, a / o, e, t);
 		s && l.push(s);
 	}
-	return FH(l).slice(0, OH);
+	return qH(l).slice(0, BH);
 }
-async function RH(e, t, n) {
-	let r = Math.round(Math.min(1e3, Math.max(25, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = AH.get(i);
-	if (a && Date.now() - a.at < kH) return a.pois;
+async function XH(e, t, n) {
+	let r = Math.round(Math.min(1e3, Math.max(25, n))), i = `${e.toFixed(4)},${t.toFixed(4)},${r}`, a = HH.get(i);
+	if (a && Date.now() - a.at < VH) return a.pois;
 	let o = `around:${r},${e},${t}`, s = `[out:json][timeout:20];(
     nwr(${o})[name][tourism];
     nwr(${o})[name][historic];
@@ -44734,46 +44941,46 @@ async function RH(e, t, n) {
     nwr(${o})[name][place];
     nwr(${o})[name][railway];
     nwr(${o})[name][public_transport];
-  );out center ${OH};`, c = Promise.any(DH.map(async (n) => {
+  );out center ${BH};`, c = Promise.any(zH.map(async (n) => {
 		try {
-			let r = FH(((await HI(n, {
+			let r = qH(((await JI(n, {
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({ data: s })
-			}, 1e4)).elements ?? []).map((n) => MH(n, e, t)).filter((e) => !!e)).slice(0, OH);
+			}, 1e4)).elements ?? []).map((n) => WH(n, e, t)).filter((e) => !!e)).slice(0, BH);
 			if (r.length === 0) throw Error("Overpass 返回空结果");
 			return r;
 		} catch (e) {
-			throw console.warn("[tavern-map] POI Overpass failed", n, GI(e)), e;
+			throw console.warn("[tavern-map] POI Overpass failed", n, ZI(e)), e;
 		}
 	})), l, u = new Promise((n, i) => {
 		l = window.setTimeout(() => {
-			LH(e, t, r).then((e) => {
+			YH(e, t, r).then((e) => {
 				e.length === 0 ? i(/* @__PURE__ */ Error("OSM API 返回空结果")) : (console.warn("[tavern-map] POI OSM API fallback used"), n(e));
 			}, (e) => {
-				console.warn("[tavern-map] POI OSM API fallback failed", GI(e)), i(e);
+				console.warn("[tavern-map] POI OSM API fallback failed", ZI(e)), i(e);
 			});
 		}, 1500);
 	});
 	try {
 		let e = await Promise.any([c, u]);
-		return l !== void 0 && window.clearTimeout(l), AH.set(i, {
+		return l !== void 0 && window.clearTimeout(l), HH.set(i, {
 			at: Date.now(),
 			pois: e
 		}), e;
 	} catch (e) {
-		l !== void 0 && window.clearTimeout(l), console.warn("[tavern-map] POI sources exhausted", GI(e));
+		l !== void 0 && window.clearTimeout(l), console.warn("[tavern-map] POI sources exhausted", ZI(e));
 	}
-	let d = (await vH(e, t, r)).slice(0, 24).map((e) => ({
+	let d = (await AH(e, t, r)).slice(0, 24).map((e) => ({
 		...e,
-		group: PH(e.category)
+		group: KH(e.category)
 	}));
-	return AH.set(i, {
+	return HH.set(i, {
 		at: Date.now(),
 		pois: d
 	}), d;
 }
-function zH(e, t = 900, n = 18) {
+function ZH(e, t = 900, n = 18) {
 	if (e.length === 0) return [];
 	let r = [], i = e[0];
 	r.push({
@@ -44794,15 +45001,15 @@ function zH(e, t = 900, n = 18) {
 		lng: o[0]
 	}), r.slice(0, n);
 }
-async function BH(e, t = 100) {
-	let n = Math.max(25, Math.min(500, t)), r = zH(e);
+async function QH(e, t = 100) {
+	let n = Math.max(25, Math.min(500, t)), r = ZH(e);
 	if (r.length === 0) return [];
-	let i = `[out:json][timeout:20];\n(\n${r.map((e) => `nwr(around:${n},${e.lat.toFixed(6)},${e.lng.toFixed(6)})[name];`).join("\n")}\n);\nout center 300;`, a = (e) => HI(e, {
+	let i = `[out:json][timeout:20];\n(\n${r.map((e) => `nwr(around:${n},${e.lat.toFixed(6)},${e.lng.toFixed(6)})[name];`).join("\n")}\n);\nout center 300;`, a = (e) => JI(e, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({ data: i })
-	}, 15e3), o = Promise.any(DH.map(async (e) => {
-		let t = await a(e), n = r[0], i = FH((t.elements ?? []).map((e) => MH(e, n.lat, n.lng)).filter((e) => !!e));
+	}, 15e3), o = Promise.any(zH.map(async (e) => {
+		let t = await a(e), n = r[0], i = qH((t.elements ?? []).map((e) => WH(e, n.lat, n.lng)).filter((e) => !!e));
 		if (i.length === 0) throw Error("route Overpass 返回空结果");
 		return i.slice(0, 50).map((e) => ({
 			id: e.id,
@@ -44818,7 +45025,7 @@ async function BH(e, t = 100) {
 		}));
 	})), s, c = new Promise((t, r) => {
 		s = window.setTimeout(() => {
-			HH(e, n).then((e) => {
+			eU(e, n).then((e) => {
 				e.length === 0 ? r(/* @__PURE__ */ Error("route OSM 返回空结果")) : t(e);
 			}, r);
 		}, 1200);
@@ -44827,10 +45034,10 @@ async function BH(e, t = 100) {
 		let e = await Promise.any([o, c]);
 		return s !== void 0 && window.clearTimeout(s), e;
 	} catch (e) {
-		return s !== void 0 && window.clearTimeout(s), console.warn("[tavern-map] route POI lookup failed", GI(e)), [];
+		return s !== void 0 && window.clearTimeout(s), console.warn("[tavern-map] route POI lookup failed", ZI(e)), [];
 	}
 }
-function VH(e, t, n = 100) {
+function $H(e, t, n = 100) {
 	if (e.length === 0 || t.length === 0) return [];
 	let r = e[0], i = [];
 	for (let r of t) {
@@ -44857,16 +45064,16 @@ function VH(e, t, n = 100) {
 		openingHours: e.openingHours
 	}));
 }
-async function HH(e, t) {
-	let n = zH(e, 1600, 6), r = [];
+async function eU(e, t) {
+	let n = ZH(e, 1600, 6), r = [];
 	for (let e of n) try {
-		r.push(...await LH(e.lat, e.lng, 250));
+		r.push(...await YH(e.lat, e.lng, 250));
 	} catch (e) {
-		console.warn("[tavern-map] route OSM fallback sample failed", GI(e));
+		console.warn("[tavern-map] route OSM fallback sample failed", ZI(e));
 	}
-	return VH(e, r, t);
+	return $H(e, r, t);
 }
-function UH(e, t, n) {
+function tU(e, t, n) {
 	let r = e.map(() => []), i = Math.max(25, Math.min(500, n));
 	for (let n of t) {
 		let t = -1, a = Infinity, o = 0;
@@ -44892,18 +45099,18 @@ function UH(e, t, n) {
 	return r.map((e) => e.sort((e, t) => (e.alongM ?? 0) - (t.alongM ?? 0)));
 }
 // src/prompt.ts
-var WH = "tavern-map-scene", GH = !1;
-function KH(e, t, n, r) {
-	typeof e.setExtensionPrompt == "function" ? e.setExtensionPrompt(WH, n ? t : "", e.extension_prompt_types?.IN_CHAT ?? 1, r, !1, e.extension_prompt_roles?.SYSTEM ?? 0, () => n) : GH || (GH = !0, console.warn("[tavern-map] setExtensionPrompt is unavailable; prompt injection disabled"));
+var nU = "tavern-map-scene", rU = !1;
+function iU(e, t, n, r) {
+	typeof e.setExtensionPrompt == "function" ? e.setExtensionPrompt(nU, n ? t : "", e.extension_prompt_types?.IN_CHAT ?? 1, r, !1, e.extension_prompt_roles?.SYSTEM ?? 0, () => n) : rU || (rU = !0, console.warn("[tavern-map] setExtensionPrompt is unavailable; prompt injection disabled"));
 }
-function qH(e) {
-	typeof e.setExtensionPrompt == "function" && e.setExtensionPrompt(WH, "", 0, 0, !1, 0);
+function aU(e) {
+	typeof e.setExtensionPrompt == "function" && e.setExtensionPrompt(nU, "", 0, 0, !1, 0);
 }
 // src/route.ts
-function JH(e, t) {
+function oU(e, t) {
 	return `${e.lng},${e.lat};${t.lng},${t.lat}`;
 }
-var YH = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${JH(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/foot/${JH(e, t)}?overview=full&geometries=geojson&steps=true`], XH = [(e, t) => `https://routing.openstreetmap.de/routed-car/route/v1/driving/${JH(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/driving/${JH(e, t)}?overview=full&geometries=geojson&steps=true`], ZH = {
+var sU = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${oU(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/foot/${oU(e, t)}?overview=full&geometries=geojson&steps=true`], cU = [(e, t) => `https://routing.openstreetmap.de/routed-car/route/v1/driving/${oU(e, t)}?overview=full&geometries=geojson&steps=true`, (e, t) => `https://router.project-osrm.org/route/v1/driving/${oU(e, t)}?overview=full&geometries=geojson&steps=true`], lU = {
 	left: "左转",
 	right: "右转",
 	straight: "直行",
@@ -44912,7 +45119,7 @@ var YH = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/
 	"sharp left": "急左转",
 	"sharp right": "急右转",
 	uturn: "掉头"
-}, QH = {
+}, uU = {
 	merge: "汇入",
 	fork: "走岔路",
 	"end of road": "到道路尽头",
@@ -44920,7 +45127,7 @@ var YH = [(e, t) => `https://routing.openstreetmap.de/routed-foot/route/v1/foot/
 	continue: "继续",
 	"use lane": "保持车道"
 };
-function $H(e) {
+function dU(e) {
 	let t = e.maneuver?.type, n = e.maneuver?.modifier;
 	if (t === "depart") return "出发";
 	if (t === "arrive") return "到达目的地";
@@ -44928,15 +45135,15 @@ function $H(e) {
 		let t = e.maneuver?.exit;
 		return `进入环岛${t ? `，第 ${t} 个出口` : ""}`;
 	}
-	return t === "continue" ? "继续前进" : (n ? ZH[n] : "") || (t ? QH[t] : "") || "继续前进";
+	return t === "continue" ? "继续前进" : (n ? lU[n] : "") || (t ? uU[t] : "") || "继续前进";
 }
-function eU(e) {
+function fU(e) {
 	return e.name?.trim() || e.ref?.trim() || void 0;
 }
-function tU(e, t) {
+function pU(e, t) {
 	let n = [];
 	for (let r of e ?? []) {
-		let e = $H(r), i = eU(r) ?? (t === "foot" ? "未命名步道" : "未命名道路"), a = Number.isFinite(r.distance) ? Number(r.distance) : 0, o = Number.isFinite(r.duration) ? Number(r.duration) : 0, s = (r.geometry?.coordinates ?? []).filter((e) => Array.isArray(e) && e.length >= 2 && Number.isFinite(e[0]) && Number.isFinite(e[1])).map((e) => [e[0], e[1]]);
+		let e = dU(r), i = fU(r) ?? (t === "foot" ? "未命名步道" : "未命名道路"), a = Number.isFinite(r.distance) ? Number(r.distance) : 0, o = Number.isFinite(r.duration) ? Number(r.duration) : 0, s = (r.geometry?.coordinates ?? []).filter((e) => Array.isArray(e) && e.length >= 2 && Number.isFinite(e[0]) && Number.isFinite(e[1])).map((e) => [e[0], e[1]]);
 		if (n.length > 0 && n[n.length - 1].instruction === e && n[n.length - 1].road === i && n[n.length - 1].coordinates?.length === s.length) {
 			let e = n[n.length - 1];
 			e.distance += a, e.duration += o;
@@ -44951,10 +45158,10 @@ function tU(e, t) {
 	}
 	return n;
 }
-async function nU(e, t, n) {
-	let r = n === "driving" ? XH : YH;
+async function mU(e, t, n) {
+	let r = n === "driving" ? cU : sU;
 	for (let i of r) try {
-		let r = await HI(i(e, t), { headers: { Accept: "application/json" } }, 1e4), a = r.routes?.[0], o = a?.geometry?.coordinates;
+		let r = await JI(i(e, t), { headers: { Accept: "application/json" } }, 1e4), a = r.routes?.[0], o = a?.geometry?.coordinates;
 		if (r.code !== "Ok" || !a || !o || o.length < 2) throw Error("路线为空");
 		let s = o.filter((e) => Array.isArray(e) && e.length >= 2 && Number.isFinite(e[0]) && Number.isFinite(e[1])).map((e) => [e[0], e[1]]);
 		if (s.length < 2) throw Error("路线坐标无效");
@@ -44962,7 +45169,7 @@ async function nU(e, t, n) {
 			distance: a.distance ?? bI(e.lat, e.lng, t.lat, t.lng),
 			duration: a.duration ?? (a.distance ?? 0) / (n === "driving" ? 13.9 : 1.35),
 			coordinates: s,
-			steps: tU(a.legs?.[0]?.steps, n),
+			steps: pU(a.legs?.[0]?.steps, n),
 			profile: n
 		};
 	} catch (e) {
@@ -44982,7 +45189,7 @@ async function nU(e, t, n) {
 		fallback: !0
 	};
 }
-var rU = {
+var hU = {
 	WALK: "步行",
 	BIKE: "骑行",
 	BUS: "公交",
@@ -45002,10 +45209,10 @@ var rU = {
 	TROLLEYBUS: "无轨电车",
 	SHARE_TAXI: "拼车"
 };
-function iU(e) {
-	return rU[e ?? ""] ?? e ?? "公共交通";
+function gU(e) {
+	return hU[e ?? ""] ?? e ?? "公共交通";
 }
-function aU(e, t = 6) {
+function _U(e, t = 6) {
 	let n = [], r = 0, i = 0, a = 0, o = 10 ** t;
 	for (; r < e.length;) {
 		let t = 0, s = 0, c = 0;
@@ -45020,7 +45227,7 @@ function aU(e, t = 6) {
 	}
 	return n;
 }
-function oU(e) {
+function vU(e) {
 	let t = 0;
 	for (let n = 1; n < e.length; n += 1) {
 		let [r, i] = e[n - 1], [a, o] = e[n];
@@ -45028,13 +45235,13 @@ function oU(e) {
 	}
 	return t;
 }
-function sU(e, t, n) {
+function yU(e, t, n) {
 	if (!Number.isFinite(t) || !Number.isFinite(n)) return;
 	let r = e[e.length - 1];
 	r && Math.abs(r[0] - t) < 1e-7 && Math.abs(r[1] - n) < 1e-7 || e.push([t, n]);
 }
-async function cU(e, t) {
-	let n = (await HI(`https://api.transitous.org/api/v6/plan?${new URLSearchParams({
+async function bU(e, t) {
+	let n = (await JI(`https://api.transitous.org/api/v6/plan?${new URLSearchParams({
 		fromPlace: `${e.lat},${e.lng}`,
 		toPlace: `${t.lat},${t.lng}`,
 		time: (/* @__PURE__ */ new Date()).toISOString(),
@@ -45043,14 +45250,14 @@ async function cU(e, t) {
 	if (!n || !Array.isArray(r) || r.length === 0) throw Error("没有可用的公共交通路线");
 	let i = [], a = [], o = 0, s = null, c = (e) => {
 		let t = e.routeShortName || e.routeLongName || "";
-		return `${t ? `${t} ` : ""}${iU(e.mode)}`;
+		return `${t ? `${t} ` : ""}${gU(e.mode)}`;
 	}, l = (e) => {
 		a.length < 40 && a.push(e);
 	};
 	for (let e = 0; e < r.length; e += 1) {
 		let t = r[e], n = r[e - 1], a = r[e + 1], u = t.legGeometry, d = [];
-		if (u?.points) for (let e of aU(u.points, u.precision ?? 6)) sU(d, e[0], e[1]), sU(i, e[0], e[1]);
-		else sU(d, t.from?.lon, t.from?.lat), sU(d, t.to?.lon, t.to?.lat), sU(i, t.from?.lon, t.from?.lat), sU(i, t.to?.lon, t.to?.lat);
+		if (u?.points) for (let e of _U(u.points, u.precision ?? 6)) yU(d, e[0], e[1]), yU(i, e[0], e[1]);
+		else yU(d, t.from?.lon, t.from?.lat), yU(d, t.to?.lon, t.to?.lat), yU(i, t.from?.lon, t.from?.lat), yU(i, t.to?.lon, t.to?.lat);
 		let f = Number.isFinite(t.duration) ? Number(t.duration) : 0, p = Number.isFinite(t.distance) ? Number(t.distance) : 0, m = t.from?.name?.trim() || "起点", h = t.to?.name?.trim() || "终点";
 		if (o += f, t.mode === "WALK") {
 			let e = !!(n && n.mode !== "WALK"), t = !!(a && a.mode !== "WALK");
@@ -45075,7 +45282,7 @@ async function cU(e, t) {
 					duration: t * 60
 				});
 			}
-			let n = t.routeShortName || t.routeLongName || "", r = iU(t.mode), i = t.headsign ? `（${t.headsign}）` : "";
+			let n = t.routeShortName || t.routeLongName || "", r = gU(t.mode), i = t.headsign ? `（${t.headsign}）` : "";
 			l({
 				instruction: `乘坐 ${n ? `${n} ` : ""}${r}${i} 从 ${m} 到 ${h}`,
 				name: n || void 0,
@@ -45089,14 +45296,14 @@ async function cU(e, t) {
 	}
 	if (i.length < 2) throw Error("公共交通路线没有可用几何");
 	return {
-		distance: oU(i) || bI(e.lat, e.lng, t.lat, t.lng),
+		distance: vU(i) || bI(e.lat, e.lng, t.lat, t.lng),
 		duration: n.duration ?? o,
 		coordinates: i,
 		steps: a,
 		profile: "transit"
 	};
 }
-function lU(e, t) {
+function xU(e, t) {
 	let n = bI(e.lat, e.lng, t.lat, t.lng);
 	return {
 		distance: n,
@@ -45111,37 +45318,37 @@ function lU(e, t) {
 		fallback: !0
 	};
 }
-async function uU(e, t, n = "foot") {
+async function SU(e, t, n = "foot") {
 	if (n === "transit") try {
-		return await cU(e, t);
+		return await bU(e, t);
 	} catch (n) {
-		return console.warn("[tavern-map] public transit route failed", n), lU(e, t);
+		return console.warn("[tavern-map] public transit route failed", n), xU(e, t);
 	}
-	return nU(e, t, n);
+	return mU(e, t, n);
 }
 // src/search.ts
-function dU(e) {
+function CU(e) {
 	return e?.trim() || void 0;
 }
-function fU(e) {
+function wU(e) {
 	let t = e.properties, n = e.geometry?.coordinates;
 	if (!t || !n || !Number.isFinite(n[0]) || !Number.isFinite(n[1])) return null;
-	let r = dU(t.name) ?? dU(t.street) ?? dU(t.city) ?? dU(t.country);
+	let r = CU(t.name) ?? CU(t.street) ?? CU(t.city) ?? CU(t.country);
 	if (!r) return null;
 	let i = [
-		dU(t.street),
-		dU(t.locality),
-		dU(t.district),
-		dU(t.city),
-		dU(t.county),
-		dU(t.state),
-		dU(t.country)
+		CU(t.street),
+		CU(t.locality),
+		CU(t.district),
+		CU(t.city),
+		CU(t.county),
+		CU(t.state),
+		CU(t.country)
 	].filter((e) => !!e), a = Array.from(new Set(i)).join(", "), o = t.extent, s = Array.isArray(o) && o.length === 4 && o.every((e) => Number.isFinite(e)) && o[0] < o[2] && o[1] < o[3] ? [
 		o[0],
 		o[1],
 		o[2],
 		o[3]
-	] : void 0, c = dU(t["name:zh"]);
+	] : void 0, c = CU(t["name:zh"]);
 	return {
 		id: t.osm_type && t.osm_id != null ? `osm:${t.osm_type}/${t.osm_id}` : `search:${n[1]},${n[0]}`,
 		name: r,
@@ -45152,10 +45359,10 @@ function fU(e) {
 		lng: n[0],
 		bounds: s,
 		resultType: t.type,
-		country: dU(t.country)
+		country: CU(t.country)
 	};
 }
-function pU(e, t, n) {
+function TU(e, t, n) {
 	let r = t.trim().toLowerCase(), i = r.split(/\s+/).filter((e) => e.length > 0);
 	return e.map((e) => {
 		let t = e.name.toLowerCase(), a = (e.nameZh ?? "").toLowerCase(), o = (e.address ?? "").toLowerCase(), s = t === r || a === r, c = t.startsWith(r) || a.startsWith(r), l = t.includes(r) || a.includes(r), u = i.filter((e) => t.includes(e) || a.includes(e) || o.includes(e)).length, d = (e.resultType ?? "").toLowerCase(), f = [
@@ -45195,13 +45402,13 @@ function pU(e, t, n) {
 		};
 	}).sort((e, t) => t.score - e.score || (e.result.distanceM ?? Infinity) - (t.result.distanceM ?? Infinity)).slice(0, 8).map(({ result: e }) => e);
 }
-async function mU(e, t) {
+async function EU(e, t) {
 	let n = e.trim();
 	if (n.length < 2) return [];
 	let r = (e) => {
 		let r = new URL("https://photon.komoot.io/api");
 		return r.searchParams.set("q", n), r.searchParams.set("limit", "20"), r.searchParams.set("lang", "en"), t && e && (r.searchParams.set("lat", String(t.lat)), r.searchParams.set("lon", String(t.lng)), r.searchParams.set("location_bias_scale", "0.2")), r;
-	}, i = t ? [r(!0), r(!1)] : [r(!1)], a = await Promise.allSettled(i.map((e) => HI(e, void 0, 1e4))), o = [];
+	}, i = t ? [r(!0), r(!1)] : [r(!1)], a = await Promise.allSettled(i.map((e) => JI(e, void 0, 1e4))), o = [];
 	for (let e of a) if (e.status === "fulfilled") for (let [t, n] of (e.value.features ?? []).entries()) o.push({
 		feature: n,
 		rank: t
@@ -45212,7 +45419,7 @@ async function mU(e, t) {
 	}
 	let s = /* @__PURE__ */ new Set(), c = [];
 	for (let { feature: e, rank: t } of o) {
-		let n = fU(e);
+		let n = wU(e);
 		if (!n) continue;
 		let r = `${n.name}|${n.lat.toFixed(4)}|${n.lng.toFixed(4)}`;
 		s.has(r) || (s.add(r), c.push({
@@ -45220,10 +45427,10 @@ async function mU(e, t) {
 			sourceRank: t
 		}));
 	}
-	return pU(c, n, t);
+	return TU(c, n, t);
 }
 // src/state.ts
-function hU(e) {
+function DU(e) {
 	if (!e || typeof e != "object") return;
 	let t = e, n = t.from, r = t.to;
 	if (!n || !r || typeof n.name != "string" || typeof r.name != "string" || !Number.isFinite(n.lat) || !Number.isFinite(n.lng) || !Number.isFinite(r.lat) || !Number.isFinite(r.lng)) return;
@@ -45269,7 +45476,7 @@ function hU(e) {
 		updatedAt: Number.isFinite(t.updatedAt) ? Number(t.updatedAt) : Date.now()
 	};
 }
-var gU = {
+var OU = {
 	version: 1,
 	enabled: !0,
 	center: {
@@ -45286,13 +45493,13 @@ var gU = {
 	poiAllToAI: !1,
 	updatedAt: Date.now()
 };
-function _U(e) {
-	let t = structuredClone(gU), n = e.chatMetadata?.["tavern-map"], r = xV(e);
+function kU(e) {
+	let t = structuredClone(OU), n = e.chatMetadata?.["tavern-map"], r = MV(e);
 	if (!n || typeof n != "object" || n.version !== 1) return r && (t.center = {
 		lat: r.lat,
 		lng: r.lng
 	}, r.zoom != null && (t.zoom = r.zoom), t.centerUpdatedAt = r.updatedAt), t;
-	let i = n, a = !!(r && (pV(e) === "default" || (r.updatedAt ?? 0) > (i.centerUpdatedAt ?? i.updatedAt ?? 0))), o = a ? r : i.center;
+	let i = n, a = !!(r && (wV(e) === "default" || (r.updatedAt ?? 0) > (i.centerUpdatedAt ?? i.updatedAt ?? 0))), o = a ? r : i.center;
 	return {
 		...t,
 		...i,
@@ -45373,11 +45580,11 @@ function _U(e) {
 		} : void 0,
 		lastWikiMode: i.lastWikiMode === "intro" || i.lastWikiMode === "full" ? i.lastWikiMode : void 0,
 		wikiOpen: typeof i.wikiOpen == "boolean" ? i.wikiOpen : void 0,
-		itinerary: hU(i.itinerary)
+		itinerary: DU(i.itinerary)
 	};
 }
-function vU(e, t) {
-	if (t.updatedAt = Date.now(), t.centerUpdatedAt && SV(e, {
+function AU(e, t) {
+	if (t.updatedAt = Date.now(), t.centerUpdatedAt && NV(e, {
 		lat: t.center.lat,
 		lng: t.center.lng,
 		zoom: t.zoom,
@@ -45404,27 +45611,27 @@ function vU(e, t) {
 	}
 }
 // src/wiki.ts
-function yU(e) {
+function jU(e) {
 	return `https://${e}.wikipedia.org/w/api.php`;
 }
-async function bU(e, t, n, r) {
+async function MU(e, t, n, r) {
 	let i = Array.from(new Set(r)).filter(Boolean);
 	if (i.length === 0) return [];
 	let a = await Promise.allSettled(i.map(async (r) => {
 		try {
-			return await xU(e, t, n, r);
+			return await NU(e, t, n, r);
 		} catch (e) {
 			throw console.warn(`[tavern-map] Wikipedia ${r} geosearch failed`, e), e;
 		}
 	})), o = a.flatMap((e) => e.status === "fulfilled" ? e.value.slice(0, 10) : []);
 	if (o.length === 0) {
 		let e = a.find((e) => e.status === "rejected");
-		if (e) throw Error(`Wikipedia 请求失败：${GI(e.reason)}`);
+		if (e) throw Error(`Wikipedia 请求失败：${ZI(e.reason)}`);
 	}
-	return SU(o).slice(0, 30);
+	return PU(o).slice(0, 30);
 }
-async function xU(e, t, n, r) {
-	let i = new URL(yU(r));
+async function NU(e, t, n, r) {
+	let i = new URL(jU(r));
 	return i.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -45433,7 +45640,7 @@ async function xU(e, t, n, r) {
 		gscoord: `${e}|${t}`,
 		gsradius: String(Math.min(1e4, Math.max(100, Math.round(n)))),
 		gslimit: "20"
-	}).toString(), ((await HI(i)).query?.geosearch ?? []).map((e) => ({
+	}).toString(), ((await JI(i)).query?.geosearch ?? []).map((e) => ({
 		pageId: e.pageid,
 		title: e.title,
 		dist: e.dist,
@@ -45442,15 +45649,15 @@ async function xU(e, t, n, r) {
 		lng: e.lon
 	}));
 }
-function SU(e) {
+function PU(e) {
 	let t = /* @__PURE__ */ new Set();
 	return e.filter((e) => {
 		let n = `${e.lang}:${e.pageId}`;
 		return !t.has(n) && (t.add(n), !0);
 	}).sort((e, t) => e.dist - t.dist);
 }
-async function CU(e, t, n) {
-	let r = new URL(yU(e));
+async function FU(e, t, n) {
+	let r = new URL(jU(e));
 	r.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -45460,12 +45667,12 @@ async function CU(e, t, n) {
 		redirects: "1",
 		titles: t
 	}).toString();
-	let i = await HI(r), a = Object.values(i.query?.pages ?? {})[0], o = new Set(n), s = {};
+	let i = await JI(r), a = Object.values(i.query?.pages ?? {})[0], o = new Set(n), s = {};
 	for (let e of a?.langlinks ?? []) o.has(e.lang) && e["*"] && (s[e.lang] = e["*"]);
 	return s;
 }
-async function wU(e) {
-	let t = e.lang, n = new URL(yU(t));
+async function IU(e) {
+	let t = e.lang, n = new URL(jU(t));
 	n.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -45477,7 +45684,7 @@ async function wU(e) {
 		titles: e.title,
 		rvprop: "ids"
 	}).toString();
-	let r = await HI(n), i = Object.values(r.query?.pages ?? {})[0];
+	let r = await JI(n), i = Object.values(r.query?.pages ?? {})[0];
 	if (!i || i.missing !== void 0 || i.pageprops?.disambiguation !== void 0) throw Error("该条目不存在，或是一个消歧义页");
 	let a = i.pageid ?? e.pageId;
 	return {
@@ -45492,8 +45699,8 @@ async function wU(e) {
 		revId: i.revisions?.[0]?.revid
 	};
 }
-async function TU(e, t) {
-	let n = new URL(yU(e));
+async function LU(e, t) {
+	let n = new URL(jU(e));
 	n.search = new URLSearchParams({
 		action: "query",
 		format: "json",
@@ -45504,40 +45711,40 @@ async function TU(e, t) {
 		titles: t,
 		exlimit: "1"
 	}).toString();
-	let r = await HI(n, void 0, 2e4), i = Object.values(r.query?.pages ?? {})[0];
+	let r = await JI(n, void 0, 2e4), i = Object.values(r.query?.pages ?? {})[0];
 	if (!i || i.missing !== void 0) throw Error("该条目不存在");
 	return i.extract ?? "";
 }
 // src/ui.ts
-var EU = "tm-panel", DU = 6048e5, OU = "tavern-map:fab-position", kU = "tavern-map:panel-geometry", AU = "tm-route", jU = {
+var RU = "tm-panel", zU = 6048e5, BU = "tavern-map:fab-position", VU = "tavern-map:panel-geometry", HU = "tm-route", UU = {
 	en: "EN",
 	ja: "JA",
 	zh: "ZH"
-}, MU = {
+}, WU = {
 	foot: "步行",
 	driving: "驾车",
 	transit: "公共交通"
-}, NU = [
+}, GU = [
 	"foot",
 	"driving",
 	"transit"
 ];
-function PU(e, t) {
+function KU(e, t) {
 	return `${e}:${t}`;
 }
-function FU(e) {
-	return jU[e] ?? e.toUpperCase();
+function qU(e) {
+	return UU[e] ?? e.toUpperCase();
 }
-function IU(e) {
+function JU(e) {
 	return e >= 1e3 ? `${(e / 1e3).toFixed(1)}km` : `${Math.round(e)}m`;
 }
-function LU(e) {
+function YU(e) {
 	let t = Math.max(1, Math.round(e / 60));
 	if (t < 60) return `${t} 分钟`;
 	let n = Math.floor(t / 60), r = t % 60;
 	return r > 0 ? `${n} 小时 ${r} 分钟` : `${n} 小时`;
 }
-function RU(e, t, n) {
+function XU(e, t, n) {
 	let r = n / 111320, i = n / (111320 * Math.max(.05, Math.cos(e * Math.PI / 180))), a = [];
 	for (let n = 0; n <= 72; n += 1) {
 		let o = n / 72 * Math.PI * 2;
@@ -45552,7 +45759,7 @@ function RU(e, t, n) {
 		}
 	};
 }
-function zU(e) {
+function ZU(e) {
 	switch (e) {
 		case "country": return 5;
 		case "state":
@@ -45575,9 +45782,9 @@ function zU(e) {
 		default: return 14;
 	}
 }
-var BU = `
+var QU = `
 <button id="tm-fab" class="tm-fab" type="button" title="打开地图" aria-label="打开地图">🗺️</button>
-<section id="${EU}" class="tm-panel" aria-label="Tavern Map" hidden>
+<section id="${RU}" class="tm-panel" aria-label="Tavern Map" hidden>
   <header class="tm-head">
     <strong>Tavern Map</strong>
     <div class="tm-head-actions">
@@ -45721,7 +45928,7 @@ var BU = `
     <pre id="tm-preview-text"></pre>
   </div>
 </div>
-`, VU = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">地图上下文（二选一，可都不选）\n        <div class=\"tm-context-options\">\n          <label><input type=\"checkbox\" id=\"tm-set-real-context\"> 现实地图上下文</label>\n          <label><input type=\"checkbox\" id=\"tm-set-layer-context\"> 图层地图上下文</label>\n        </div>\n      </div>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNoteAI\"> 地点笔记进入 AI</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyAI\"> 半径内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyDistance\"> 附带距离</label>\n        <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"25\" max=\"1000\" step=\"5\"></label>\n        <label class=\"tm-row\">周围地点最多<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoriteNote\"> 附带笔记</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">注入深度</div>\n        <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerSourceAI\"> 来源资料进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerWikiAI\"> Wiki 正文进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNoteAI\"> 笔记进入 AI</label>\n        <div class=\"tm-hint\">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyAI\"> 半径圈内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyDirection\"> 附带方位 / 距离</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyCoords\"> 附带 XY / 网格坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyNotes\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbySource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyWiki\"> 附带 Wiki 正文</label>\n        <label class=\"tm-row\">最多地点数<input type=\"number\" data-layer-setting=\"layerNearbyMax\" min=\"1\" max=\"50\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 行程</div>\n        <label class=\"tm-row\">每段沿途地点范围\n          <input id=\"tm-set-itinerary-poi-radius\" type=\"number\" data-layer-setting=\"layerItineraryPoiRadius\" min=\"1\" max=\"40\" step=\"1\">\n          <span>% 地图宽</span>\n        </label>\n        <label class=\"tm-row\">每段最多显示\n          <input id=\"tm-set-itinerary-poi-max\" type=\"number\" data-layer-setting=\"layerItineraryPoiMax\" min=\"1\" max=\"30\" step=\"1\">\n          <span>个</span>\n        </label>\n        <div class=\"tm-hint\">行程面板里可以单独关闭本次行程的 AI 发送。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteCoords\"> 附带区域 / 坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteNote\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteSource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteWiki\"> 附带 Wiki 正文</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">显示</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerAutoExpandWiki\"> 详情中自动展开已抓取 Wiki 正文</label>\n      </div>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", HU = class {
+`, $U = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">地图上下文（二选一，可都不选）\n        <div class=\"tm-context-options\">\n          <label><input type=\"checkbox\" id=\"tm-set-real-context\"> 现实地图上下文</label>\n          <label><input type=\"checkbox\" id=\"tm-set-layer-context\"> 图层地图上下文</label>\n        </div>\n      </div>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNoteAI\"> 地点笔记进入 AI</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyAI\"> 半径内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyDistance\"> 附带距离</label>\n        <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"25\" max=\"1000\" step=\"5\"></label>\n        <label class=\"tm-row\">周围地点最多<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoriteNote\"> 附带笔记</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">注入深度</div>\n        <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerSourceAI\"> 来源资料进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerWikiAI\"> Wiki 正文进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNoteAI\"> 笔记进入 AI</label>\n        <div class=\"tm-hint\">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyAI\"> 半径圈内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyDirection\"> 附带方位 / 距离</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyCoords\"> 附带 XY / 网格坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyNotes\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbySource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyWiki\"> 附带 Wiki 正文</label>\n        <label class=\"tm-row\">最多地点数<input type=\"number\" data-layer-setting=\"layerNearbyMax\" min=\"1\" max=\"50\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 行程</div>\n        <label class=\"tm-row\">每段沿途地点范围\n          <input id=\"tm-set-itinerary-poi-radius\" type=\"number\" data-layer-setting=\"layerItineraryPoiRadius\" min=\"1\" max=\"40\" step=\"1\">\n          <span>% 地图宽</span>\n        </label>\n        <label class=\"tm-row\">每段最多显示\n          <input id=\"tm-set-itinerary-poi-max\" type=\"number\" data-layer-setting=\"layerItineraryPoiMax\" min=\"1\" max=\"30\" step=\"1\">\n          <span>个</span>\n        </label>\n        <div class=\"tm-hint\">行程面板里可以单独关闭本次行程的 AI 发送。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteCoords\"> 附带区域 / 坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteNote\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteSource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteWiki\"> 附带 Wiki 正文</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">显示</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerAutoExpandWiki\"> 详情中自动展开已抓取 Wiki 正文</label>\n      </div>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", eW = class {
 	ctx;
 	settings;
 	state;
@@ -45835,14 +46042,14 @@ var BU = `
 		this.clampFab(), this.applyPanelGeometry();
 	};
 	constructor(e) {
-		this.ctx = e, this.settings = wB(e), this.state = _U(e), this.state.enabled = this.settings.enabled, this.restoreStoredRealPosition(), this.hydrateGlobalNotes(), this.migrateSavedPlaceNotes(), this.routeMode = this.state.itinerary?.profile ?? "foot", this.mount(), this.applyFabGeometry(), this.applyPanelGeometry(), this.bindEvents(), this.sync(), this.render(), this.syncRadiusUi(), this.syncPoiUi();
+		this.ctx = e, this.settings = FB(e), this.state = kU(e), this.state.enabled = this.settings.enabled, this.restoreStoredRealPosition(), this.hydrateGlobalNotes(), this.migrateSavedPlaceNotes(), this.routeMode = this.state.itinerary?.profile ?? "foot", this.mount(), this.applyFabGeometry(), this.applyPanelGeometry(), this.bindEvents(), this.sync(), this.render(), this.syncRadiusUi(), this.syncPoiUi();
 	}
 	mount() {
-		if (!document.getElementById(EU)) {
+		if (!document.getElementById(RU)) {
 			let e = document.createElement("template");
-			e.innerHTML = BU.trim(), document.body.append(e.content);
+			e.innerHTML = QU.trim(), document.body.append(e.content);
 		}
-		this.panelEl = document.getElementById(EU), this.canvasEl = document.getElementById("tm-canvas"), this.placeNameEl = document.getElementById("tm-place-name"), this.placeAddressEl = document.getElementById("tm-place-address"), this.statusEl = document.getElementById("tm-status"), this.listEl = document.getElementById("tm-list"), this.wikiEl = document.getElementById("tm-wiki"), this.wikiTitleEl = document.getElementById("tm-wiki-title"), this.wikiBodyEl = document.getElementById("tm-wiki-body"), this.wikiLinkEl = document.getElementById("tm-wiki-link"), this.starEl = document.getElementById("tm-star"), this.previewEl = document.getElementById("tm-preview"), this.previewTextEl = document.getElementById("tm-preview-text"), this.tokenEstimateEl = document.getElementById("tm-token-estimate"), this.savedCountEl = document.getElementById("tm-saved-count"), this.searchEl = this.panelEl.querySelector(".tm-search"), this.searchInputEl = document.getElementById("tm-search-input"), this.searchResultsEl = document.getElementById("tm-search-results"), this.radiusInputEl = document.getElementById("tm-radius"), this.radiusValueEl = document.getElementById("tm-radius-value"), this.poiToggleEl = document.getElementById("tm-poi-toggle"), this.poiAllEl = document.getElementById("tm-poi-all-ai"), this.poiCountEl = document.getElementById("tm-poi-count"), this.wikiLangsEl = document.getElementById("tm-wiki-langs"), this.wikiModesEl = document.getElementById("tm-wiki-modes"), this.wikiNoteEl = document.getElementById("tm-wiki-note"), this.wikiNoteStatusEl = document.getElementById("tm-wiki-note-status"), this.aiLangEl = document.getElementById("tm-wiki-ai-lang"), this.aiLangHintEl = document.getElementById("tm-ai-lang-hint"), this.wikiFullHintEl = document.getElementById("tm-wiki-full-hint"), this.routeCountEl = document.getElementById("tm-route-count"), this.recenterEl = document.getElementById("tm-recenter"), this.placeEl = document.getElementById("tm-place"), this.placeTitleEl = document.getElementById("tm-place-title"), this.placeSaveEl = document.getElementById("tm-place-save"), this.placeMetaEl = document.getElementById("tm-place-meta"), this.placeInfoEl = document.getElementById("tm-place-info"), this.placeNoteEl = document.getElementById("tm-place-note"), this.placeNoteStatusEl = document.getElementById("tm-place-note-status"), this.placeRouteSummaryEl = document.getElementById("tm-route-summary"), this.placeRouteTextEl = document.getElementById("tm-route-text"), this.placeRouteModeEl = document.getElementById("tm-place-route-mode"), this.placeStartEl = document.querySelector("[data-action=\"place-start\"]"), this.placeStopEl = document.querySelector("[data-action=\"place-stop\"]"), this.placeClearEl = document.querySelector("[data-action=\"place-clear-route\"]"), this.placeProgressEl = document.getElementById("tm-route-progress"), this.placeBarEl = document.getElementById("tm-route-bar"), this.placeRouteStepsEl = document.getElementById("tm-place-route-steps");
+		this.panelEl = document.getElementById(RU), this.canvasEl = document.getElementById("tm-canvas"), this.placeNameEl = document.getElementById("tm-place-name"), this.placeAddressEl = document.getElementById("tm-place-address"), this.statusEl = document.getElementById("tm-status"), this.listEl = document.getElementById("tm-list"), this.wikiEl = document.getElementById("tm-wiki"), this.wikiTitleEl = document.getElementById("tm-wiki-title"), this.wikiBodyEl = document.getElementById("tm-wiki-body"), this.wikiLinkEl = document.getElementById("tm-wiki-link"), this.starEl = document.getElementById("tm-star"), this.previewEl = document.getElementById("tm-preview"), this.previewTextEl = document.getElementById("tm-preview-text"), this.tokenEstimateEl = document.getElementById("tm-token-estimate"), this.savedCountEl = document.getElementById("tm-saved-count"), this.searchEl = this.panelEl.querySelector(".tm-search"), this.searchInputEl = document.getElementById("tm-search-input"), this.searchResultsEl = document.getElementById("tm-search-results"), this.radiusInputEl = document.getElementById("tm-radius"), this.radiusValueEl = document.getElementById("tm-radius-value"), this.poiToggleEl = document.getElementById("tm-poi-toggle"), this.poiAllEl = document.getElementById("tm-poi-all-ai"), this.poiCountEl = document.getElementById("tm-poi-count"), this.wikiLangsEl = document.getElementById("tm-wiki-langs"), this.wikiModesEl = document.getElementById("tm-wiki-modes"), this.wikiNoteEl = document.getElementById("tm-wiki-note"), this.wikiNoteStatusEl = document.getElementById("tm-wiki-note-status"), this.aiLangEl = document.getElementById("tm-wiki-ai-lang"), this.aiLangHintEl = document.getElementById("tm-ai-lang-hint"), this.wikiFullHintEl = document.getElementById("tm-wiki-full-hint"), this.routeCountEl = document.getElementById("tm-route-count"), this.recenterEl = document.getElementById("tm-recenter"), this.placeEl = document.getElementById("tm-place"), this.placeTitleEl = document.getElementById("tm-place-title"), this.placeSaveEl = document.getElementById("tm-place-save"), this.placeMetaEl = document.getElementById("tm-place-meta"), this.placeInfoEl = document.getElementById("tm-place-info"), this.placeNoteEl = document.getElementById("tm-place-note"), this.placeNoteStatusEl = document.getElementById("tm-place-note-status"), this.placeRouteSummaryEl = document.getElementById("tm-route-summary"), this.placeRouteTextEl = document.getElementById("tm-route-text"), this.placeRouteModeEl = document.getElementById("tm-place-route-mode"), this.placeStartEl = document.querySelector("[data-action=\"place-start\"]"), this.placeStopEl = document.querySelector("[data-action=\"place-stop\"]"), this.placeClearEl = document.querySelector("[data-action=\"place-clear-route\"]"), this.placeProgressEl = document.getElementById("tm-route-progress"), this.placeBarEl = document.getElementById("tm-route-bar"), this.placeRouteStepsEl = document.getElementById("tm-place-route-steps");
 	}
 	mountSettings(e = 0) {
 		if (!document.getElementById("tm-settings")) {
@@ -45852,7 +46059,7 @@ var BU = `
 				return;
 			}
 			let n = document.createElement("template");
-			n.innerHTML = VU.trim(), t.append(n.content);
+			n.innerHTML = $U.trim(), t.append(n.content);
 		}
 		this.enabledEl = document.getElementById("tm-set-enabled"), this.realContextEl = document.getElementById("tm-set-real-context"), this.layerContextEl = document.getElementById("tm-set-layer-context"), this.langEls = Array.from(document.querySelectorAll("#tm-settings [data-tm-lang]")), this.radiusEl = document.getElementById("tm-set-radius"), this.nearbyEl = document.getElementById("tm-set-nearby"), this.depthEl = document.getElementById("tm-set-depth"), this.enabledEl && (this.writeSettingsToForm(), this.bindSettings());
 	}
@@ -45918,7 +46125,7 @@ var BU = `
 			return;
 		}
 		if (n === "close-wiki") {
-			this.wikiEl.hidden = !0, this.state.wikiOpen = !1, vU(this.ctx, this.state);
+			this.wikiEl.hidden = !0, this.state.wikiOpen = !1, AU(this.ctx, this.state);
 			return;
 		}
 		if (n === "star") {
@@ -45939,7 +46146,7 @@ var BU = `
 		}
 		if (n === "place-route") {
 			if (this.currentPlace) {
-				let e = this.placeRouteModeEl.value, t = NU.includes(e) ? e : this.routeMode;
+				let e = this.placeRouteModeEl.value, t = GU.includes(e) ? e : this.routeMode;
 				this.planRouteTo(this.currentPlace, t);
 			}
 			return;
@@ -45979,7 +46186,7 @@ var BU = `
 		}
 		let r = t.closest("[data-tab]")?.dataset.tab;
 		if (r === "nearby" || r === "wiki" || r === "saved" || r === "route") {
-			this.tab = r, this.state.lastTab = r, vU(this.ctx, this.state), this.render();
+			this.tab = r, this.state.lastTab = r, AU(this.ctx, this.state), this.render();
 			return;
 		}
 		let i = t.closest("[data-wiki-mode]")?.dataset.wikiMode;
@@ -45995,10 +46202,10 @@ var BU = `
 		if (t.matches("[data-route-ai]")) {
 			if (!this.state.itinerary) return;
 			this.state.itinerary.showToAI = t.checked, this.sync(), this.flushNoteSave(), this.syncRouteAiCheckboxes();
-		} else if (t.matches("[data-route-pois]")) this.settings.showRoutePois = t.checked, TB(this.ctx, this.settings), this.settings.showRoutePois && this.currentRoute && this.state.itinerary && !this.state.itinerary.steps.some((e) => e.pois?.length) && this.loadRoutePois(this.currentRoute, this.routeSeq), this.syncRoutePoiControls(), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
+		} else if (t.matches("[data-route-pois]")) this.settings.showRoutePois = t.checked, IB(this.ctx, this.settings), this.settings.showRoutePois && this.currentRoute && this.state.itinerary && !this.state.itinerary.steps.some((e) => e.pois?.length) && this.loadRoutePois(this.currentRoute, this.routeSeq), this.syncRoutePoiControls(), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
 		else if (t.matches("[data-route-poi-radius]")) {
 			let e = Number(t.value);
-			this.settings.routePoiRadiusM = Math.max(25, Math.min(500, e)), TB(this.ctx, this.settings), this.syncRoutePoiControls(), this.state.itinerary && this.state.itinerary.steps.forEach((e) => {
+			this.settings.routePoiRadiusM = Math.max(25, Math.min(500, e)), IB(this.ctx, this.settings), this.syncRoutePoiControls(), this.state.itinerary && this.state.itinerary.steps.forEach((e) => {
 				e.pois = [];
 			}), this.settings.showRoutePois && this.currentRoute && this.state.itinerary ? this.loadRoutePois(this.currentRoute, this.routeSeq) : (this.commit(), this.renderPlace(), this.tab === "route" && this.render());
 		}
@@ -46014,7 +46221,7 @@ var BU = `
 		this.state.lastMapMode === "layer" ? this.openLayerMap() : this.openPanel();
 	}
 	restoreStoredRealPosition() {
-		let e = xV(this.ctx);
+		let e = MV(this.ctx);
 		!e || (e.updatedAt ?? 0) < (this.state.centerUpdatedAt ?? 0) || (this.state.center = {
 			lat: e.lat,
 			lng: e.lng
@@ -46027,7 +46234,7 @@ var BU = `
 		}, this.marker?.setLngLat([e.lng, e.lat]));
 	}
 	openPanel() {
-		this.layerUI?.close(), this.ctx = this.liveContext(), this.state.lastMapMode = "real", vU(this.ctx, this.state), this.restoreStoredRealPosition(), this.panelEl.hidden = !1, this.tab = this.state.lastTab ?? "nearby", this.applyPanelGeometry(), this.ensureMap(), window.requestAnimationFrame(() => {
+		this.layerUI?.close(), this.ctx = this.liveContext(), this.state.lastMapMode = "real", AU(this.ctx, this.state), this.restoreStoredRealPosition(), this.panelEl.hidden = !1, this.tab = this.state.lastTab ?? "nearby", this.applyPanelGeometry(), this.ensureMap(), window.requestAnimationFrame(() => {
 			this.map?.resize();
 			let e = this.state.view;
 			this.map?.flyTo({
@@ -46041,19 +46248,19 @@ var BU = `
 		}, 150);
 	}
 	openLayerMap() {
-		this.panelEl.hidden = !0, this.ctx = this.liveContext(), this.state.lastMapMode = "layer", vU(this.ctx, this.state), this.layerUI ||= new iH(this.liveContext(), {
+		this.panelEl.hidden = !0, this.ctx = this.liveContext(), this.state.lastMapMode = "layer", AU(this.ctx, this.state), this.layerUI ||= new gH(this.liveContext(), {
 			onChange: () => this.sync(),
 			onRealMap: () => this.openPanel(),
 			onClosed: () => {
-				this.state.lastMapMode = "layer", this.ctx = this.liveContext(), vU(this.ctx, this.state);
+				this.state.lastMapMode = "layer", this.ctx = this.liveContext(), AU(this.ctx, this.state);
 			},
 			onSettingsChanged: () => {
-				this.settings = wB(this.ctx), this.writeSettingsToForm(), this.sync();
+				this.settings = FB(this.ctx), this.writeSettingsToForm(), this.sync();
 			}
 		}), this.layerUI.open();
 	}
 	closePanel() {
-		this.panelEl.hidden = !0, this.state.lastMapMode = "real", this.state.wikiOpen = !this.wikiEl.hidden, vU(this.ctx, this.state);
+		this.panelEl.hidden = !0, this.state.lastMapMode = "real", this.state.wikiOpen = !this.wikiEl.hidden, AU(this.ctx, this.state);
 	}
 	personMarkerElement() {
 		let e = document.createElement("div");
@@ -46073,7 +46280,7 @@ var BU = `
 				pitchWithRotate: !1
 			});
 		} catch (e) {
-			console.error("[tavern-map] map initialization failed", e), this.canvasEl.textContent = `地图初始化失败：${GI(e)}`;
+			console.error("[tavern-map] map initialization failed", e), this.canvasEl.textContent = `地图初始化失败：${ZI(e)}`;
 			return;
 		}
 		let e = this.map;
@@ -46097,7 +46304,7 @@ var BU = `
 					lng: t.lng
 				},
 				zoom: this.state.zoom
-			}, vU(this.ctx, this.state);
+			}, AU(this.ctx, this.state);
 		}), e.on("style.load", () => {
 			this.drawRadius(), this.currentRoute && this.drawRouteLine(this.currentRoute, !1), this.updatePoiSource();
 		}), e.once("load", () => this.drawRadius()), e.once("idle", () => this.drawRadius()), this.resizeObserver = new ResizeObserver(() => this.map?.resize()), this.resizeObserver.observe(this.canvasEl);
@@ -46105,7 +46312,7 @@ var BU = `
 	drawRadius() {
 		let e = this.map;
 		if (!e || !e.isStyleLoaded()) return;
-		let t = RU(this.state.center.lat, this.state.center.lng, this.settings.radiusM), n = e.getSource("tm-radius");
+		let t = XU(this.state.center.lat, this.state.center.lng, this.settings.radiusM), n = e.getSource("tm-radius");
 		n ? n.setData(t) : (e.addSource("tm-radius", {
 			type: "geojson",
 			data: t
@@ -46265,7 +46472,7 @@ var BU = `
 		let n = ++this.poiSeq;
 		this.loadingPois = !0, this.syncPoiUi();
 		try {
-			let r = await RH(e, t, this.settings.radiusM);
+			let r = await XH(e, t, this.settings.radiusM);
 			if (n !== this.poiSeq) return;
 			this.pois = r, this.poisById = new Map(r.map((e) => [e.id, e])), this.state.poiBriefs = r.map((e) => ({
 				id: e.id,
@@ -46277,9 +46484,9 @@ var BU = `
 				cuisine: e.cuisine,
 				openingHours: e.openingHours,
 				addedAt: Date.now()
-			})), this.updatePoiSource(), this.syncPoiUi(), vU(this.ctx, this.state), this.state.poiAllToAI && this.sync(), this.render();
+			})), this.updatePoiSource(), this.syncPoiUi(), AU(this.ctx, this.state), this.state.poiAllToAI && this.sync(), this.render();
 		} catch (e) {
-			console.warn("[tavern-map] POI layer failed", GI(e));
+			console.warn("[tavern-map] POI layer failed", ZI(e));
 		} finally {
 			n === this.poiSeq && (this.loadingPois = !1, this.syncPoiUi());
 		}
@@ -46288,10 +46495,10 @@ var BU = `
 		this.settings = {
 			...this.settings,
 			showPois: !this.settings.showPois
-		}, TB(this.ctx, this.settings), this.setPoiVisibility(), this.syncPoiUi(), this.settings.showPois && this.refreshPois(this.state.center.lat, this.state.center.lng);
+		}, IB(this.ctx, this.settings), this.setPoiVisibility(), this.syncPoiUi(), this.settings.showPois && this.refreshPois(this.state.center.lat, this.state.center.lng);
 	}
 	onPoiAllChange() {
-		this.state.poiAllToAI = this.poiAllEl.checked, this.state.poiAllToAI && this.state.poiBriefs.length === 0 && this.refreshPois(this.state.center.lat, this.state.center.lng), this.sync(), vU(this.ctx, this.state), this.syncPoiUi();
+		this.state.poiAllToAI = this.poiAllEl.checked, this.state.poiAllToAI && this.state.poiBriefs.length === 0 && this.refreshPois(this.state.center.lat, this.state.center.lng), this.sync(), AU(this.ctx, this.state), this.syncPoiUi();
 	}
 	syncPoiUi() {
 		this.poiToggleEl && (this.poiToggleEl.classList.toggle("active", this.settings.showPois), this.poiToggleEl.classList.toggle("loading", this.loadingPois), this.poiToggleEl.setAttribute("aria-pressed", String(this.settings.showPois)), this.poiAllEl.checked = this.state.poiAllToAI, this.poiCountEl.textContent = String(this.state.poiBriefs.length));
@@ -46350,20 +46557,20 @@ var BU = `
 		this.loadingNearby = !0, this.loadingWiki = !0, this.setStatus("正在获取：地点、周边、维基…"), this.render(), this.refreshPois(t, n);
 		let s = window.setTimeout(() => {
 			e === this.seq && i.has("nearby") && this.setStatus("周边加载较慢，正在切换备用数据源…");
-		}, 4e3), c = fH(t, n).then((t) => {
+		}, 4e3), c = wH(t, n).then((t) => {
 			e === this.seq && (this.state.place = t, this.commit());
 		}).catch((e) => {
-			a.place = GI(e);
-		}).finally(() => o("place")), l = vH(t, n, this.settings.radiusM).then((t) => {
+			a.place = ZI(e);
+		}).finally(() => o("place")), l = AH(t, n, this.settings.radiusM).then((t) => {
 			e === this.seq && (this.state.nearby = t, this.commit());
 		}).catch((e) => {
-			a.nearby = GI(e);
+			a.nearby = ZI(e);
 		}).finally(() => {
 			e === this.seq && (this.loadingNearby = !1, window.clearTimeout(s), this.render()), o("nearby");
-		}), u = bU(t, n, Math.max(300, this.settings.radiusM * 2), this.settings.wikiLangs).then((t) => {
+		}), u = MU(t, n, Math.max(300, this.settings.radiusM * 2), this.settings.wikiLangs).then((t) => {
 			e === this.seq && (this.state.wiki = t, this.commit());
 		}).catch((e) => {
-			a.wiki = GI(e);
+			a.wiki = ZI(e);
 		}).finally(() => {
 			e === this.seq && (this.loadingWiki = !1, this.render()), o("wiki");
 		});
@@ -46380,15 +46587,15 @@ var BU = `
 		}
 	}
 	commit() {
-		this.state.enabled = this.settings.enabled, vU(this.ctx, this.state), this.sync(), this.render();
+		this.state.enabled = this.settings.enabled, AU(this.ctx, this.state), this.sync(), this.render();
 	}
 	activeContextText() {
-		return VI(this.settings.realMapContext ? AI(this.state, this.settings) : "", this.settings.layerMapContext ? this.layerUI?.contextText() ?? BI(hB(this.liveContext())) : "", this.settings);
+		return HI(this.settings.realMapContext ? AI(this.state, this.settings) : "", this.settings.layerMapContext ? this.layerUI?.contextText() ?? VI(TB(this.liveContext())) : "", this.settings);
 	}
 	sync() {
 		this.state.enabled = this.settings.enabled;
 		let e = this.activeContextText();
-		!this.settings.enabled || !e ? qH(this.ctx) : KH(this.ctx, e, !0, this.settings.depth), this.previewEl && !this.previewEl.hidden && this.preview();
+		!this.settings.enabled || !e ? aU(this.ctx) : iU(this.ctx, e, !0, this.settings.depth), this.previewEl && !this.previewEl.hidden && this.preview();
 	}
 	render() {
 		if (!this.panelEl) return;
@@ -46460,7 +46667,7 @@ var BU = `
 		r.className = "tm-item-name", r.textContent = e.title;
 		let i = !!this.findStar(e), a = document.createElement("span");
 		return a.className = "tm-item-meta", a.textContent = [
-			`[${FU(e.lang)}]`,
+			`[${qU(e.lang)}]`,
 			xI(e.dist),
 			i ? "★ 已加入" : ""
 		].filter(Boolean).join(" · "), n.append(r, a), n.addEventListener("click", () => void this.openWiki(e)), t.append(n), t;
@@ -46518,9 +46725,9 @@ var BU = `
 		let i = document.createElement("div");
 		i.className = "tm-saved-name";
 		let a = e.aiLang || e.lang, o = e.aiTitle || e.title;
-		i.textContent = `[${FU(a)}] ${o}`;
+		i.textContent = `[${qU(a)}] ${o}`;
 		let s = document.createElement("div");
-		s.className = "tm-saved-meta", s.textContent = `Wikipedia · 给 AI ${FU(a)} · ${e.contextMode === "full" ? "全文" : "概览"}`, r.append(i, s);
+		s.className = "tm-saved-meta", s.textContent = `Wikipedia · 给 AI ${qU(a)} · ${e.contextMode === "full" ? "全文" : "概览"}`, r.append(i, s);
 		let c = document.createElement("div");
 		c.className = "tm-saved-actions";
 		let l = this.miniButton("打开", () => {
@@ -46552,7 +46759,7 @@ var BU = `
 		}), n.addEventListener("change", () => this.flushNoteSave()), n;
 	}
 	openPlace(e) {
-		this.currentPlace = e, this.wikiEl.hidden = !0, this.state.wikiOpen = !1, vU(this.ctx, this.state), this.placeEl.classList.add("tm-place-inline"), this.placeEl.hidden = !1, this.render();
+		this.currentPlace = e, this.wikiEl.hidden = !0, this.state.wikiOpen = !1, AU(this.ctx, this.state), this.placeEl.classList.add("tm-place-inline"), this.placeEl.hidden = !1, this.render();
 	}
 	closePlace() {
 		this.placeEl.hidden = !0, this.placeEl.classList.remove("tm-place-inline"), this.currentPlace = null, this.render();
@@ -46609,7 +46816,7 @@ var BU = `
 		let t = [
 			"Tavern Map 行程",
 			`${e.from.name} → ${e.to.name}`,
-			`${MU[e.profile ?? "foot"]} ${xI(e.distance)} · 约 ${LU(e.duration)}`
+			`${WU[e.profile ?? "foot"]} ${xI(e.distance)} · 约 ${YU(e.duration)}`
 		];
 		return e.fallback && t.push("（路线服务不可用，按直线估计）"), e.steps.forEach((e, n) => {
 			let r = e.road ? ` — ${e.road}` : "", i = e.distance > 0 ? `（${xI(e.distance)}）` : "";
@@ -46631,7 +46838,7 @@ var BU = `
 			return;
 		}
 		let r = e.fallback ? " · 直线估计" : "";
-		this.placeRouteTextEl.textContent = `${MU[e.profile ?? "foot"]} ${xI(e.distance)} · 约 ${LU(e.duration)}${r}`, this.placeStartEl.hidden = !this.currentRoute || this.moving, this.placeStopEl.hidden = !this.moving, this.placeProgressEl.hidden = !this.moving, this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`, this.fillRouteSteps(this.placeRouteStepsEl, e), this.syncRoutePoiControls(), this.syncRouteAiCheckboxes();
+		this.placeRouteTextEl.textContent = `${WU[e.profile ?? "foot"]} ${xI(e.distance)} · 约 ${YU(e.duration)}${r}`, this.placeStartEl.hidden = !this.currentRoute || this.moving, this.placeStopEl.hidden = !this.moving, this.placeProgressEl.hidden = !this.moving, this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`, this.fillRouteSteps(this.placeRouteStepsEl, e), this.syncRoutePoiControls(), this.syncRouteAiCheckboxes();
 	}
 	syncRoutePoiControls() {
 		if (this.panelEl) {
@@ -46708,7 +46915,7 @@ var BU = `
 	}
 	onPlaceRouteModeChange() {
 		let e = this.placeRouteModeEl.value;
-		NU.includes(e) && (this.routeMode = e, this.currentPlace && this.planRouteTo(this.currentPlace, e));
+		GU.includes(e) && (this.routeMode = e, this.currentPlace && this.planRouteTo(this.currentPlace, e));
 	}
 	setRouteMode(e) {
 		this.routeMode = e, this.placeRouteModeEl && (this.placeRouteModeEl.value = e);
@@ -46728,7 +46935,7 @@ var BU = `
 		for (let { step: e, index: t } of a) {
 			let n = e.coordinates;
 			if (!n || n.length === 0) continue;
-			let r = n[Math.floor(n.length / 2)], i = await dH(r[1], r[0]);
+			let r = n[Math.floor(n.length / 2)], i = await CH(r[1], r[0]);
 			i && o.set(t, i);
 		}
 		return e.map((t, a) => {
@@ -46766,16 +46973,16 @@ var BU = `
 		};
 		if (bI(r.lat, r.lng, e.lat, e.lng) < 5) this.toast("已经在这个地点");
 		else {
-			this.setStatus(`正在规划${MU[t]}路线…`);
+			this.setStatus(`正在规划${WU[t]}路线…`);
 			try {
-				let i = await uU(r, {
+				let i = await SU(r, {
 					lat: e.lat,
 					lng: e.lng
 				}, t);
 				if (n !== this.routeSeq) return;
 				this.currentRoute = i;
 				let a = this.state.place?.name ?? "当前位置";
-				this.setStatus(`正在补充${MU[t]}道路名…`);
+				this.setStatus(`正在补充${WU[t]}道路名…`);
 				let o = await this.resolveRouteRoads(i.steps, e);
 				if (n !== this.routeSeq) return;
 				let s = o.map((t) => ({
@@ -46806,9 +47013,9 @@ var BU = `
 					fallback: i.fallback,
 					showToAI: c,
 					updatedAt: Date.now()
-				}, this.drawRouteLine(i, !0), this.commit(), this.renderPlace(), this.setStatus(i.fallback ? `${MU[t]}路线服务不可用，已显示直线估计` : ""), this.toast("行程已生成，可在“行程”页查看和复制"), this.settings.showRoutePois && this.loadRoutePois(i, n);
+				}, this.drawRouteLine(i, !0), this.commit(), this.renderPlace(), this.setStatus(i.fallback ? `${WU[t]}路线服务不可用，已显示直线估计` : ""), this.toast("行程已生成，可在“行程”页查看和复制"), this.settings.showRoutePois && this.loadRoutePois(i, n);
 			} catch (e) {
-				this.setStatus(`路线规划失败：${GI(e)}`);
+				this.setStatus(`路线规划失败：${ZI(e)}`);
 			}
 		}
 	}
@@ -46816,7 +47023,7 @@ var BU = `
 		if (!this.settings.showRoutePois) return;
 		let n = this.state.itinerary;
 		if (!n) return;
-		let r = UH(e.steps, t, this.settings.routePoiRadiusM);
+		let r = tU(e.steps, t, this.settings.routePoiRadiusM);
 		n.steps.forEach((e, t) => {
 			e.pois = r[t] ?? [];
 		}), this.commit(), this.renderPlace(), this.tab === "route" && this.render();
@@ -46824,21 +47031,21 @@ var BU = `
 	async loadRoutePois(e, t) {
 		let n = ++this.routePoiSeq, r = this.settings.routePoiRadiusM;
 		if (!this.settings.showRoutePois) return;
-		let i = VH(e.coordinates, this.pois, r);
+		let i = $H(e.coordinates, this.pois, r);
 		i.length > 0 && this.applyRoutePois(e, i);
-		let a = await BH(e.coordinates, r);
+		let a = await QH(e.coordinates, r);
 		if (n !== this.routePoiSeq || t !== this.routeSeq) return;
 		let o = a;
 		if (o.length === 0) {
 			let i = this.pois;
 			if (i.length === 0 && e.coordinates.length > 0) try {
 				let t = e.coordinates[0];
-				i = await RH(t[1], t[0], Math.max(250, r));
+				i = await XH(t[1], t[0], Math.max(250, r));
 			} catch (e) {
-				console.warn("[tavern-map] route POI fallback failed", GI(e));
+				console.warn("[tavern-map] route POI fallback failed", ZI(e));
 			}
 			if (n !== this.routePoiSeq || t !== this.routeSeq) return;
-			o = VH(e.coordinates, i, r);
+			o = $H(e.coordinates, i, r);
 		}
 		let s = /* @__PURE__ */ new Map();
 		for (let e of i) s.set(e.id, e);
@@ -46856,14 +47063,14 @@ var BU = `
 				type: "LineString",
 				coordinates: e.coordinates
 			}
-		}, i = n.getSource(AU);
-		i ? i.setData(r) : (n.addSource(AU, {
+		}, i = n.getSource(HU);
+		i ? i.setData(r) : (n.addSource(HU, {
 			type: "geojson",
 			data: r
 		}), n.addLayer({
 			id: "tm-route-casing",
 			type: "line",
-			source: AU,
+			source: HU,
 			layout: {
 				"line-join": "round",
 				"line-cap": "round"
@@ -46876,7 +47083,7 @@ var BU = `
 		}), n.addLayer({
 			id: "tm-route-line",
 			type: "line",
-			source: AU,
+			source: HU,
 			layout: {
 				"line-join": "round",
 				"line-cap": "round"
@@ -46903,7 +47110,7 @@ var BU = `
 	clearRouteLine() {
 		this.routeEndMarker?.remove(), this.routeEndMarker = null;
 		let e = this.map;
-		e && e.isStyleLoaded() && (e.getLayer("tm-route-line") && e.removeLayer("tm-route-line"), e.getLayer("tm-route-casing") && e.removeLayer("tm-route-casing"), e.getSource(AU) && e.removeSource(AU)), this.currentRoute = null;
+		e && e.isStyleLoaded() && (e.getLayer("tm-route-line") && e.removeLayer("tm-route-line"), e.getLayer("tm-route-casing") && e.removeLayer("tm-route-casing"), e.getSource(HU) && e.removeSource(HU)), this.currentRoute = null;
 	}
 	clearItinerary() {
 		this.moving && this.stopMovement(), this.routeSeq += 1, this.clearRouteLine(), delete this.state.itinerary, this.moveProgress = 0, this.commit(), this.renderPlace(), this.tab === "route" && this.render(), this.toast("已清除当前行程");
@@ -46942,13 +47149,13 @@ var BU = `
 		s.textContent = "方式";
 		let c = document.createElement("select");
 		c.className = "tm-route-mode";
-		for (let e of NU) c.append(new Option(MU[e], e));
+		for (let e of GU) c.append(new Option(WU[e], e));
 		c.value = e.profile ?? this.routeMode, c.addEventListener("change", () => {
 			let e = c.value;
-			NU.includes(e) && (this.setRouteMode(e), this.replanItinerary());
+			GU.includes(e) && (this.setRouteMode(e), this.replanItinerary());
 		}), o.append(s, c);
 		let l = document.createElement("div");
-		l.className = "tm-itinerary-meta", l.textContent = `${MU[e.profile ?? "foot"]} ${xI(e.distance)} · 约 ${LU(e.duration)}${e.fallback ? " · 直线估计" : ""}`;
+		l.className = "tm-itinerary-meta", l.textContent = `${WU[e.profile ?? "foot"]} ${xI(e.distance)} · 约 ${YU(e.duration)}${e.fallback ? " · 直线估计" : ""}`;
 		let u = document.createElement("label");
 		u.className = "tm-route-ai";
 		let d = document.createElement("input");
@@ -47032,12 +47239,12 @@ var BU = `
 		let t = ++this.searchSeq;
 		this.renderSearchMessage("搜索中…");
 		try {
-			let n = await mU(e, this.state.place ?? this.state.center);
+			let n = await EU(e, this.state.place ?? this.state.center);
 			if (t !== this.searchSeq) return;
 			this.searchResults = n, this.renderSearchResults(n);
 		} catch (e) {
 			if (t !== this.searchSeq) return;
-			this.searchResults = [], this.renderSearchMessage(`搜索失败：${GI(e)}`);
+			this.searchResults = [], this.renderSearchMessage(`搜索失败：${ZI(e)}`);
 		}
 	}
 	onSearchResultClick(e) {
@@ -47080,7 +47287,7 @@ var BU = `
 			duration: 600
 		}) : t.flyTo({
 			center: [e.lng, e.lat],
-			zoom: zU(e.resultType),
+			zoom: ZU(e.resultType),
 			duration: 600
 		})), this.drawRadius(), this.commit(), e.resultType === "country" || e.resultType === "state" || e.resultType === "region" ? this.setStatus("已定位到国家/地区，点击地图选择具体地点") : (this.setStatus("正在获取地点信息…"), this.scheduleRefresh(0), window.setTimeout(() => {
 			!this.panelEl.hidden && this.state.place === e && this.openPlace(e);
@@ -47091,10 +47298,10 @@ var BU = `
 		this.settings = {
 			...this.settings,
 			radiusM: t
-		}, TB(this.ctx, this.settings), this.radiusValueEl.textContent = IU(t), this.radiusEl && (this.radiusEl.value = String(t)), this.drawRadius(), this.scheduleRefresh(500);
+		}, IB(this.ctx, this.settings), this.radiusValueEl.textContent = JU(t), this.radiusEl && (this.radiusEl.value = String(t)), this.drawRadius(), this.scheduleRefresh(500);
 	}
 	syncRadiusUi() {
-		this.radiusInputEl && (this.radiusInputEl.value = String(this.settings.radiusM), this.radiusValueEl.textContent = IU(this.settings.radiusM), this.radiusEl && (this.radiusEl.value = String(this.settings.radiusM)));
+		this.radiusInputEl && (this.radiusInputEl.value = String(this.settings.radiusM), this.radiusValueEl.textContent = JU(this.settings.radiusM), this.radiusEl && (this.radiusEl.value = String(this.settings.radiusM)));
 	}
 	placeNoteKey(e) {
 		return `place:${SI(e)}`;
@@ -47211,7 +47418,7 @@ var BU = `
 			let e = this.state.stars.find((e) => (e.lang ?? "en") === t && e.title.trim().toLowerCase() === n);
 			if (e) return e;
 		}
-		return this.state.stars.find((n) => PU(n.lang ?? "en", n.pageId) === PU(t, e.pageId)) || this.state.stars.find((t) => this.articleMatches(e, t));
+		return this.state.stars.find((n) => KU(n.lang ?? "en", n.pageId) === KU(t, e.pageId)) || this.state.stars.find((t) => this.articleMatches(e, t));
 	}
 	reconcileStars(e) {
 		let t = this.findArticleStars(e);
@@ -47225,15 +47432,15 @@ var BU = `
 			!i.aiLang && e.aiLang && (i.aiLang = e.aiLang, i.aiTitle = e.aiTitle, i.aiExtract = e.aiExtract, i.aiFullText = e.aiFullText), !i.fullText && e.fullText && (e.lang ?? "en") === (i.lang ?? "en") && (i.fullText = e.fullText), e.contextMode === "full" && i.contextMode !== "full" && (i.contextMode = "full"), this.state.stars = this.state.stars.filter((t) => t !== e), a = !0;
 		}
 		let o = (i.lang ?? "en") !== n || i.title.trim().toLowerCase() !== r;
-		return o || i.pageId !== e.pageId || i.url !== e.url ? (i.lang = n, i.title = e.title, i.pageId = e.pageId, i.url = e.url, i.lat = e.lat, i.lng = e.lng, i.extract = e.extract, o && (i.fullText = void 0), a = !0) : e.extract && i.extract !== e.extract && (i.extract = e.extract, a = !0), a && (this.sync(), vU(this.ctx, this.state)), i;
+		return o || i.pageId !== e.pageId || i.url !== e.url ? (i.lang = n, i.title = e.title, i.pageId = e.pageId, i.url = e.url, i.lat = e.lat, i.lng = e.lng, i.extract = e.extract, o && (i.fullText = void 0), a = !0) : e.extract && i.extract !== e.extract && (i.extract = e.extract, a = !0), a && (this.sync(), AU(this.ctx, this.state)), i;
 	}
 	removeStar(e) {
 		let t = this.articleTitles(e), n = e.lang || "en", r = e.title.trim().toLowerCase();
-		this.state.stars = this.state.stars.filter((i) => !(t.get(i.lang ?? "en") === i.title.trim().toLowerCase() || (i.lang ?? "en") === n && i.title.trim().toLowerCase() === r || e.pageId != null && PU(i.lang ?? "en", i.pageId) === PU(n, e.pageId)));
+		this.state.stars = this.state.stars.filter((i) => !(t.get(i.lang ?? "en") === i.title.trim().toLowerCase() || (i.lang ?? "en") === n && i.title.trim().toLowerCase() === r || e.pageId != null && KU(i.lang ?? "en", i.pageId) === KU(n, e.pageId)));
 	}
 	async openWiki(e, t = "intro") {
 		let n = ++this.wikiSeq;
-		this.wikiEl.hidden = !1, this.placeEl.hidden = !0, this.currentPlace = null, this.wikiMode = t, this.wikiFullText = null, this.wikiLangLinks = {}, this.currentWiki = null, this.wikiTitleEl.textContent = `[${FU(e.lang)}] ${e.title}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.value = "", this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), this.renderAiLang(), this.render(), await this.loadWikiCandidate(e, n, !0);
+		this.wikiEl.hidden = !1, this.placeEl.hidden = !0, this.currentPlace = null, this.wikiMode = t, this.wikiFullText = null, this.wikiLangLinks = {}, this.currentWiki = null, this.wikiTitleEl.textContent = `[${qU(e.lang)}] ${e.title}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.value = "", this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), this.renderAiLang(), this.render(), await this.loadWikiCandidate(e, n, !0);
 	}
 	async restoreWiki(e) {
 		await this.openWiki({
@@ -47247,11 +47454,11 @@ var BU = `
 	}
 	async loadWikiCandidate(e, t, n) {
 		let r = vI(e.lang, e.title), i = await gI(r);
-		if (!(i && typeof i.fetchedAt == "number" && typeof i.extract == "string" && typeof i.url == "string" && typeof i.lang == "string") || Date.now() - i.fetchedAt > DU) try {
-			i = await wU(e), await _I(r, i);
+		if (!(i && typeof i.fetchedAt == "number" && typeof i.extract == "string" && typeof i.url == "string" && typeof i.lang == "string") || Date.now() - i.fetchedAt > zU) try {
+			i = await IU(e), await _I(r, i);
 		} catch (e) {
 			if (!i) {
-				t === this.wikiSeq && (this.wikiBodyEl.textContent = `加载失败：${GI(e)}`, this.starEl.disabled = !0);
+				t === this.wikiSeq && (this.wikiBodyEl.textContent = `加载失败：${ZI(e)}`, this.starEl.disabled = !0);
 				return;
 			}
 			this.toast("网络不可用，显示本地缓存");
@@ -47269,26 +47476,26 @@ var BU = `
 			title: i.title,
 			lat: i.lat,
 			lng: i.lng
-		}, this.state.wikiOpen = !0, this.state.lastWikiMode = this.wikiMode, vU(this.ctx, this.state), this.renderWikiPage(), this.loadWikiLangLinks(i, t);
+		}, this.state.wikiOpen = !0, this.state.lastWikiMode = this.wikiMode, AU(this.ctx, this.state), this.renderWikiPage(), this.loadWikiLangLinks(i, t);
 	}
 	async loadWikiLangLinks(e, t) {
-		let n = SB.filter((t) => t !== e.lang);
+		let n = NB.filter((t) => t !== e.lang);
 		try {
-			let r = await CU(e.lang, e.title, n);
+			let r = await FU(e.lang, e.title, n);
 			if (t !== this.wikiSeq) return;
 			this.wikiLangLinks = {
 				[e.lang]: e.title,
 				...r
 			};
 		} catch (n) {
-			console.warn("[tavern-map] langlinks failed", GI(n)), t === this.wikiSeq && (this.wikiLangLinks = { [e.lang]: e.title });
+			console.warn("[tavern-map] langlinks failed", ZI(n)), t === this.wikiSeq && (this.wikiLangLinks = { [e.lang]: e.title });
 		}
 		t === this.wikiSeq && (this.reconcileStars(e), this.renderWikiToolbar(), this.renderWikiNote(), this.renderAiLang(), this.updateStarButton());
 	}
 	renderWikiPage() {
 		let e = this.currentWiki;
 		if (!e) return;
-		this.wikiTitleEl.textContent = `[${FU(e.lang)}] ${e.title}`, this.renderWikiToolbar(), this.renderWikiBody(), this.wikiLinkEl.href = e.url, this.wikiLinkEl.hidden = !1;
+		this.wikiTitleEl.textContent = `[${qU(e.lang)}] ${e.title}`, this.renderWikiToolbar(), this.renderWikiBody(), this.wikiLinkEl.href = e.url, this.wikiLinkEl.hidden = !1;
 		let t = !!this.findStar(e);
 		this.starEl.disabled = !e.extract && !t, this.updateStarButton(), this.renderWikiNote(), this.renderAiLang();
 	}
@@ -47304,7 +47511,7 @@ var BU = `
 			let n = this.findStar(t);
 			n && (n.contextMode = e, e === "full" && this.wikiFullText && (n.fullText = this.wikiFullText), e === "full" && n.aiLang && n.aiLang !== t.lang && this.ensureAiFullText(n), this.sync());
 		}
-		vU(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.renderWikiBody();
+		AU(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.renderWikiBody();
 	}
 	async loadFullText() {
 		let e = this.currentWiki;
@@ -47329,7 +47536,7 @@ var BU = `
 					return;
 				}
 				try {
-					let r = await TU(e.lang, e.title);
+					let r = await LU(e.lang, e.title);
 					if (!r.trim()) throw Error("全文为空");
 					if (await _I(t, r), n !== this.fullSeq || this.currentWiki !== e || this.wikiMode !== "full") {
 						this.fallbackFullStar(e);
@@ -47337,7 +47544,7 @@ var BU = `
 					}
 					this.wikiFullText = r, this.rememberFullText(e), this.renderWikiBody();
 				} catch (t) {
-					n === this.fullSeq && (this.wikiBodyEl.textContent = `全文加载失败：${GI(t)}`, this.fallbackFullStar(e));
+					n === this.fullSeq && (this.wikiBodyEl.textContent = `全文加载失败：${ZI(t)}`, this.fallbackFullStar(e));
 				}
 			} finally {
 				this.fullLoadingKey === t && (this.fullLoadingKey = null, this.fullPromise = null);
@@ -47347,21 +47554,21 @@ var BU = `
 	}
 	fallbackFullStar(e) {
 		let t = this.findStar(e);
-		!t || t.contextMode !== "full" || t.fullText || t.aiFullText || (t.contextMode = "intro", this.sync(), vU(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.toast("全文加载失败，已改为概览注入；可以稍后再切一次全文重试"));
+		!t || t.contextMode !== "full" || t.fullText || t.aiFullText || (t.contextMode = "intro", this.sync(), AU(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton(), this.toast("全文加载失败，已改为概览注入；可以稍后再切一次全文重试"));
 	}
 	rememberFullText(e) {
 		if (this.wikiMode !== "full" || this.wikiFullText === null) return;
 		let t = this.findStar(e);
-		t && (t.contextMode = "full", t.fullText = this.wikiFullText, this.sync(), vU(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton());
+		t && (t.contextMode = "full", t.fullText = this.wikiFullText, this.sync(), AU(this.ctx, this.state), this.renderWikiToolbar(), this.updateStarButton());
 	}
 	renderWikiToolbar() {
 		let e = this.currentWiki;
 		this.wikiLangsEl.replaceChildren();
-		for (let t of SB) {
+		for (let t of NB) {
 			let n = document.createElement("button");
-			n.type = "button", n.className = "tm-pill", n.dataset.wikiLang = t, n.textContent = FU(t);
+			n.type = "button", n.className = "tm-pill", n.dataset.wikiLang = t, n.textContent = qU(t);
 			let r = e?.lang === t, i = r || !!this.wikiLangLinks[t];
-			n.classList.toggle("active", r), n.disabled = !i, n.title = i ? `切换到 ${FU(t)}` : "该条目没有此语言版本", this.wikiLangsEl.append(n);
+			n.classList.toggle("active", r), n.disabled = !i, n.title = i ? `切换到 ${qU(t)}` : "该条目没有此语言版本", this.wikiLangsEl.append(n);
 		}
 		for (let e of this.wikiModesEl.querySelectorAll("[data-wiki-mode]")) e.classList.toggle("active", e.dataset.wikiMode === this.wikiMode);
 		let t = e ? this.findStar(e) : void 0, n = t?.contextMode === "full";
@@ -47376,7 +47583,7 @@ var BU = `
 			return;
 		}
 		let r = ++this.wikiSeq;
-		this.wikiFullText = null, this.currentWiki = null, this.wikiTitleEl.textContent = `[${FU(e)}] ${n}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), await this.loadWikiCandidate({
+		this.wikiFullText = null, this.currentWiki = null, this.wikiTitleEl.textContent = `[${qU(e)}] ${n}`, this.wikiBodyEl.textContent = "加载中…", this.wikiLinkEl.hidden = !0, this.starEl.disabled = !0, this.wikiNoteEl.disabled = !0, this.wikiNoteStatusEl.textContent = "", this.renderWikiToolbar(), await this.loadWikiCandidate({
 			pageId: 0,
 			title: n,
 			dist: 0,
@@ -47393,9 +47600,9 @@ var BU = `
 		let e = this.currentWiki, t = e ? this.findStar(e) : void 0;
 		if (this.aiLangEl.replaceChildren(), !e) this.aiLangEl.disabled = !0, this.aiLangHintEl.textContent = "";
 		else {
-			this.aiLangEl.append(new Option(`跟随星标页（${FU(t?.lang ?? e.lang)}）`, ""));
-			for (let n of SB) {
-				let r = new Option(FU(n), n);
+			this.aiLangEl.append(new Option(`跟随星标页（${qU(t?.lang ?? e.lang)}）`, ""));
+			for (let n of NB) {
+				let r = new Option(qU(n), n);
 				r.disabled = n !== e.lang && !this.wikiLangLinks[n] && t?.aiLang !== n, this.aiLangEl.append(r);
 			}
 			this.aiLangEl.disabled = !t, this.aiLangEl.value = t?.aiLang ?? "", this.aiLangHintEl.textContent = t ? "收藏与 AI 预览只显示给 AI 的语言" : "星标后可选择";
@@ -47420,9 +47627,9 @@ var BU = `
 			this.aiLangEl.disabled = !0, this.aiLangHintEl.textContent = "正在加载 AI 语言…";
 			try {
 				let e = await this.loadAiPage(n, r, t);
-				t.aiLang = n, t.aiTitle = e.title, t.aiExtract = e.extract, t.aiFullText = void 0, this.sync(), t.contextMode === "full" && await this.ensureAiFullText(t), this.flushNoteSave(), this.toast(`AI 将使用 ${FU(n)} 版本${t.contextMode === "full" ? "（全文）" : ""}`);
+				t.aiLang = n, t.aiTitle = e.title, t.aiExtract = e.extract, t.aiFullText = void 0, this.sync(), t.contextMode === "full" && await this.ensureAiFullText(t), this.flushNoteSave(), this.toast(`AI 将使用 ${qU(n)} 版本${t.contextMode === "full" ? "（全文）" : ""}`);
 			} catch (e) {
-				this.toast(`加载失败：${GI(e)}`);
+				this.toast(`加载失败：${ZI(e)}`);
 			} finally {
 				this.renderAiLang();
 			}
@@ -47431,18 +47638,18 @@ var BU = `
 	async ensureAiFullText(e) {
 		if (e.contextMode !== "full" || !e.aiLang || !e.aiTitle) return;
 		let t = yI(e.aiLang, e.aiTitle), n = await gI(t);
-		if (typeof n == "string" && n.length > 0) e.aiFullText = n, this.sync(), vU(this.ctx, this.state);
+		if (typeof n == "string" && n.length > 0) e.aiFullText = n, this.sync(), AU(this.ctx, this.state);
 		else try {
-			let n = await TU(e.aiLang, e.aiTitle);
-			await _I(t, n), e.aiFullText = n, this.sync(), vU(this.ctx, this.state);
+			let n = await LU(e.aiLang, e.aiTitle);
+			await _I(t, n), e.aiFullText = n, this.sync(), AU(this.ctx, this.state);
 		} catch (e) {
-			console.warn("[tavern-map] AI full text failed", GI(e)), this.toast("AI 语言全文加载失败，仍会使用该语言的简介");
+			console.warn("[tavern-map] AI full text failed", ZI(e)), this.toast("AI 语言全文加载失败，仍会使用该语言的简介");
 		}
 	}
 	async loadAiPage(e, t, n) {
 		let r = vI(e, t), i = await gI(r);
 		if (i && typeof i.fetchedAt == "number" && typeof i.extract == "string" && typeof i.lang == "string") return i;
-		let a = await wU({
+		let a = await IU({
 			pageId: 0,
 			title: t,
 			dist: 0,
@@ -47460,11 +47667,11 @@ var BU = `
 	}
 	scheduleNoteSave() {
 		this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.noteSaveTimer = window.setTimeout(() => {
-			this.noteSaveTimer = void 0, vU(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
+			this.noteSaveTimer = void 0, AU(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
 		}, 400);
 	}
 	flushNoteSave() {
-		this.noteSaveTimer !== void 0 && (window.clearTimeout(this.noteSaveTimer), this.noteSaveTimer = void 0), vU(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
+		this.noteSaveTimer !== void 0 && (window.clearTimeout(this.noteSaveTimer), this.noteSaveTimer = void 0), AU(this.ctx, this.state), this.wikiNoteStatusEl.textContent = "已保存";
 	}
 	async toggleStar() {
 		let e = this.currentWiki;
@@ -47551,7 +47758,7 @@ var BU = `
 			depth: Math.round(e(this.depthEl, this.settings.depth, 0, 10)),
 			...this.realAiSettings(),
 			...this.layerAiSettings()
-		}, this.settings.layerNearbyMax = Math.min(50, Math.max(1, Math.round(this.settings.layerNearbyMax || 8))), this.settings.layerItineraryPoiRadius = Math.min(.4, Math.max(.01, this.settings.layerItineraryPoiRadius || .08)), this.settings.layerItineraryPoiMax = Math.min(30, Math.max(1, Math.round(this.settings.layerItineraryPoiMax || 8))), TB(this.ctx, this.settings), this.layerUI?.handleSettingsChanged(), this.writeSettingsToForm(), this.state.enabled = this.settings.enabled, this.commit();
+		}, this.settings.layerNearbyMax = Math.min(50, Math.max(1, Math.round(this.settings.layerNearbyMax || 8))), this.settings.layerItineraryPoiRadius = Math.min(.4, Math.max(.01, this.settings.layerItineraryPoiRadius || .08)), this.settings.layerItineraryPoiMax = Math.min(30, Math.max(1, Math.round(this.settings.layerItineraryPoiMax || 8))), IB(this.ctx, this.settings), this.layerUI?.handleSettingsChanged(), this.writeSettingsToForm(), this.state.enabled = this.settings.enabled, this.commit();
 	}
 	writeSettingsToForm() {
 		if (this.enabledEl) {
@@ -47561,10 +47768,10 @@ var BU = `
 		}
 	}
 	clearChat() {
-		this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.moving && this.stopMovement(), this.clearRouteLine(), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.state.nearby = [], this.state.wiki = [], this.state.stars = [], this.state.savedPlaces = [], this.state.poiBriefs = [], this.state.poiAllToAI = !1, this.state.place = void 0, this.pois = [], this.poisById.clear(), this.poiSeq += 1, delete this.state.itinerary, delete this.state.lastWiki, delete this.state.lastWikiMode, this.state.wikiOpen = !1, this.state.lastTab = "nearby", this.currentWiki = null, this.currentPlace = null, this.tab = "nearby", this.moveProgress = 0, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.updatePoiSource(), this.syncPoiUi(), this.layerUI?.clearChat(), delete this.liveContext().chatMetadata?.[pB], this.commit(), this.toast("已清空本聊天地的地点与收藏");
+		this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.moving && this.stopMovement(), this.clearRouteLine(), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.state.nearby = [], this.state.wiki = [], this.state.stars = [], this.state.savedPlaces = [], this.state.poiBriefs = [], this.state.poiAllToAI = !1, this.state.place = void 0, this.pois = [], this.poisById.clear(), this.poiSeq += 1, delete this.state.itinerary, delete this.state.lastWiki, delete this.state.lastWikiMode, this.state.wikiOpen = !1, this.state.lastTab = "nearby", this.currentWiki = null, this.currentPlace = null, this.tab = "nearby", this.moveProgress = 0, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.updatePoiSource(), this.syncPoiUi(), this.layerUI?.clearChat(), delete this.liveContext().chatMetadata?.[CB], this.commit(), this.toast("已清空本聊天地的地点与收藏");
 	}
 	onChatChanged() {
-		if (this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.moving && this.stopMovement(), this.clearRouteLine(), this.ctx = this.liveContext(), this.settings = wB(this.ctx), this.state = _U(this.ctx), this.state.enabled = this.settings.enabled, this.restoreStoredRealPosition(), this.hydrateGlobalNotes(), this.layerUI?.handleChatChanged(), this.pois = [], this.poisById.clear(), this.poiSeq += 1, this.tab = this.state.lastTab ?? "nearby", this.currentWiki = null, this.currentPlace = null, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.writeSettingsToForm(), this.map) {
+		if (this.seq += 1, this.wikiSeq += 1, this.fullSeq += 1, this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.loadingNearby = !1, this.loadingWiki = !1, this.moving && this.stopMovement(), this.clearRouteLine(), this.ctx = this.liveContext(), this.settings = FB(this.ctx), this.state = kU(this.ctx), this.state.enabled = this.settings.enabled, this.restoreStoredRealPosition(), this.hydrateGlobalNotes(), this.layerUI?.handleChatChanged(), this.pois = [], this.poisById.clear(), this.poiSeq += 1, this.tab = this.state.lastTab ?? "nearby", this.currentWiki = null, this.currentPlace = null, this.wikiFullText = null, this.wikiLangLinks = {}, this.wikiEl.hidden = !0, this.placeEl.hidden = !0, this.previewEl.hidden = !0, this.searchInputEl.value = "", this.hideSearchResults(), this.writeSettingsToForm(), this.map) {
 			let e = this.state.view;
 			this.map.jumpTo({
 				center: e ? [e.center.lng, e.center.lat] : [this.state.center.lng, this.state.center.lat],
@@ -47580,7 +47787,7 @@ var BU = `
 		if (!e) return;
 		let t = e.getBoundingClientRect(), n = t.width || 52, r = t.height || 52, i = window.matchMedia("(max-width: 640px)").matches, a = Math.max(0, window.innerWidth - n - (i ? 14 : 18)), o = Math.max(0, window.innerHeight - r - (i ? 124 : 96));
 		try {
-			let e = localStorage.getItem(OU);
+			let e = localStorage.getItem(BU);
 			if (e) {
 				let t = JSON.parse(e);
 				Number.isFinite(t.left) && Number.isFinite(t.top) && (a = Math.min(Math.max(0, t.left), Math.max(0, window.innerWidth - n)), o = Math.min(Math.max(0, t.top), Math.max(0, window.innerHeight - r)));
@@ -47617,7 +47824,7 @@ var BU = `
 			}, 0);
 			let n = e.getBoundingClientRect();
 			try {
-				localStorage.setItem(OU, JSON.stringify({
+				localStorage.setItem(BU, JSON.stringify({
 					left: n.left,
 					top: n.top
 				}));
@@ -47635,7 +47842,7 @@ var BU = `
 			"height"
 		]) this.panelEl.style.removeProperty(e);
 		else try {
-			let e = localStorage.getItem(kU);
+			let e = localStorage.getItem(VU);
 			if (!e) return;
 			let t = JSON.parse(e);
 			if (!Number.isFinite(t.left) || !Number.isFinite(t.top) || !Number.isFinite(t.width) || !Number.isFinite(t.height)) return;
@@ -47653,7 +47860,7 @@ var BU = `
 			"height"
 		]) this.panelEl.style.removeProperty(e);
 		try {
-			localStorage.removeItem(kU);
+			localStorage.removeItem(VU);
 		} catch {}
 	}
 	bindPanelDrag() {
@@ -47676,7 +47883,7 @@ var BU = `
 				if (window.removeEventListener("pointermove", c), window.removeEventListener("pointerup", l), document.body.style.userSelect = "", !s) return;
 				let e = this.panelEl.getBoundingClientRect();
 				try {
-					localStorage.setItem(kU, JSON.stringify({
+					localStorage.setItem(VU, JSON.stringify({
 						left: e.left,
 						top: e.top,
 						width: e.width,
@@ -47697,13 +47904,13 @@ var BU = `
 		t.className = "tm-toast", t.setAttribute("role", "status"), t.textContent = e, document.body.append(t), window.setTimeout(() => t.remove(), 2600);
 	}
 	cleanup() {
-		qH(this.ctx), this.offs.forEach((e) => e()), this.offs.length = 0, this.refreshTimer !== void 0 && window.clearTimeout(this.refreshTimer), this.settingsTimer !== void 0 && window.clearTimeout(this.settingsTimer), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.searchTimer !== void 0 && window.clearTimeout(this.searchTimer), this.moveFrame !== null && window.cancelAnimationFrame(this.moveFrame), this.moveFrame = null, this.moving = !1, this.clearRouteLine(), this.resizeObserver?.disconnect(), this.layerUI?.dispose(), this.layerUI = null, this.map?.remove(), this.map = null, this.marker = null, window.removeEventListener("beforeunload", this.onUnload), document.getElementById("tm-fab")?.remove(), this.panelEl?.remove(), this.previewEl?.remove(), document.getElementById("tm-settings")?.remove();
+		aU(this.ctx), this.offs.forEach((e) => e()), this.offs.length = 0, this.refreshTimer !== void 0 && window.clearTimeout(this.refreshTimer), this.settingsTimer !== void 0 && window.clearTimeout(this.settingsTimer), this.noteSaveTimer !== void 0 && window.clearTimeout(this.noteSaveTimer), this.searchTimer !== void 0 && window.clearTimeout(this.searchTimer), this.moveFrame !== null && window.cancelAnimationFrame(this.moveFrame), this.moveFrame = null, this.moving = !1, this.clearRouteLine(), this.resizeObserver?.disconnect(), this.layerUI?.dispose(), this.layerUI = null, this.map?.remove(), this.map = null, this.marker = null, window.removeEventListener("beforeunload", this.onUnload), document.getElementById("tm-fab")?.remove(), this.panelEl?.remove(), this.previewEl?.remove(), document.getElementById("tm-settings")?.remove();
 	}
 };
 // src/index.ts
 GF(KF);
-var UU = "__tavernMapBooted", WU = 100, GU = 200;
-function KU() {
+var tW = "__tavernMapBooted", nW = 100, rW = 200;
+function iW() {
 	let e = window.SillyTavern;
 	try {
 		let t = e?.getContext?.();
@@ -47713,18 +47920,18 @@ function KU() {
 	}
 	return null;
 }
-function qU(e = 0) {
+function aW(e = 0) {
 	let t = window;
-	if (t[UU]) return;
-	let n = KU();
-	n ? (t[UU] = !0, aI().finally(() => {
+	if (t[tW]) return;
+	let n = iW();
+	n ? (t[tW] = !0, aI().finally(() => {
 		try {
-			t.__tavernMapUI = new HU(n);
+			t.__tavernMapUI = new eW(n);
 		} catch (e) {
-			t[UU] = !1, console.error("[tavern-map] failed to mount UI", e);
+			t[tW] = !1, console.error("[tavern-map] failed to mount UI", e);
 		}
-	})) : e < WU ? window.setTimeout(() => qU(e + 1), GU) : console.error("[tavern-map] SillyTavern context unavailable; extension did not start");
+	})) : e < nW ? window.setTimeout(() => aW(e + 1), rW) : console.error("[tavern-map] SillyTavern context unavailable; extension did not start");
 }
-document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => qU(), { once: !0 }) : qU();
+document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => aW(), { once: !0 }) : aW();
 
 //# sourceMappingURL=index.js.map
