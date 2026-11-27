@@ -42649,30 +42649,33 @@ var zV = `
 			"NE"
 		][(Math.round(Math.atan2(t, e) / (Math.PI / 4)) % 8 + 8) % 8];
 	}
+	nearbyRadiusFraction() {
+		return Math.min(.8, Math.max(.001, this.state.nearbyRadius ?? .08));
+	}
+	nearbyRadiusMapUnits() {
+		return this.nearbyRadiusFraction() * this.mapSpan().w;
+	}
 	buildNearby(e, t, n) {
-		if (!this.pkg || !t.layerNearbyAI || t.layerNearbyMax <= 0) return [];
-		let r = this.state.nearbyRadius ?? .08, i = this.viewportEl.clientWidth || this.canvasEl.clientWidth || 1, a = this.viewportEl.clientHeight || this.canvasEl.clientHeight || 1, [o, s] = this.project(e.x, e.y, i, a), [c] = this.project(e.x + r, e.y, i, a), [, l] = this.project(e.x, e.y + r, i, a), u = Math.abs(c - o), d = Math.abs(l - s);
-		if (u < 1 || d < 1) return [];
-		let f = new Set(this.state.hiddenCategories ?? []), p = new Map(this.effectiveCategoryList.map((e) => [e.id, e]));
-		return this.effectiveMarkerList.filter((t) => {
-			if (t.id === n || f.has(t.categoryId)) return !1;
-			let i = o + (t.x - e.x) * (u / r), a = s + (t.y - e.y) * (d / r);
-			return Math.hypot(i - o, a - s) <= u;
-		}).map((n) => {
-			let i = n.x - e.x, a = n.y - e.y, o = u / r * i, s = d / r * a, c = p.get(n.categoryId)?.name;
-			return {
-				id: n.id,
-				name: n.name,
-				category: t.layerNearbyType ? c : void 0,
-				x: n.x,
-				y: n.y,
-				direction: t.layerNearbyDirection ? this.directionFor(o, s) : "",
-				distancePercent: Math.hypot(o, s) / u * r * 100,
-				note: t.layerNearbyNotes && this.placeAIPartAllowed(n, "note") && this.markerNoteValue(n).trim() ? this.markerNoteValue(n) : void 0,
-				sourceMaterial: t.layerNearbySource && this.placeAIPartAllowed(n, "source") && this.markerSourceValue(n).trim() ? this.markerSourceValue(n) : void 0,
-				wikiTexts: t.layerNearbyWiki && this.placeAIPartAllowed(n, "wiki") ? this.contextWikiTexts(n, t, !0) : void 0
-			};
-		}).sort((e, t) => e.distancePercent - t.distancePercent).slice(0, t.layerNearbyMax);
+		let r = this.pkg;
+		if (!r || !t.layerNearbyAI || t.layerNearbyMax <= 0) return [];
+		let i = this.mapSpan().w, a = this.nearbyRadiusFraction(), o = r.kind === "image" ? r.height / r.width : 1, s = new Set(this.state.hiddenCategories ?? []), c = new Map(this.effectiveCategoryList.map((e) => [e.id, e])), l = [];
+		for (let r of this.effectiveMarkerList) {
+			if (r.id === n || s.has(r.categoryId)) continue;
+			let u = r.x - e.x, d = (r.y - e.y) * o, f = Math.hypot(u, d) / i;
+			f > a || l.push({
+				id: r.id,
+				name: r.name,
+				category: t.layerNearbyType ? c.get(r.categoryId)?.name : void 0,
+				x: r.x,
+				y: r.y,
+				direction: t.layerNearbyDirection ? this.directionFor(u, d) : "",
+				distancePercent: f * 100,
+				note: t.layerNearbyNotes && this.placeAIPartAllowed(r, "note") && this.markerNoteValue(r).trim() ? this.markerNoteValue(r) : void 0,
+				sourceMaterial: t.layerNearbySource && this.placeAIPartAllowed(r, "source") && this.markerSourceValue(r).trim() ? this.markerSourceValue(r) : void 0,
+				wikiTexts: t.layerNearbyWiki && this.placeAIPartAllowed(r, "wiki") ? this.contextWikiTexts(r, t, !0) : void 0
+			});
+		}
+		return l.sort((e, t) => e.distancePercent - t.distancePercent).slice(0, t.layerNearbyMax);
 	}
 	contextWikiTexts(e, t, n = t.layerWikiAI) {
 		if (!n || !this.placeAIPartAllowed(e, "wiki")) return [];
@@ -43256,34 +43259,37 @@ var zV = `
 		this.state.context = f, this.persist(), this.contextStatusEl.textContent = f.currentPlace || f.position || f.nearby || f.favorites ? "图层上下文：已生成" : "图层上下文：待机", this.contextStatusEl.title = f.currentPlace ? "所在地点会进入图层地图 AI 上下文" : "拖动“我”到地点，或调整附近范围后生成", e && this.renderPositionCard(), this.renderNearby(), this.routeShelfEl && this.renderItineraryShelf(), this.contextModalEl.hidden || (this.renderContextControls(), this.renderContextPreview()), this.callbacks.onChange();
 	}
 	renderPositionCard() {
-		if (!this.positionEl || (this.positionEl.replaceChildren(), !this.pkg)) return;
-		let e = this.state.userPosition, t = document.createElement("section");
-		t.className = "tml-position-card";
-		let n = document.createElement("div");
-		n.className = "tml-position-head";
-		let r = document.createElement("span");
-		r.className = "tml-position-flag", r.textContent = "◎";
-		let i = this.markerById(this.state.atPlaceId), a = document.createElement("strong");
-		a.textContent = "我";
-		let o = document.createElement("span");
-		if (o.className = "tml-position-value", o.textContent = e ? i ? i.name : this.pointText(e.x, e.y) : "未设置", n.append(r, a, o), t.append(n), e) {
-			let n = this.regionForPoint(e.x, e.y)?.name;
-			if (n) {
+		if (!this.positionEl) return;
+		this.positionEl.replaceChildren();
+		let e = this.pkg;
+		if (!e) return;
+		let t = this.state.userPosition, n = document.createElement("section");
+		n.className = "tml-position-card";
+		let r = document.createElement("div");
+		r.className = "tml-position-head";
+		let i = document.createElement("span");
+		i.className = "tml-position-flag", i.textContent = "◎";
+		let a = this.markerById(this.state.atPlaceId), o = document.createElement("strong");
+		o.textContent = "我";
+		let s = document.createElement("span");
+		if (s.className = "tml-position-value", s.textContent = t ? a ? a.name : this.pointText(t.x, t.y) : "未设置", r.append(i, o, s), n.append(r), t) {
+			let r = this.regionForPoint(t.x, t.y)?.name;
+			if (r) {
 				let e = document.createElement("div");
-				e.className = "tml-position-area", e.textContent = i ? `我在这里 · 区域：${n}` : `区域：${n}`, t.append(e);
+				e.className = "tml-position-area", e.textContent = a ? `我在这里 · 区域：${r}` : `区域：${r}`, n.append(e);
 			}
-			let r = document.createElement("label");
-			r.className = "tml-position-radius";
-			let a = document.createElement("span");
-			a.textContent = `附近 ${this.radiusLabel()}`;
-			let o = document.createElement("input");
-			o.type = "range", o.min = "0.01", o.max = "0.4", o.step = "0.005", o.value = String(this.state.nearbyRadius ?? .08), o.setAttribute("aria-label", "附近半径"), o.addEventListener("input", () => {
-				this.state.nearbyRadius = Number(o.value), a.textContent = `附近 ${this.radiusLabel()}`, this.refreshContext(!1), this.persist(), this.requestDraw();
-			}), r.append(a, o), t.append(r);
-			let s = document.createElement("div");
-			s.className = "tml-position-actions", s.append(this.actionButton("居中", () => this.centerOnUserPosition()), this.actionButton("移动", () => this.startUserPlacement()), this.actionButton("清除", () => this.clearUserPosition())), t.append(s);
-		} else t.append(this.actionButton("在地图上放置", () => this.startUserPlacement(), !1, "tml-position-place"));
-		this.positionEl.append(t);
+			let i = document.createElement("label");
+			i.className = "tml-position-radius";
+			let o = document.createElement("span");
+			o.textContent = `附近 ${this.radiusLabel()}`;
+			let s = document.createElement("input");
+			s.type = "range", s.min = e.kind === "tiles" ? "0.001" : "0.01", s.max = "0.4", s.step = e.kind === "tiles" ? "0.001" : "0.005", s.value = String(this.nearbyRadiusFraction()), s.setAttribute("aria-label", "附近半径"), s.addEventListener("input", () => {
+				this.state.nearbyRadius = Number(s.value), o.textContent = `附近 ${this.radiusLabel()}`, this.refreshContext(!1), this.requestDraw();
+			}), i.append(o, s), n.append(i);
+			let c = document.createElement("div");
+			c.className = "tml-position-actions", c.append(this.actionButton("居中", () => this.centerOnUserPosition()), this.actionButton("移动", () => this.startUserPlacement()), this.actionButton("清除", () => this.clearUserPosition())), n.append(c);
+		} else n.append(this.actionButton("在地图上放置", () => this.startUserPlacement(), !1, "tml-position-place"));
+		this.positionEl.append(n);
 	}
 	renderNearby() {
 		if (!this.nearbyEl) return;
@@ -43515,8 +43521,8 @@ var zV = `
 	drawUserRadius(e, t, n) {
 		let r = this.state.userPosition;
 		if (!r) return;
-		let i = Math.min(.8, Math.max(.001, this.state.nearbyRadius ?? .08)), [a, o] = this.project(r.x, r.y, t, n), [s] = this.project(r.x + i, r.y, t, n), c = Math.abs(s - a);
-		c < 4 || (e.save(), e.beginPath(), e.arc(a, o, c, 0, Math.PI * 2), e.fillStyle = "rgba(217, 83, 79, 0.10)", e.fill(), e.setLineDash([7, 5]), e.lineWidth = 1.6, e.strokeStyle = "rgba(230, 91, 84, 0.95)", e.stroke(), e.restore());
+		let i = this.nearbyRadiusMapUnits(), [a, o] = this.project(r.x, r.y, t, n), [s, c] = this.project(r.x + i, r.y, t, n), l = Math.hypot(s - a, c - o);
+		!Number.isFinite(l) || l <= 0 || (e.save(), e.beginPath(), e.arc(a, o, l, 0, Math.PI * 2), e.fillStyle = "rgba(217, 83, 79, 0.10)", e.fill(), e.setLineDash([7, 5]), e.lineWidth = 1.6, e.strokeStyle = "rgba(230, 91, 84, 0.95)", e.stroke(), e.restore());
 	}
 	onUserStampDown = (e) => {
 		let t = this.state.userPosition;
@@ -43556,10 +43562,10 @@ var zV = `
 		t && this.renderItineraryShelf(), this.refreshContext(), this.persist(), this.requestDraw();
 	};
 	radiusLabel() {
-		let e = this.state.nearbyRadius ?? .08, t = this.gridConfig();
-		if (t) {
-			let n = e / t.cellW, r = t.unitValue * n;
-			return `${n.toFixed(1)} 格${t.unitValue ? ` ≈ ${r.toFixed(1)} ${t.unitLabel}` : ""}`;
+		let e = this.nearbyRadiusFraction(), t = this.nearbyRadiusMapUnits(), n = this.gridConfig();
+		if (n) {
+			let e = t / n.cellW, r = n.unitValue * e;
+			return `${e.toFixed(1)} 格${n.unitValue ? ` ≈ ${r.toFixed(1)} ${n.unitLabel}` : ""}`;
 		}
 		return `${(e * 100).toFixed(1)}% 地图宽`;
 	}

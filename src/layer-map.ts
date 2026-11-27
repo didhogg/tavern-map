@@ -4757,6 +4757,19 @@ export class LayerMapUI {
     return directions[index]
   }
 
+  private nearbyRadiusFraction(): number {
+    return Math.min(0.8, Math.max(0.001, this.state.nearbyRadius ?? 0.08))
+  }
+
+  /**
+   * Nearby radius is stored as a fraction of the map span width. Image maps use
+   * 0..1 map coordinates, but tile maps use whole-world WebMercator coordinates,
+   * so the fraction must be converted before projecting or drawing it.
+   */
+  private nearbyRadiusMapUnits(): number {
+    return this.nearbyRadiusFraction() * this.mapSpan().w
+  }
+
   private buildNearby(
     anchor: { x: number; y: number },
     settings: Settings,
@@ -4764,61 +4777,49 @@ export class LayerMapUI {
   ): LayerNearbyPlace[] {
     const pkg = this.pkg
     if (!pkg || !settings.layerNearbyAI || settings.layerNearbyMax <= 0) return []
-    const radius = this.state.nearbyRadius ?? 0.08
-    const width = this.viewportEl.clientWidth || this.canvasEl.clientWidth || 1
-    const height = this.viewportEl.clientHeight || this.canvasEl.clientHeight || 1
-    const [anchorX, anchorY] = this.project(anchor.x, anchor.y, width, height)
-    const [edgeX] = this.project(anchor.x + radius, anchor.y, width, height)
-    const [, edgeY] = this.project(anchor.x, anchor.y + radius, width, height)
-    const radiusPx = Math.abs(edgeX - anchorX)
-    const radiusYPx = Math.abs(edgeY - anchorY)
-    if (radiusPx < 1 || radiusYPx < 1) return []
+    const mapWidth = this.mapSpan().w
+    const radiusFraction = this.nearbyRadiusFraction()
+    // One normalized Y unit covers the image height. Tile coordinates already
+    // have equal X and Y scale. Compare distances in units of map width.
+    const yScale = pkg.kind === 'image' ? pkg.height / pkg.width : 1
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const categories = new Map(
       this.effectiveCategoryList.map((category) => [category.id, category]),
     )
-    return this.effectiveMarkerList
-      .filter((marker) => {
-        if (marker.id === excludeId) return false
-        if (hidden.has(marker.categoryId)) return false
-        const screenX = anchorX + (marker.x - anchor.x) * (radiusPx / radius)
-        const screenY = anchorY + (marker.y - anchor.y) * (radiusYPx / radius)
-        return Math.hypot(screenX - anchorX, screenY - anchorY) <= radiusPx
+    const nearby: LayerNearbyPlace[] = []
+    for (const marker of this.effectiveMarkerList) {
+      if (marker.id === excludeId || hidden.has(marker.categoryId)) continue
+      const dx = marker.x - anchor.x
+      const dy = (marker.y - anchor.y) * yScale
+      const distanceFraction = Math.hypot(dx, dy) / mapWidth
+      if (distanceFraction > radiusFraction) continue
+      nearby.push({
+        id: marker.id,
+        name: marker.name,
+        category: settings.layerNearbyType ? categories.get(marker.categoryId)?.name : undefined,
+        x: marker.x,
+        y: marker.y,
+        direction: settings.layerNearbyDirection ? this.directionFor(dx, dy) : '',
+        distancePercent: distanceFraction * 100,
+        note:
+          settings.layerNearbyNotes &&
+          this.placeAIPartAllowed(marker, 'note') &&
+          this.markerNoteValue(marker).trim()
+            ? this.markerNoteValue(marker)
+            : undefined,
+        sourceMaterial:
+          settings.layerNearbySource &&
+          this.placeAIPartAllowed(marker, 'source') &&
+          this.markerSourceValue(marker).trim()
+            ? this.markerSourceValue(marker)
+            : undefined,
+        wikiTexts:
+          settings.layerNearbyWiki && this.placeAIPartAllowed(marker, 'wiki')
+            ? this.contextWikiTexts(marker, settings, true)
+            : undefined,
       })
-      .map((marker) => {
-        const dx = marker.x - anchor.x
-        const dy = marker.y - anchor.y
-        const screenDx = dx * (radiusPx / radius)
-        const screenDy = dy * (radiusYPx / radius)
-        const category = categories.get(marker.categoryId)?.name
-        return {
-          id: marker.id,
-          name: marker.name,
-          category: settings.layerNearbyType ? category : undefined,
-          x: marker.x,
-          y: marker.y,
-          direction: settings.layerNearbyDirection
-            ? this.directionFor(screenDx, screenDy)
-            : '',
-          distancePercent: (Math.hypot(screenDx, screenDy) / radiusPx) * radius * 100,
-          note:
-            settings.layerNearbyNotes &&
-            this.placeAIPartAllowed(marker, 'note') &&
-            this.markerNoteValue(marker).trim()
-              ? this.markerNoteValue(marker)
-              : undefined,
-          sourceMaterial:
-            settings.layerNearbySource &&
-            this.placeAIPartAllowed(marker, 'source') &&
-            this.markerSourceValue(marker).trim()
-              ? this.markerSourceValue(marker)
-              : undefined,
-          wikiTexts:
-            settings.layerNearbyWiki && this.placeAIPartAllowed(marker, 'wiki')
-              ? this.contextWikiTexts(marker, settings, true)
-              : undefined,
-        }
-      })
+    }
+    return nearby
       .sort((a, b) => a.distancePercent - b.distancePercent)
       .slice(0, settings.layerNearbyMax)
   }
@@ -6018,16 +6019,15 @@ export class LayerMapUI {
       radiusText.textContent = `附近 ${this.radiusLabel()}`
       const radiusInput = document.createElement('input')
       radiusInput.type = 'range'
-      radiusInput.min = '0.01'
+      radiusInput.min = pkg.kind === 'tiles' ? '0.001' : '0.01'
       radiusInput.max = '0.4'
-      radiusInput.step = '0.005'
-      radiusInput.value = String(this.state.nearbyRadius ?? 0.08)
+      radiusInput.step = pkg.kind === 'tiles' ? '0.001' : '0.005'
+      radiusInput.value = String(this.nearbyRadiusFraction())
       radiusInput.setAttribute('aria-label', '附近半径')
       radiusInput.addEventListener('input', () => {
         this.state.nearbyRadius = Number(radiusInput.value)
         radiusText.textContent = `附近 ${this.radiusLabel()}`
         this.refreshContext(false)
-        this.persist()
         this.requestDraw()
       })
       radiusRow.append(radiusText, radiusInput)
@@ -6443,14 +6443,14 @@ export class LayerMapUI {
   private drawUserRadius(context: CanvasRenderingContext2D, width: number, height: number): void {
     const user = this.state.userPosition
     if (!user) return
-    const radius = Math.min(0.8, Math.max(0.001, this.state.nearbyRadius ?? 0.08))
+    const radius = this.nearbyRadiusMapUnits()
     const [cx, cy] = this.project(user.x, user.y, width, height)
-    const [rx] = this.project(user.x + radius, user.y, width, height)
-    const xRadius = Math.abs(rx - cx)
-    if (xRadius < 4) return
+    const [rx, ry] = this.project(user.x + radius, user.y, width, height)
+    const radiusPx = Math.hypot(rx - cx, ry - cy)
+    if (!Number.isFinite(radiusPx) || radiusPx <= 0) return
     context.save()
     context.beginPath()
-    context.arc(cx, cy, xRadius, 0, Math.PI * 2)
+    context.arc(cx, cy, radiusPx, 0, Math.PI * 2)
     context.fillStyle = 'rgba(217, 83, 79, 0.10)'
     context.fill()
     context.setLineDash([7, 5])
@@ -6527,14 +6527,15 @@ export class LayerMapUI {
   }
 
   private radiusLabel(): string {
-    const radius = this.state.nearbyRadius ?? 0.08
+    const fraction = this.nearbyRadiusFraction()
+    const radius = this.nearbyRadiusMapUnits()
     const grid = this.gridConfig()
     if (grid) {
       const cells = radius / grid.cellW
       const amount = grid.unitValue * cells
       return `${cells.toFixed(1)} 格${grid.unitValue ? ` ≈ ${amount.toFixed(1)} ${grid.unitLabel}` : ''}`
     }
-    return `${(radius * 100).toFixed(1)}% 地图宽`
+    return `${(fraction * 100).toFixed(1)}% 地图宽`
   }
 
   private clearUserPosition(): void {
