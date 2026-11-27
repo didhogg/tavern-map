@@ -2692,6 +2692,36 @@
   white-space: pre-wrap;
 }
 
+.tml-custom-name {
+  margin-top: 12px;
+  padding-top: 9px;
+  border-top: 1px solid var(--tm-line);
+}
+
+.tml-custom-name label {
+  display: block;
+  color: var(--tm-muted);
+  font-size: 10px;
+}
+
+.tml-custom-name input {
+  width: 100%;
+  margin-top: 5px;
+  padding: 6px 7px;
+  border: 1px solid var(--tm-line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--tm-text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.tml-tool:disabled,
+.tml-action:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 .tml-note-section {
   margin-top: 12px;
   padding-top: 9px;

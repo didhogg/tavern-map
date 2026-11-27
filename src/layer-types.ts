@@ -84,6 +84,11 @@ export type LayerMarker = {
   sourceTitle?: string
   /** Links imported with the source marker (always shown in place details). */
   sourceLinks?: LayerLink[]
+  /** True for a user-created pin that is not part of the imported package. */
+  custom?: boolean
+  /** Links added to a user-created pin, stored with the map-level pin edits. */
+  links?: LayerLink[]
+  createdAt?: number
 }
 
 export type LayerRegion = {
@@ -117,6 +122,35 @@ export type LayerLink = {
   text?: string
   fetchedAt?: number
   status?: string
+}
+
+export type LayerPinPoint = {
+  x: number
+  y: number
+}
+
+export type LayerPinHistory = {
+  /** Positions before the current one, oldest first. Maximum 10. */
+  past: LayerPinPoint[]
+  /** Positions undone and available for redo, oldest first. Maximum 10. */
+  future: LayerPinPoint[]
+}
+
+export type LayerCustomPin = LayerMarker & {
+  custom: true
+  links: LayerLink[]
+  createdAt: number
+  updatedAt: number
+}
+
+export type LayerPinEdits = {
+  version: 1
+  /** Map marker id -> user-moved normalized coordinate. */
+  overrides: Record<string, LayerPinPoint>
+  customPins: LayerCustomPin[]
+  /** Per-pin move history, including custom pins. */
+  history: Record<string, LayerPinHistory>
+  updatedAt: number
 }
 
 export type LayerTileConfig = {

@@ -34,8 +34,10 @@ import {
   loadLayerState,
   saveLayerState,
   type LayerCategory,
+  type LayerCategoryGroup,
   type LayerChatState,
   type LayerContextSnapshot,
+  type LayerCustomPin,
   type LayerImageFit,
   type LayerImageRect,
   type LayerGridConfig,
@@ -45,6 +47,8 @@ import {
   type LayerMapPackage,
   type LayerMarker,
   type LayerNearbyPlace,
+  type LayerPinEdits,
+  type LayerPinPoint,
   type LayerUserPosition,
   type LayerPackageMeta,
   type LayerRegion,
@@ -63,9 +67,20 @@ import {
   layerFavoriteKey,
   listFavorites,
   removeFavorite,
+  setFavorite,
   toggleFavorite,
   type FavoritePlace,
 } from './favorites-store'
+import {
+  CUSTOM_PIN_CATEGORY_ID,
+  CUSTOM_PIN_COLOR,
+  CUSTOM_PIN_GROUP_ID,
+  MAX_PIN_HISTORY,
+  emptyPinEdits,
+  loadPinEdits,
+  removePinEdits,
+  savePinEdits,
+} from './layer-pin-store'
 import { LayerWindowController } from './layer-window'
 import {
   removeStoredLayerPackage,
@@ -90,6 +105,18 @@ const IMAGE_PANEL_WIDTH = 340
 /** Decoded-tile cache only; imported tile files and map data are never discarded. */
 const DECODED_TILE_MEMORY_BUDGET = 256 * 1024 * 1024
 const TILE_LOAD_CONCURRENCY = 8
+const CUSTOM_PIN_CATEGORY: LayerCategory = {
+  id: CUSTOM_PIN_CATEGORY_ID,
+  name: '我的图钉',
+  groupId: CUSTOM_PIN_GROUP_ID,
+  color: CUSTOM_PIN_COLOR,
+  order: 9999,
+}
+const CUSTOM_PIN_GROUP: LayerCategoryGroup = {
+  id: CUSTOM_PIN_GROUP_ID,
+  name: '我的',
+  order: 9998,
+}
 function linkTextKey(url: string): string {
   return `layer-linktext:${url}`
 }
@@ -277,6 +304,9 @@ const PANEL_HTML = `
         <div class="tml-toolbar-actions">
           <button type="button" class="tml-tool active" data-action="labels" aria-pressed="true">标签</button>
           <button type="button" class="tml-tool active" data-action="regions" aria-pressed="true">区域</button>
+          <button type="button" class="tml-tool tml-add-pin" data-action="add-pin" title="在地图上添加自己的图钉" aria-label="添加图钉">＋ 图钉</button>
+          <button type="button" class="tml-tool tml-history-tool" data-action="undo-pin" title="撤销选中图钉的移动" aria-label="撤销图钉移动" disabled>↶</button>
+          <button type="button" class="tml-tool tml-history-tool" data-action="redo-pin" title="重做选中图钉的移动" aria-label="重做图钉移动" disabled>↷</button>
           <button type="button" class="tml-tool" data-action="locate" title="回到我的位置；未设置时放置" aria-label="回到我的位置">◎ 回到我</button>
           <button type="button" class="tml-tool" data-action="grid" title="校准地图网格" aria-label="网格校准"># 网格</button>
           <button type="button" class="tml-tool tml-mobile-only" data-action="filters">图层</button>
@@ -297,7 +327,7 @@ const PANEL_HTML = `
         <button type="button" id="tml-grid-origin" class="tml-grid-handle tml-grid-origin" hidden aria-label="拖动网格原点">0,0</button>
         <button type="button" id="tml-grid-scale" class="tml-grid-handle tml-grid-scale" hidden aria-label="拖动缩放网格">↘</button>
         <div id="tml-place-bar" class="tml-place-bar" hidden>
-          <span>点击地图放置“我的位置” · Esc 取消</span>
+          <span id="tml-place-text">点击地图放置“我的位置” · Esc 取消</span>
           <button type="button" data-user-action="cancel">取消</button>
         </div>
         <div id="tml-grid-panel" class="tml-grid-panel" hidden>
@@ -439,6 +469,11 @@ export class LayerMapUI {
   private state: LayerChatState
   private pkg: LayerMapPackage | null = null
   private metas: LayerPackageMeta[] = []
+  private pinEdits: LayerPinEdits = emptyPinEdits()
+  private effectiveMarkerList: LayerMarker[] = []
+  private effectiveCategoryList: LayerCategory[] = []
+  private effectiveGroupList: LayerCategoryGroup[] = []
+  private readonly effectiveMarkerMap = new Map<string, LayerMarker>()
   private view: LayerView = { cx: 0.5, cy: 0.5, zoom: 1 }
   private maplibreEl!: HTMLElement
   private maplibreMap: MapLibreMap | null = null
@@ -446,6 +481,21 @@ export class LayerMapUI {
   private tileViewPackageId = ''
   private packageLoadToken = 0
   private placingUser = false
+  private placingPin: 'add' | 'move' | null = null
+  private placingPinId: string | undefined
+  private pinDrag: {
+    id: string
+    startSx: number
+    startSy: number
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    pressX?: number
+    pressY?: number
+    moved: boolean
+    pointerId: number
+  } | null = null
   private gridPanelOpen = false
   private gridSaveTimer: number | undefined
   private userDrag: { startX: number; startY: number; originX: number; originY: number } | null = null
@@ -568,6 +618,7 @@ export class LayerMapUI {
   private positionEl!: HTMLElement
   private nearbyEl!: HTMLElement
   private placeBarEl!: HTMLElement
+  private placeTextEl!: HTMLElement
   private gridPanelEl!: HTMLElement
   private gridOriginHandleEl!: HTMLButtonElement
   private gridScaleHandleEl!: HTMLButtonElement
@@ -586,9 +637,33 @@ export class LayerMapUI {
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (this.importUI?.isOpen() || this.packagesUI?.isOpen()) return
-    if (event.key !== 'Escape') return
     const target = event.target as HTMLElement | null
-    if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+    const editing =
+      target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    if (
+      this.panelEl &&
+      !this.panelEl.hidden &&
+      !editing &&
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey
+    ) {
+      const key = event.key.toLowerCase()
+      if (key === 'z' || key === 'y') {
+        const selected = this.selectedMarker()
+        if (selected) {
+          if (key === 'y' || event.shiftKey) this.redoPin(selected.id)
+          else this.undoPin(selected.id)
+          event.preventDefault()
+          return
+        }
+      }
+    }
+    if (event.key !== 'Escape') return
+    if (editing) return
+    if (this.placingUser || this.placingPin) {
+      this.cancelPlacements()
+      return
+    }
     if (!this.lightboxEl.hidden) {
       this.closeLightbox()
       return
@@ -666,6 +741,7 @@ export class LayerMapUI {
         }
       },
       onDeleted: (id) => {
+        removePinEdits(id)
         if (this.pkg?.id === id) {
           tileProtocolPackages.delete(id)
           this.closeImagePanel()
@@ -757,7 +833,7 @@ export class LayerMapUI {
   close(): void {
     this.closeImagePanel()
     this.closeLightbox()
-    this.cancelUserPlacement()
+    this.cancelPlacements()
     if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
@@ -777,7 +853,7 @@ export class LayerMapUI {
     void flushGlobalNotes()
     this.closeImagePanel()
     this.closeLightbox()
-    this.cancelUserPlacement()
+    this.cancelPlacements()
     if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
@@ -785,6 +861,8 @@ export class LayerMapUI {
     this.ctx = this.liveContext()
     this.state = loadLayerState(this.ctx)
     this.pkg = null
+    this.pinEdits = emptyPinEdits()
+    this.rebuildEffectiveMarkers()
     this.clearImageResources()
     this.setTileMapVisible(false)
     this.clearTileCaches()
@@ -800,7 +878,7 @@ export class LayerMapUI {
   clearChat(): void {
     this.closeImagePanel()
     this.closeLightbox()
-    this.cancelUserPlacement()
+    this.cancelPlacements()
     if (this.gridPanelOpen) this.closeGridPanel()
     if (this.aligning) this.cancelAlign()
     this.importUI?.close()
@@ -811,6 +889,8 @@ export class LayerMapUI {
     )
     this.state.updatedAt = Date.now()
     this.pkg = null
+    this.pinEdits = emptyPinEdits()
+    this.rebuildEffectiveMarkers()
     this.image = null
     this.imageUrl = null
     this.syncHeaderImage()
@@ -863,6 +943,7 @@ export class LayerMapUI {
     this.positionEl = document.getElementById('tml-position') as HTMLElement
     this.nearbyEl = document.getElementById('tml-nearby') as HTMLElement
     this.placeBarEl = document.getElementById('tml-place-bar') as HTMLElement
+    this.placeTextEl = document.getElementById('tml-place-text') as HTMLElement
     this.gridPanelEl = document.getElementById('tml-grid-panel') as HTMLElement
     this.userStampEl = document.getElementById('tml-user-stamp') as HTMLButtonElement
     this.gridOriginHandleEl = document.getElementById('tml-grid-origin') as HTMLButtonElement
@@ -915,6 +996,12 @@ export class LayerMapUI {
     this.userStampEl.addEventListener('pointermove', (event) => this.onUserStampMove(event))
     this.userStampEl.addEventListener('pointerup', (event) => this.onUserStampUp(event))
     this.userStampEl.addEventListener('pointercancel', (event) => this.onUserStampUp(event))
+    this.maplibreEl.addEventListener('mousedown', this.onTileMapDomMouseDown, true)
+    document.addEventListener('mousemove', this.onTileMapDomMouseMove)
+    document.addEventListener('mouseup', this.onTileMapDomMouseUp)
+    this.offs.push(() => this.maplibreEl.removeEventListener('mousedown', this.onTileMapDomMouseDown, true))
+    this.offs.push(() => document.removeEventListener('mousemove', this.onTileMapDomMouseMove))
+    this.offs.push(() => document.removeEventListener('mouseup', this.onTileMapDomMouseUp))
     this.searchEl.addEventListener('input', () => this.onSearchInput())
     this.searchEl.addEventListener('keydown', (event) => this.onSearchKeyDown(event))
     this.categoryFilterEl.addEventListener('input', () => this.renderCategories())
@@ -1012,7 +1099,7 @@ export class LayerMapUI {
     this.viewportEl.addEventListener('wheel', this.onGridWheel, { passive: false, capture: true })
     this.placeBarEl.addEventListener('click', (event) => {
       const target = event.target as HTMLElement
-      if (target.closest('[data-user-action="cancel"]')) this.cancelUserPlacement()
+      if (target.closest('[data-user-action="cancel"]')) this.cancelPlacements()
     })
     const onResize = (): void => {
       if (this.imagePanelOpen) this.positionImagePanel()
@@ -1093,6 +1180,20 @@ export class LayerMapUI {
         this.persist()
         this.requestDraw()
         break
+      case 'add-pin':
+        if (this.placingPin === 'add') this.cancelPinPlacement()
+        else this.startPinPlacement('add')
+        break
+      case 'undo-pin': {
+        const selected = this.selectedMarker()
+        if (selected) this.undoPin(selected.id)
+        break
+      }
+      case 'redo-pin': {
+        const selected = this.selectedMarker()
+        if (selected) this.redoPin(selected.id)
+        break
+      }
       case 'locate':
         if (this.placingUser) this.cancelUserPlacement()
         else if (this.state.userPosition) this.centerOnUserPosition()
@@ -1109,7 +1210,7 @@ export class LayerMapUI {
         this.requestDraw()
         break
       case 'hide-all':
-        this.state.hiddenCategories = this.pkg?.categories.map((category) => category.id) ?? []
+        this.state.hiddenCategories = this.effectiveCategoryList.map((category) => category.id)
         this.renderCategories()
         this.persist()
         this.requestDraw()
@@ -1174,6 +1275,14 @@ export class LayerMapUI {
     grid?.classList.toggle('active', this.gridPanelOpen)
     const locate = this.panelEl.querySelector<HTMLElement>('[data-action="locate"]')
     locate?.classList.toggle('active', this.placingUser || Boolean(this.state.userPosition))
+    const addPin = this.panelEl.querySelector<HTMLElement>('[data-action="add-pin"]')
+    addPin?.classList.toggle('active', this.placingPin === 'add')
+    const selected = this.selectedMarker()
+    const history = selected ? this.pinHistoryFor(selected.id) : undefined
+    const undo = this.panelEl.querySelector<HTMLButtonElement>('[data-action="undo-pin"]')
+    const redo = this.panelEl.querySelector<HTMLButtonElement>('[data-action="redo-pin"]')
+    if (undo) undo.disabled = !history?.past.length
+    if (redo) redo.disabled = !history?.future.length
   }
 
   private async refreshPackages(): Promise<void> {
@@ -1196,10 +1305,69 @@ export class LayerMapUI {
     }
   }
 
+  /**
+   * Imported package data stays untouched. This view is the only source for
+   * drawing, hit-testing, search, nearby places, favorites and AI context.
+   */
+  private rebuildEffectiveMarkers(): void {
+    this.effectiveMarkerMap.clear()
+    this.effectiveMarkerList = []
+    this.effectiveCategoryList = []
+    this.effectiveGroupList = []
+    const pkg = this.pkg
+    if (!pkg) {
+      this.buildMarkerIndex()
+      return
+    }
+    const customPins = this.pinEdits.customPins
+    const imported = pkg.markers.map((marker) => {
+      const override = this.pinEdits.overrides[marker.id]
+      return override
+        ? { ...marker, x: override.x, y: override.y }
+        : marker
+    })
+    const custom = customPins.map((pin) => ({ ...pin, custom: true as const }))
+    this.effectiveCategoryList = [...pkg.categories]
+    this.effectiveGroupList = [...pkg.groups]
+    if (custom.length > 0) {
+      if (!this.effectiveCategoryList.some((item) => item.id === CUSTOM_PIN_CATEGORY.id)) {
+        this.effectiveCategoryList.push(CUSTOM_PIN_CATEGORY)
+      }
+      if (!this.effectiveGroupList.some((item) => item.id === CUSTOM_PIN_GROUP.id)) {
+        this.effectiveGroupList.push(CUSTOM_PIN_GROUP)
+      }
+    }
+    this.effectiveMarkerList = [...imported, ...custom]
+    for (const marker of this.effectiveMarkerList) {
+      this.effectiveMarkerMap.set(marker.id, marker)
+    }
+    this.markerRegionCache.clear()
+    this.buildMarkerIndex()
+  }
+
+  private markerById(id: string | undefined): LayerMarker | undefined {
+    return id ? this.effectiveMarkerMap.get(id) : undefined
+  }
+
+  private categoryById(id: string): LayerCategory | undefined {
+    return this.effectiveCategoryList.find((category) => category.id === id)
+  }
+
+  private customPinRecord(id: string): LayerCustomPin | undefined {
+    return this.pinEdits.customPins.find((pin) => pin.id === id)
+  }
+
+  private userLinksFor(marker: LayerMarker): LayerLink[] {
+    if (marker.custom) return this.customPinRecord(marker.id)?.links ?? marker.links ?? []
+    return this.state.links?.[marker.id] ?? []
+  }
+
   private async loadPackage(id: string): Promise<void> {
     const pkg = await getLayerPackage(id)
     if (!pkg) {
       this.pkg = null
+      this.pinEdits = emptyPinEdits()
+      this.rebuildEffectiveMarkers()
       this.clearImageResources()
       this.setTileMapVisible(false)
       this.clearTileCaches()
@@ -1238,26 +1406,28 @@ export class LayerMapUI {
       this.state.view = { ...pkg.defaultView }
       this.view = { ...pkg.defaultView }
     }
-    if (
-      this.state.atPlaceId &&
-      !pkg.markers.some((marker) => marker.id === this.state.atPlaceId)
-    ) {
-      this.state.atPlaceId = undefined
-    }
     if (this.pkg && this.pkg.id !== pkg.id) tileProtocolPackages.delete(this.pkg.id)
     this.pkg = pkg
+    this.pinEdits = loadPinEdits(pkg.id)
+    this.rebuildEffectiveMarkers()
     this.migrateLegacyNotes(pkg)
     await this.ensureIconFont(pkg)
     await this.ensureIconAtlas(pkg)
     if (
+      this.state.atPlaceId &&
+      !this.markerById(this.state.atPlaceId)
+    ) {
+      this.state.atPlaceId = undefined
+    }
+    if (
       this.state.selectedMarkerId &&
-      !pkg.markers.some((marker) => marker.id === this.state.selectedMarkerId)
+      !this.markerById(this.state.selectedMarkerId)
     ) {
       this.state.selectedMarkerId = undefined
     }
     if (
       this.state.currentMarkerId &&
-      !pkg.markers.some((marker) => marker.id === this.state.currentMarkerId)
+      !this.markerById(this.state.currentMarkerId)
     ) {
       this.state.currentMarkerId = undefined
     }
@@ -1279,7 +1449,7 @@ export class LayerMapUI {
     this.markerRegionCache.clear()
     this.regionLabelCache.clear()
     this.streetLabelCache.clear()
-    this.buildMarkerIndex()
+    this.rebuildEffectiveMarkers()
     this.clearTileCaches()
     this.packageSelectEl.value = pkg.id
     // Render the panel chrome and data before waiting for MapLibre. A slow or
@@ -1316,9 +1486,10 @@ export class LayerMapUI {
       this.packageInfoEl.textContent = ''
       return
     }
+    const customCount = this.pinEdits.customPins.length
     this.packageInfoEl.textContent = [
       pkg.kind === 'tiles' ? '瓦片地图' : '图片地图',
-      `${pkg.markers.length} 个地点`,
+      `${pkg.markers.length} 个地点${customCount ? ` + ${customCount} 个我的图钉` : ''}`,
       pkg.regions.length ? `${pkg.regions.length} 个区域` : '无区域面',
       pkg.sourceLabel || (pkg.source === 'mapgenie' ? 'Map Genie' : pkg.source === 'fandom' ? 'Fandom' : '本地'),
       pkg.kind === 'tiles'
@@ -1758,13 +1929,79 @@ export class LayerMapUI {
   }): void {
     if (!this.pkg) return
     if (this.pkg.kind !== 'tiles') return
+    const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
+    if (this.placingPin) {
+      const mode = this.placingPin
+      const id = this.placingPinId
+      this.cancelPinPlacement()
+      if (mode === 'add') this.createCustomPin(point.x, point.y)
+      else if (id) this.movePinTo(id, point.x, point.y)
+      return
+    }
     if (this.placingUser) {
-      const point = this.lngLatToNormalized(event.lngLat.lng, event.lngLat.lat)
       this.setUserPosition(point.x, point.y, undefined, !event.originalEvent?.altKey)
       return
     }
     const rect = this.viewportEl.getBoundingClientRect()
     this.pickAt(rect.left + event.point.x, rect.top + event.point.y)
+  }
+
+  private tileNormalizedAt(clientX: number, clientY: number): { x: number; y: number } | undefined {
+    const map = this.maplibreMap
+    if (!map) return undefined
+    const rect = this.maplibreEl.getBoundingClientRect()
+    const point = map.unproject([clientX - rect.left, clientY - rect.top])
+    return this.lngLatToNormalized(point.lng, point.lat)
+  }
+
+  private readonly onTileMapDomMouseDown = (event: MouseEvent): void => {
+    if (event.button !== 0) return
+    if (!this.pkg || this.pkg.kind !== 'tiles' || this.placingUser || this.placingPin) return
+    if (this.pinDrag) return
+    const rect = this.maplibreEl.getBoundingClientRect()
+    const marker = this.hitMarker(event.clientX - rect.left, event.clientY - rect.top)
+    if (!marker || marker.id !== this.state.selectedMarkerId) return
+    const point = this.tileNormalizedAt(event.clientX, event.clientY)
+    if (!point) return
+    this.pinDrag = {
+      id: marker.id,
+      startSx: event.clientX - rect.left,
+      startSy: event.clientY - rect.top,
+      startX: marker.x,
+      startY: marker.y,
+      originX: marker.x,
+      originY: marker.y,
+      pressX: point.x,
+      pressY: point.y,
+      moved: false,
+      pointerId: -1,
+    }
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    this.maplibreMap?.dragPan.disable()
+  }
+
+  private readonly onTileMapDomMouseMove = (event: MouseEvent): void => {
+    if (!this.pinDrag || this.pinDrag.pointerId !== -1) return
+    const point = this.tileNormalizedAt(event.clientX, event.clientY)
+    if (!point || this.pinDrag.pressX == null || this.pinDrag.pressY == null) return
+    const rect = this.maplibreEl.getBoundingClientRect()
+    const dx = event.clientX - rect.left - this.pinDrag.startSx
+    const dy = event.clientY - rect.top - this.pinDrag.startSy
+    if (!this.pinDrag.moved && Math.hypot(dx, dy) < 4) return
+    this.pinDrag.moved = true
+    this.updatePinCoordinate(
+      this.pinDrag.id,
+      Math.min(1, Math.max(0, this.pinDrag.originX + point.x - this.pinDrag.pressX)),
+      Math.min(1, Math.max(0, this.pinDrag.originY + point.y - this.pinDrag.pressY)),
+      false,
+    )
+  }
+
+  private readonly onTileMapDomMouseUp = (): void => {
+    if (!this.pinDrag || this.pinDrag.pointerId !== -1) return
+    this.maplibreMap?.dragPan.enable()
+    this.commitPinDrag(false)
   }
 
   private observeViewport(): void {
@@ -2485,7 +2722,9 @@ export class LayerMapUI {
     const pkg = this.pkg
     if (!pkg) return
     const hidden = new Set(this.state.hiddenCategories ?? [])
-    const categories = new Map(pkg.categories.map((category) => [category.id, category]))
+    const categories = new Map(
+      this.effectiveCategoryList.map((category) => [category.id, category]),
+    )
     const selectedId = this.state.selectedMarkerId
     const favoriteIds = this.favoriteMarkerIds
     const labelThreshold =
@@ -2510,7 +2749,9 @@ export class LayerMapUI {
       const current = false
       const icon = this.markerIconFor(category)
       context.save()
-      if (icon) {
+      if (marker.custom) {
+        this.drawCustomPin(context, x, y, selected, category?.color)
+      } else if (icon) {
         const size = selected ? 36 : 28
         context.globalAlpha = selected ? 1 : 0.95
         context.drawImage(icon, x - size / 2, y - size / 2, size, size)
@@ -2556,6 +2797,37 @@ export class LayerMapUI {
         this.drawLabel(context, marker, x, y, selected || current)
       }
     }
+  }
+
+  private drawCustomPin(
+    context: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    selected: boolean,
+    colorValue: string | undefined,
+  ): void {
+    const color = colorValue ?? CUSTOM_PIN_COLOR
+    const radius = selected ? 8 : 6.5
+    context.save()
+    context.beginPath()
+    context.moveTo(x, y + 9)
+    context.lineTo(x - 5.5, y + 1)
+    context.lineTo(x + 5.5, y + 1)
+    context.closePath()
+    context.fillStyle = color
+    context.fill()
+    context.beginPath()
+    context.arc(x, y - 2, radius, 0, Math.PI * 2)
+    context.fillStyle = color
+    context.fill()
+    context.lineWidth = selected ? 2.5 : 1.2
+    context.strokeStyle = selected ? '#f3c87f' : 'rgba(255,255,255,0.85)'
+    context.stroke()
+    context.beginPath()
+    context.arc(x, y - 2, selected ? 2.6 : 2.2, 0, Math.PI * 2)
+    context.fillStyle = '#fff7e6'
+    context.fill()
+    context.restore()
   }
 
   private drawLabel(
@@ -2663,8 +2935,10 @@ export class LayerMapUI {
       return
     }
     const hidden = new Set(this.state.hiddenCategories ?? [])
-    const visible = pkg.markers.filter((marker) => !hidden.has(marker.categoryId)).length
-    this.visibleCountEl.textContent = `${visible}/${pkg.markers.length}`
+    const visible = this.effectiveMarkerList.filter(
+      (marker) => !hidden.has(marker.categoryId),
+    ).length
+    this.visibleCountEl.textContent = `${visible}/${this.effectiveMarkerList.length}`
     if (this.aligning) {
       this.zoomEl.textContent = '对齐图片'
       this.scaleEl.textContent = '拖动移动 · 滚轮缩放'
@@ -2704,6 +2978,29 @@ export class LayerMapUI {
       this.canvasEl.style.cursor = 'move'
       return
     }
+    if (!this.placingUser && !this.placingPin) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      const marker = this.hitMarker(event.clientX - rect.left, event.clientY - rect.top)
+      if (marker && marker.id === this.state.selectedMarkerId) {
+        const owner = this.pinDrag
+        if (owner) return
+        this.pinDrag = {
+          id: marker.id,
+          startSx: event.clientX - rect.left,
+          startSy: event.clientY - rect.top,
+          startX: marker.x,
+          startY: marker.y,
+          originX: marker.x,
+          originY: marker.y,
+          moved: false,
+          pointerId: event.pointerId,
+        }
+        this.canvasEl.setPointerCapture(event.pointerId)
+        this.canvasEl.style.cursor = 'grabbing'
+        event.preventDefault()
+        return
+      }
+    }
     this.dragging = true
     this.moved = false
     this.dragX = event.clientX
@@ -2738,6 +3035,35 @@ export class LayerMapUI {
       this.requestDraw()
       return
     }
+    if (this.pinDrag) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      const width = this.canvasEl.clientWidth || 1
+      const height = this.canvasEl.clientHeight || 1
+      const dx = event.clientX - rect.left - this.pinDrag.startSx
+      const dy = event.clientY - rect.top - this.pinDrag.startSy
+      if (!this.pinDrag.moved && Math.hypot(dx, dy) < 4) return
+      event.preventDefault()
+      this.pinDrag.moved = true
+      const [startX, startY] = this.unproject(
+        this.pinDrag.startSx,
+        this.pinDrag.startSy,
+        width,
+        height,
+      )
+      const [currentX, currentY] = this.unproject(
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        width,
+        height,
+      )
+      this.updatePinCoordinate(
+        this.pinDrag.id,
+        Math.min(1, Math.max(0, this.pinDrag.originX + currentX - startX)),
+        Math.min(1, Math.max(0, this.pinDrag.originY + currentY - startY)),
+        false,
+      )
+      return
+    }
     if (!this.dragging) return
     const dx = event.clientX - this.dragX
     const dy = event.clientY - this.dragY
@@ -2763,6 +3089,42 @@ export class LayerMapUI {
   }
 
   private onPointerUp(event: PointerEvent): void {
+    if (this.pinDrag) {
+      this.finishPinDrag(event)
+      return
+    }
+    if (event.type === 'pointercancel' && (this.placingUser || this.placingPin)) {
+      this.cancelPlacements()
+      this.dragging = false
+      if (this.canvasEl.hasPointerCapture(event.pointerId)) {
+        this.canvasEl.releasePointerCapture(event.pointerId)
+      }
+      this.canvasEl.style.cursor = 'grab'
+      return
+    }
+    if (this.placingPin && !this.moved) {
+      const rect = this.canvasEl.getBoundingClientRect()
+      const width = this.canvasEl.clientWidth || 1
+      const height = this.canvasEl.clientHeight || 1
+      const [x, y] = this.unproject(
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        width,
+        height,
+      )
+      this.dragging = false
+      this.moved = false
+      if (this.canvasEl.hasPointerCapture(event.pointerId)) {
+        this.canvasEl.releasePointerCapture(event.pointerId)
+      }
+      this.canvasEl.style.cursor = 'grab'
+      const mode = this.placingPin
+      const id = this.placingPinId
+      this.cancelPinPlacement()
+      if (mode === 'add') this.createCustomPin(x, y)
+      else if (id) this.movePinTo(id, x, y)
+      return
+    }
     if (this.placingUser && !this.moved) {
       const rect = this.canvasEl.getBoundingClientRect()
       const width = this.canvasEl.clientWidth || 1
@@ -2894,6 +3256,7 @@ export class LayerMapUI {
       this.refreshContext()
       this.persist()
       this.requestDraw()
+      this.syncToolButtons()
       return
     }
     this.state.selectedMarkerId = undefined
@@ -2902,11 +3265,12 @@ export class LayerMapUI {
     this.refreshContext()
     this.persist()
     this.requestDraw()
+    this.syncToolButtons()
   }
 
   private buildMarkerIndex(): void {
     this.markerIndex.clear()
-    for (const marker of this.pkg?.markers ?? []) {
+    for (const marker of this.effectiveMarkerList) {
       const key = `${Math.floor(marker.x / MARKER_INDEX_CELL)}:${Math.floor(marker.y / MARKER_INDEX_CELL)}`
       const bucket = this.markerIndex.get(key)
       if (bucket) bucket.push(marker)
@@ -2960,7 +3324,8 @@ export class LayerMapUI {
     const hidden = new Set(this.state.hiddenCategories ?? [])
     let best: LayerMarker | undefined
     let bestDistance = MARKER_HIT_RADIUS
-    for (const marker of this.markersInView(width, height)) {
+    const inView = this.markersInView(width, height)
+    for (const marker of inView) {
       if (hidden.has(marker.categoryId)) continue
       const [x, y] = this.project(marker.x, marker.y, width, height)
       const distance = Math.hypot(x - sx, y - sy)
@@ -3011,6 +3376,7 @@ export class LayerMapUI {
     this.refreshContext()
     this.persist()
     this.requestDraw()
+    this.syncToolButtons()
   }
 
   private centerOnMarker(marker: LayerMarker): void {
@@ -3062,7 +3428,7 @@ export class LayerMapUI {
   }
 
   private categoryColor(seed: string): string {
-    const category = this.pkg?.categories.find((item) => item.id === seed)
+    const category = this.categoryById(seed)
     if (category) return category.color
     const index = [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0)
     return PALETTE[index % PALETTE.length]
@@ -3079,13 +3445,13 @@ export class LayerMapUI {
     const query = this.categoryFilterEl.value.trim().toLowerCase()
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const counts = new Map<string, number>()
-    for (const marker of pkg.markers) {
+    for (const marker of this.effectiveMarkerList) {
       counts.set(marker.categoryId, (counts.get(marker.categoryId) ?? 0) + 1)
     }
-    const groups = new Map<string, { name: string; order: number; categories: typeof pkg.categories }>()
-    for (const category of pkg.categories) {
+    const groups = new Map<string, { name: string; order: number; categories: LayerCategory[] }>()
+    for (const category of this.effectiveCategoryList) {
       const groupId = category.groupId ?? '__ungrouped'
-      const group = pkg.groups.find((item) => item.id === category.groupId)
+      const group = this.effectiveGroupList.find((item) => item.id === category.groupId)
       if (!groups.has(groupId)) {
         groups.set(groupId, {
           name: group?.name ?? '未分组',
@@ -3164,7 +3530,7 @@ export class LayerMapUI {
       return
     }
     if (this.state.selectedMarkerId) {
-      const marker = pkg.markers.find((item) => item.id === this.state.selectedMarkerId)
+      const marker = this.markerById(this.state.selectedMarkerId)
       if (marker) {
         this.detailEl.append(this.markerDetail(marker))
         return
@@ -3185,7 +3551,7 @@ export class LayerMapUI {
   private markerDetail(marker: LayerMarker): HTMLElement {
     const pkg = this.pkg
     if (!pkg) return textElement('div', 'tml-empty-small', '')
-    const category = pkg.categories.find((item) => item.id === marker.categoryId)
+    const category = this.categoryById(marker.categoryId)
     const region = this.regionForMarker(marker)
     const atPlace = this.state.atPlaceId === marker.id
     const favorite = this.markerFavorite(marker)
@@ -3210,6 +3576,7 @@ export class LayerMapUI {
       this.renderDetail()
       this.persist()
       this.requestDraw()
+      this.syncToolButtons()
     })
     const star = document.createElement('button')
     star.type = 'button'
@@ -3229,6 +3596,7 @@ export class LayerMapUI {
       region?.name ?? '',
       gridText ?? '',
       marker.sourceId ? `来源 id ${marker.sourceId}` : '',
+      marker.custom ? '我添加的图钉' : '',
       pkg.sourceLabel || (pkg.source === 'mapgenie' ? 'Map Genie 本地快照' : 'Fandom 本地导入'),
     ]
       .filter(Boolean)
@@ -3238,8 +3606,33 @@ export class LayerMapUI {
     actions.append(
       this.actionButton('居中', () => this.centerOnMarker(marker)),
       this.actionButton(atPlace ? '我在这里' : '移动我到这里', () => this.setUserPosition(marker.x, marker.y, marker.id), atPlace),
+      this.actionButton('移动图钉', () => this.startPinPlacement('move', marker.id), this.placingPin === 'move' && this.placingPinId === marker.id),
     )
+    const history = this.pinHistoryFor(marker.id)
+    const undo = this.actionButton(
+      `↶ 撤销${history?.past.length ? ` ${history.past.length}` : ''}`,
+      () => this.undoPin(marker.id),
+    )
+    undo.disabled = !history?.past.length
+    const redo = this.actionButton(
+      `↷ 重做${history?.future.length ? ` ${history.future.length}` : ''}`,
+      () => this.redoPin(marker.id),
+    )
+    redo.disabled = !history?.future.length
+    actions.append(undo, redo)
+    if (!marker.custom && this.pinEdits.overrides[marker.id]) {
+      actions.append(
+        this.actionButton('恢复原位', () => this.resetPinPosition(marker.id), false, 'tml-danger-text'),
+      )
+    }
+    if (marker.custom) {
+      actions.append(
+        this.actionButton('删除图钉', () => this.deleteCustomPin(marker.id), false, 'tml-danger-text'),
+      )
+    }
+    const nameSection = marker.custom ? this.customPinNameSection(marker, title) : null
     wrap.append(head, meta, actions)
+    if (nameSection) wrap.append(nameSection)
     wrap.append(this.sourceSection(marker))
     wrap.append(this.linksSection(marker))
     wrap.append(this.noteSection(marker))
@@ -3274,7 +3667,7 @@ export class LayerMapUI {
       mapName: pkg.name,
       markerId: marker.id,
       name: marker.name,
-      category: pkg.categories.find((item) => item.id === marker.categoryId)?.name,
+      category: this.categoryById(marker.categoryId)?.name,
       x: marker.x,
       y: marker.y,
       note: this.markerNoteValue(marker),
@@ -3318,7 +3711,7 @@ export class LayerMapUI {
       const row = document.createElement('div')
       row.className = 'tml-favorite-row'
       const marker = favorite.markerId
-        ? pkg.markers.find((item) => item.id === favorite.markerId)
+        ? this.markerById(favorite.markerId)
         : undefined
       const title = document.createElement('button')
       title.type = 'button'
@@ -3353,7 +3746,9 @@ export class LayerMapUI {
   private regionDetail(region: LayerRegion): HTMLElement {
     const pkg = this.pkg
     if (!pkg) return textElement('div', 'tml-empty-small', '')
-    const count = pkg.markers.filter((marker) => this.regionForMarker(marker)?.id === region.id).length
+    const count = this.effectiveMarkerList.filter(
+      (marker) => this.regionForMarker(marker)?.id === region.id,
+    ).length
     const wrap = document.createElement('article')
     wrap.className = 'tml-detail-card'
     const head = document.createElement('header')
@@ -3416,7 +3811,7 @@ export class LayerMapUI {
           }]
         : []
     )
-    const userLinks = this.state.links?.[marker.id] ?? []
+    const userLinks = this.userLinksFor(marker)
     if (imported.length === 0) {
       section.append(
         textElement(
@@ -3536,7 +3931,7 @@ export class LayerMapUI {
     paste.addEventListener('click', () => {
       const pasted = window.prompt('粘贴正文（会保存在本地全局缓存）', text ?? '')
       if (!pasted?.trim()) return
-      this.storeLinkText(link, imported, stateKey, pasted, `已手动保存 · ${pasted.length} 字`)
+      this.storeLinkText(link, imported, stateKey, pasted, `已手动保存 · ${pasted.length} 字`, marker)
       this.renderDetail()
       if (this.state.selectedMarkerId === marker.id) this.refreshContext()
     })
@@ -3547,10 +3942,16 @@ export class LayerMapUI {
       remove.className = 'tml-mini'
       remove.textContent = '移除'
       remove.addEventListener('click', () => {
-        const linksForMarker = this.state.links?.[marker.id] ?? []
-        this.state.links![marker.id] = linksForMarker.filter((item) => item.id !== link.id)
+        if (marker.custom) {
+          const pin = this.customPinRecord(marker.id)
+          if (pin) pin.links = pin.links.filter((item) => item.id !== link.id)
+          this.savePinEditsForMap()
+        } else {
+          const linksForMarker = this.state.links?.[marker.id] ?? []
+          this.state.links![marker.id] = linksForMarker.filter((item) => item.id !== link.id)
+          this.persist()
+        }
         this.refreshContext()
-        this.persist()
         this.renderDetail()
       })
       actions.append(remove)
@@ -3566,6 +3967,7 @@ export class LayerMapUI {
     stateKey: string | undefined,
     text: string,
     status: string,
+    customMarker?: LayerMarker,
   ): void {
     if (text.trim()) setGlobalNote(linkTextKey(link.url), text)
     if (imported && stateKey) {
@@ -3576,7 +3978,8 @@ export class LayerMapUI {
       link.fetchedAt = Date.now()
       link.status = status
     }
-    this.persist()
+    if (customMarker?.custom) this.savePinEditsForMap()
+    else this.persist()
   }
 
   private linkEditor(marker: LayerMarker): HTMLElement {
@@ -3628,12 +4031,19 @@ export class LayerMapUI {
         title: title.value.trim() || urlValue,
         url: urlValue,
       }
-      const links = this.state.links?.[marker.id] ?? []
-      this.state.links = this.state.links ?? {}
-      this.state.links[marker.id] = [...links, link]
+      if (marker.custom) {
+        const pin = this.customPinRecord(marker.id)
+        if (!pin) return
+        pin.links = [...pin.links, link]
+        this.savePinEditsForMap()
+      } else {
+        const links = this.state.links?.[marker.id] ?? []
+        this.state.links = this.state.links ?? {}
+        this.state.links[marker.id] = [...links, link]
+        this.persist()
+      }
       this.linkDraftVisible = false
       this.refreshContext()
-      this.persist()
       this.renderDetail()
     })
     const cancel = document.createElement('button')
@@ -3661,12 +4071,13 @@ export class LayerMapUI {
     } else {
       link.status = '正在抓取…'
     }
-    this.persist()
+    if (marker.custom) this.savePinEditsForMap()
+    else this.persist()
     this.renderDetail()
     try {
       const text = await this.loadLinkText(link.url)
       if (!text) throw new Error('没有可读取的正文')
-      this.storeLinkText(link, imported, stateKey, text, `已抓取 · ${text.length} 字`)
+      this.storeLinkText(link, imported, stateKey, text, `已抓取 · ${text.length} 字`, marker)
     } catch (error) {
       this.storeLinkText(
         link,
@@ -3674,6 +4085,7 @@ export class LayerMapUI {
         stateKey,
         '',
         `抓取失败：${errorMessage(error)}。可打开原页后手动粘贴。`,
+        marker,
       )
     }
     this.renderDetail()
@@ -3888,8 +4300,8 @@ export class LayerMapUI {
 
 
   private selectedMarker(): LayerMarker | undefined {
-    if (!this.pkg || !this.state.selectedMarkerId) return undefined
-    return this.pkg.markers.find((marker) => marker.id === this.state.selectedMarkerId)
+    if (!this.pkg) return undefined
+    return this.markerById(this.state.selectedMarkerId)
   }
 
 
@@ -3992,8 +4404,10 @@ export class LayerMapUI {
     const radiusYPx = Math.abs(edgeY - anchorY)
     if (radiusPx < 1 || radiusYPx < 1) return []
     const hidden = new Set(this.state.hiddenCategories ?? [])
-    const categories = new Map(pkg.categories.map((category) => [category.id, category]))
-    return pkg.markers
+    const categories = new Map(
+      this.effectiveCategoryList.map((category) => [category.id, category]),
+    )
+    return this.effectiveMarkerList
       .filter((marker) => {
         if (marker.id === excludeId) return false
         if (hidden.has(marker.categoryId)) return false
@@ -4050,7 +4464,7 @@ export class LayerMapUI {
           }]
         : []
     )
-    const userLinks = this.state.links?.[marker.id] ?? []
+    const userLinks = this.userLinksFor(marker)
     const seen = new Set<string>()
     const result: Array<{ title: string; text: string }> = []
     for (const [link, importedLink] of [
@@ -4071,12 +4485,14 @@ export class LayerMapUI {
   private favoriteContext(settings: Settings): LayerFavoritePlace[] {
     const pkg = this.pkg
     if (!pkg || !settings.layerFavoritesAI) return []
-    const categories = new Map(pkg.categories.map((category) => [category.id, category]))
+    const categories = new Map(
+      this.effectiveCategoryList.map((category) => [category.id, category]),
+    )
     return listFavorites()
       .filter((favorite) => favorite.kind === 'layer' && favorite.mapId === pkg.id)
       .map((favorite) => {
         const marker = favorite.markerId
-          ? pkg.markers.find((item) => item.id === favorite.markerId)
+          ? this.markerById(favorite.markerId)
           : undefined
         const region = marker ? this.regionForMarker(marker)?.name : undefined
         const category = marker
@@ -4115,11 +4531,9 @@ export class LayerMapUI {
       return
     }
     const settings = loadSettings(this.liveContext())
-    const marker = this.state.atPlaceId
-      ? pkg.markers.find((item) => item.id === this.state.atPlaceId)
-      : undefined
+    const marker = this.markerById(this.state.atPlaceId)
     const region = marker ? this.regionForMarker(marker) : undefined
-    const category = marker ? pkg.categories.find((item) => item.id === marker.categoryId) : undefined
+    const category = marker ? this.categoryById(marker.categoryId) : undefined
     const user = this.state.userPosition
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
@@ -4189,9 +4603,7 @@ export class LayerMapUI {
     const flag = document.createElement('span')
     flag.className = 'tml-position-flag'
     flag.textContent = '◎'
-    const atPlace = this.state.atPlaceId
-      ? pkg.markers.find((item) => item.id === this.state.atPlaceId)
-      : undefined
+    const atPlace = this.markerById(this.state.atPlaceId)
     const title = document.createElement('strong')
     title.textContent = '我'
     const value = document.createElement('span')
@@ -4286,7 +4698,7 @@ export class LayerMapUI {
         .join(' · ')
       button.append(name, meta)
       button.addEventListener('click', () => {
-        const marker = this.pkg?.markers.find((item) => item.id === place.id)
+        const marker = this.markerById(place.id)
         if (marker) this.selectMarker(marker, true)
       })
       list.append(button)
@@ -4294,17 +4706,271 @@ export class LayerMapUI {
     this.nearbyEl.append(list)
   }
 
-  private startUserPlacement(): void {
-    if (!this.pkg) return
-    this.placingUser = true
+  private showPlaceBar(text: string): void {
+    if (this.placeTextEl) this.placeTextEl.textContent = text
     if (this.placeBarEl) this.placeBarEl.hidden = false
     this.syncToolButtons()
   }
 
-  private cancelUserPlacement(): void {
-    this.placingUser = false
+  private hidePlaceBarIfIdle(): void {
+    if (this.placingUser || this.placingPin) return
     if (this.placeBarEl) this.placeBarEl.hidden = true
     this.syncToolButtons()
+  }
+
+  private startUserPlacement(): void {
+    if (!this.pkg) return
+    this.cancelPinPlacement()
+    this.placingUser = true
+    this.showPlaceBar('点击地图放置“我的位置” · Esc 取消')
+  }
+
+  private cancelUserPlacement(): void {
+    this.placingUser = false
+    this.hidePlaceBarIfIdle()
+  }
+
+  private startPinPlacement(mode: 'add' | 'move', id?: string): void {
+    if (!this.pkg) {
+      this.toast('先导入或选择一个地图包')
+      return
+    }
+    this.cancelUserPlacement()
+    this.placingPin = mode
+    this.placingPinId = mode === 'move' ? id : undefined
+    this.showPlaceBar(
+      mode === 'add'
+        ? '点击地图放置我的图钉 · Esc 取消'
+        : '点击新位置放置这个图钉 · Esc 取消',
+    )
+  }
+
+  private cancelPinPlacement(): void {
+    this.placingPin = null
+    this.placingPinId = undefined
+    this.hidePlaceBarIfIdle()
+  }
+
+  private cancelPlacements(): void {
+    this.placingUser = false
+    this.placingPin = null
+    this.placingPinId = undefined
+    if (this.placeBarEl) this.placeBarEl.hidden = true
+    this.syncToolButtons()
+  }
+
+  private savePinEditsForMap(): void {
+    if (this.pkg) savePinEdits(this.pkg.id, this.pinEdits)
+  }
+
+  private pinHistoryFor(id: string): { past: LayerPinPoint[]; future: LayerPinPoint[] } | undefined {
+    return this.pinEdits.history[id]
+  }
+
+  private updatePinCoordinate(id: string, x: number, y: number, persist = true): LayerPinPoint {
+    const nx = Math.min(1, Math.max(0, x))
+    const ny = Math.min(1, Math.max(0, y))
+    const pinpoint = { x: nx, y: ny }
+    const pin = this.customPinRecord(id)
+    if (pin) {
+      pin.x = nx
+      pin.y = ny
+      pin.updatedAt = Date.now()
+    } else {
+      const base = this.pkg?.markers.find((marker) => marker.id === id)
+      if (base && Math.abs(base.x - nx) < 0.000001 && Math.abs(base.y - ny) < 0.000001) {
+        delete this.pinEdits.overrides[id]
+      } else {
+        this.pinEdits.overrides[id] = pinpoint
+      }
+    }
+    this.rebuildEffectiveMarkers()
+    this.requestDraw()
+    if (persist) {
+      this.savePinEditsForMap()
+      this.syncToolButtons()
+    }
+    return pinpoint
+  }
+
+  private recordPinMove(id: string, before: LayerPinPoint, after: LayerPinPoint): void {
+    if (Math.abs(before.x - after.x) < 0.000001 && Math.abs(before.y - after.y) < 0.000001) {
+      return
+    }
+    const history = this.pinEdits.history[id] ?? (this.pinEdits.history[id] = {
+      past: [],
+      future: [],
+    })
+    history.past.push({ x: before.x, y: before.y })
+    while (history.past.length > MAX_PIN_HISTORY) history.past.shift()
+    history.future = []
+  }
+
+  private afterPinMove(id: string, before: LayerPinPoint, after: LayerPinPoint): void {
+    if (Math.abs(before.x - after.x) < 0.000001 && Math.abs(before.y - after.y) < 0.000001) {
+      return
+    }
+    const marker = this.markerById(id)
+    if (!marker) return
+    if (this.state.atPlaceId === id) {
+      this.state.userPosition = { x: after.x, y: after.y }
+      this.persist()
+    }
+    const favorite = this.markerFavorite(marker)
+    if (favorite) {
+      setFavorite({ ...favorite, x: after.x, y: after.y, name: marker.name })
+    }
+    this.refreshContext()
+    this.renderDetail()
+    this.renderFavorites()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private movePinTo(id: string, x: number, y: number): void {
+    const marker = this.markerById(id)
+    if (!marker) return
+    const before = { x: marker.x, y: marker.y }
+    const after = this.updatePinCoordinate(id, x, y, false)
+    this.recordPinMove(id, before, after)
+    this.savePinEditsForMap()
+    this.afterPinMove(id, before, after)
+    this.toast(`已移动 ${marker.name}`)
+  }
+
+  private undoPin(id: string): void {
+    const history = this.pinHistoryFor(id)
+    const marker = this.markerById(id)
+    if (!history?.past.length || !marker) return
+    const target = history.past.pop()!
+    history.future.push({ x: marker.x, y: marker.y })
+    while (history.future.length > MAX_PIN_HISTORY) history.future.shift()
+    this.updatePinCoordinate(id, target.x, target.y, false)
+    this.savePinEditsForMap()
+    this.afterPinMove(id, { x: marker.x, y: marker.y }, target)
+    this.toast(`已撤销 ${marker.name} 的移动`)
+  }
+
+  private redoPin(id: string): void {
+    const history = this.pinHistoryFor(id)
+    const marker = this.markerById(id)
+    if (!history?.future.length || !marker) return
+    const target = history.future.pop()!
+    history.past.push({ x: marker.x, y: marker.y })
+    while (history.past.length > MAX_PIN_HISTORY) history.past.shift()
+    this.updatePinCoordinate(id, target.x, target.y, false)
+    this.savePinEditsForMap()
+    this.afterPinMove(id, { x: marker.x, y: marker.y }, target)
+    this.toast(`已重做 ${marker.name} 的移动`)
+  }
+
+  private finishPinDrag(event: PointerEvent): void {
+    if (this.canvasEl.hasPointerCapture(event.pointerId)) {
+      this.canvasEl.releasePointerCapture(event.pointerId)
+    }
+    this.canvasEl.style.cursor = 'grab'
+    this.commitPinDrag(event.type === 'pointercancel')
+  }
+
+  private commitPinDrag(cancelled: boolean): void {
+    const drag = this.pinDrag
+    if (!drag) return
+    this.pinDrag = null
+    if (cancelled || !drag.moved) {
+      this.updatePinCoordinate(drag.id, drag.originX, drag.originY, false)
+      return
+    }
+    const marker = this.markerById(drag.id)
+    const after = marker ? { x: marker.x, y: marker.y } : { x: drag.originX, y: drag.originY }
+    this.recordPinMove(drag.id, { x: drag.originX, y: drag.originY }, after)
+    this.savePinEditsForMap()
+    this.afterPinMove(drag.id, { x: drag.originX, y: drag.originY }, after)
+  }
+
+  private createCustomPin(x: number, y: number): void {
+    if (!this.pkg) return
+    const now = Date.now()
+    const pin: LayerCustomPin = {
+      id: `custom:${now}:${Math.random().toString(36).slice(2, 7)}`,
+      name: `我的图钉 ${this.pinEdits.customPins.length + 1}`,
+      categoryId: CUSTOM_PIN_CATEGORY_ID,
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y)),
+      custom: true,
+      links: [],
+      createdAt: now,
+      updatedAt: now,
+    }
+    this.pinEdits.customPins.push(pin)
+    this.state.hiddenCategories = (this.state.hiddenCategories ?? []).filter(
+      (id) => id !== CUSTOM_PIN_CATEGORY_ID,
+    )
+    this.rebuildEffectiveMarkers()
+    this.savePinEditsForMap()
+    this.selectMarker(pin, true)
+    this.renderCategories()
+    this.updateStatus()
+    this.updatePackageInfo()
+    this.toast('已添加我的图钉；可以在详情里改名、加链接和写笔记')
+  }
+
+  private customPinNameSection(marker: LayerMarker, title: HTMLElement): HTMLElement {
+    const section = document.createElement('div')
+    section.className = 'tml-custom-name'
+    const label = document.createElement('label')
+    label.textContent = '图钉名称'
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.value = marker.name
+    input.placeholder = '我的图钉'
+    input.addEventListener('input', () => {
+      const pin = this.customPinRecord(marker.id)
+      if (!pin) return
+      pin.name = input.value.trim() || '我的图钉'
+      pin.updatedAt = Date.now()
+      title.textContent = pin.name
+      this.savePinEditsForMap()
+      this.rebuildEffectiveMarkers()
+      this.requestDraw()
+    })
+    label.append(input)
+    section.append(label)
+    return section
+  }
+
+  private deleteCustomPin(id: string): void {
+    const marker = this.markerById(id)
+    if (!marker?.custom || typeof window === 'undefined') return
+    if (!window.confirm(`删除“${marker.name}”这个图钉？它的笔记和链接也会删除。`)) return
+    const key = this.markerNoteKey(marker)
+    const sourceKey = this.markerSourceKey(marker)
+    clearGlobalNote(key)
+    clearGlobalNote(sourceKey)
+    delete this.state.notes?.[key]
+    this.pinEdits.customPins = this.pinEdits.customPins.filter((pin) => pin.id !== id)
+    delete this.pinEdits.history[id]
+    this.state.selectedMarkerId = undefined
+    if (this.state.atPlaceId === id) this.state.atPlaceId = undefined
+    removeFavorite(this.markerFavoriteKey(marker))
+    this.rebuildEffectiveMarkers()
+    this.savePinEditsForMap()
+    this.refreshContext()
+    this.renderCategories()
+    this.renderFavorites()
+    this.renderDetail()
+    this.updateStatus()
+    this.updatePackageInfo()
+    this.persist()
+    this.requestDraw()
+    this.syncToolButtons()
+    this.toast(`已删除 ${marker.name}`)
+  }
+
+  private resetPinPosition(id: string): void {
+    const marker = this.markerById(id)
+    const base = this.pkg?.markers.find((item) => item.id === id)
+    if (!marker || !base || marker.custom) return
+    this.movePinTo(id, base.x, base.y)
   }
 
   private nearestMarkerAt(x: number, y: number): LayerMarker | undefined {
@@ -4315,7 +4981,7 @@ export class LayerMapUI {
     const [sx, sy] = this.project(x, y, width, height)
     let best: LayerMarker | undefined
     let bestDistance = 18
-    for (const marker of pkg.markers) {
+    for (const marker of this.effectiveMarkerList) {
       const [mx, my] = this.project(marker.x, marker.y, width, height)
       const distance = Math.hypot(mx - sx, my - sy)
       if (distance < bestDistance) {
@@ -4335,7 +5001,7 @@ export class LayerMapUI {
     const nx = Math.min(1, Math.max(0, x))
     const ny = Math.min(1, Math.max(0, y))
     const marker = placeId
-      ? this.pkg?.markers.find((item) => item.id === placeId)
+      ? this.markerById(placeId)
       : allowSnap
         ? this.nearestMarkerAt(nx, ny)
         : undefined
@@ -4554,8 +5220,10 @@ export class LayerMapUI {
     const pkg = this.pkg
     if (!pkg) return
     const hidden = new Set(this.state.hiddenCategories ?? [])
-    const categoryById = new Map(pkg.categories.map((category) => [category.id, category]))
-    const matches = pkg.markers
+    const categoryById = new Map(
+      this.effectiveCategoryList.map((category) => [category.id, category]),
+    )
+    const matches = this.effectiveMarkerList
       .filter((marker) => {
         const category = categoryById.get(marker.categoryId)?.name ?? ''
         const region = this.regionForMarker(marker)?.name ?? ''
@@ -5148,7 +5816,7 @@ export class LayerMapUI {
       remove.type = 'button'
       remove.dataset.imageAction = 'remove'
       actions.append(replace, remove)
-      if (pkg.markers.length > 0) {
+      if (this.effectiveMarkerList.length > 0) {
         const align = element('button', 'tml-btn', '对齐底图')
         align.type = 'button'
         align.dataset.imageAction = 'align'
