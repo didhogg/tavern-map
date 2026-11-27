@@ -1,11 +1,8 @@
+import { distanceUnitText, formatCellDistance } from './layer-distance'
 import type { LayerChatState, LayerGridConfig, LayerNearbyPlace } from './layer-types'
 
 function clean(value: string | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim()
-}
-
-function num(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
 function gridPoint(
@@ -30,13 +27,18 @@ function placeLine(
   showCoords = true,
 ): string {
   const category = place.category ? ` (${clean(place.category)})` : ''
-  const coords = grid && showCoords
-    ? gridPoint(place, grid)
-    : place.distancePercent < 0.01
-      ? '<0.01%'
-      : `${place.distancePercent.toFixed(2)}%`
-  const direction = place.direction ? ` · ${place.direction}` : ''
   const note = place.note ? ` · note: ${clean(place.note)}` : ''
+  if (grid) {
+    const parts = [
+      place.distanceCells != null ? formatCellDistance(place.distanceCells, grid) : '',
+      place.direction,
+      showCoords ? gridPoint(place, grid) : '',
+    ].filter(Boolean)
+    return `- ${clean(place.name)}${category} — ${parts.join(' · ')}${note}`
+  }
+  const coords =
+    place.distancePercent < 0.01 ? '<0.01%' : `${place.distancePercent.toFixed(2)}%`
+  const direction = place.direction ? ` · ${place.direction}` : ''
   return `- ${clean(place.name)}${category} — ${coords}${direction}${note}`
 }
 
@@ -48,9 +50,9 @@ export function buildLayerContext(state: LayerChatState): string {
     `Map: ${clean(snapshot.mapName)}`,
   ]
   if (snapshot.grid) {
-    lines.push(
-      `Grid: 1 cell = ${num(snapshot.grid.unitValue)} ${clean(snapshot.grid.unitLabel)} · origin upper-left · X→right, Y→down`,
-    )
+    lines.push('Grid: coordinates in cells (格) · origin upper-left · X→right, Y→down')
+    const unit = distanceUnitText(snapshot.grid)
+    if (unit) lines.push(`Distance unit: ${unit}; distances below are converted`)
   }
   if (snapshot.position) {
     const coords = snapshot.grid ? gridPoint(snapshot.position, snapshot.grid) : mapPoint(snapshot.position)

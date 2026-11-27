@@ -5854,6 +5854,43 @@
   accent-color: #39b5ff;
 }
 
+.tml-distance-unit {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 6px 0 2px;
+  color: var(--tm-muted);
+  font-size: 9px;
+}
+
+.tml-distance-unit > span:first-child {
+  margin-right: auto;
+}
+
+.tml-distance-unit input {
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--tm-line);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+}
+
+.tml-distance-unit input[type="number"] {
+  width: 54px;
+}
+
+.tml-distance-unit input[type="text"] {
+  width: 46px;
+}
+
+.tml-distance-unit-hint {
+  opacity: 0.8;
+}
+
 .tml-side-tabs {
   display: flex;
   gap: 3px;

@@ -20,6 +20,7 @@ import {
   filesToBundle,
   scanTileFiles,
 } from './layer-source'
+import { distanceUnitText, formatCellDistance, gridCellDistance } from './layer-distance'
 import {
   getLayerPackage,
   listLayerPackages,
@@ -405,10 +406,6 @@ const PANEL_HTML = `
             </div>
           </header>
           <div class="tml-grid-row">
-            <label>1 格 =
-              <input id="tml-grid-value" type="number" min="0" step="any" value="1">
-              <input id="tml-grid-unit" type="text" list="tml-grid-units" value="格" aria-label="每格单位">
-            </label>
             <label class="tml-grid-check"><input id="tml-grid-show" type="checkbox"> 关闭后仍显示</label>
           </div>
           <datalist id="tml-grid-units">
@@ -716,8 +713,6 @@ export class LayerMapUI {
   private gridOriginHandleEl!: HTMLButtonElement
   private gridScaleHandleEl!: HTMLButtonElement
   private gridRangeEl!: HTMLInputElement
-  private gridValueEl!: HTMLInputElement
-  private gridUnitEl!: HTMLInputElement
   private gridShowEl!: HTMLInputElement
   private gridCellEl!: HTMLInputElement
   private gridXEl!: HTMLInputElement
@@ -1064,8 +1059,6 @@ export class LayerMapUI {
     this.userStampEl = document.getElementById('tml-user-stamp') as HTMLButtonElement
     this.gridOriginHandleEl = document.getElementById('tml-grid-origin') as HTMLButtonElement
     this.gridScaleHandleEl = document.getElementById('tml-grid-scale') as HTMLButtonElement
-    this.gridValueEl = document.getElementById('tml-grid-value') as HTMLInputElement
-    this.gridUnitEl = document.getElementById('tml-grid-unit') as HTMLInputElement
     this.gridShowEl = document.getElementById('tml-grid-show') as HTMLInputElement
     this.gridCellEl = document.getElementById('tml-grid-cell') as HTMLInputElement
     this.gridRangeEl = document.getElementById('tml-grid-range') as HTMLInputElement
@@ -1202,7 +1195,7 @@ export class LayerMapUI {
       else if (action === 'scale-in') this.scaleGrid(1.15)
       else if (action === 'scale-out') this.scaleGrid(1 / 1.15)
     })
-    for (const input of [this.gridValueEl, this.gridUnitEl, this.gridCellEl, this.gridXEl, this.gridYEl, this.gridShowEl]) {
+    for (const input of [this.gridCellEl, this.gridXEl, this.gridYEl, this.gridShowEl]) {
       input.addEventListener('input', () => this.applyGridInputs())
       input.addEventListener('change', () => this.applyGridInputs())
     }
@@ -1369,7 +1362,7 @@ export class LayerMapUI {
     this.contextInjectEl.checked = loadSettings(this.ctx).layerMapContext
     const grid = this.gridConfig()
     this.contextGridEl.textContent = grid
-      ? `1 格 = ${grid.unitValue} ${grid.unitLabel}`
+      ? `已校准 · 坐标按格 · ${distanceUnitText(grid) ?? '距离按格（未设换算）'}`
       : '未校准；AI 使用地图百分比坐标'
   }
 
@@ -3091,7 +3084,8 @@ export class LayerMapUI {
       context.lineTo(x2, y2)
       context.stroke()
       context.setLineDash([])
-      const label = `≈ ${this.itineraryDistanceLabel(last, this.routeHover)}`
+      const distance = this.itineraryDistanceLabel(last, this.routeHover)
+      const label = distance.startsWith('≈') ? distance : `≈ ${distance}`
       context.font = '600 10px "PingFang SC", "Microsoft YaHei", sans-serif'
       const textWidth = context.measureText(label).width
       const left = Math.min(width - textWidth - 14, Math.max(8, x2 + 10))
@@ -3265,7 +3259,7 @@ export class LayerMapUI {
     }
     const grid = this.gridConfig()
     if (grid) {
-      this.scaleEl.textContent += ` · 网格 1格=${grid.unitValue}${grid.unitLabel}`
+      this.scaleEl.textContent += ` · 网格${distanceUnitText(grid) ? ` · ${distanceUnitText(grid)}` : ''}`
     }
     this.emptyEl.hidden = !this.emptyMessage
     this.contextStatusEl.textContent = this.state.context ? '图层上下文：已生成' : '图层上下文：待机'
@@ -4835,6 +4829,7 @@ export class LayerMapUI {
     // One normalized Y unit covers the image height. Tile coordinates already
     // have equal X and Y scale. Compare distances in units of map width.
     const yScale = pkg.kind === 'image' ? pkg.height / pkg.width : 1
+    const grid = this.gridConfig()
     const hidden = new Set(this.state.hiddenCategories ?? [])
     const categories = new Map(
       this.effectiveCategoryList.map((category) => [category.id, category]),
@@ -4849,6 +4844,7 @@ export class LayerMapUI {
       nearby.push({
         id: marker.id,
         name: marker.name,
+        distanceCells: grid ? gridCellDistance(anchor, marker, grid) : undefined,
         category: settings.layerNearbyType ? categories.get(marker.categoryId)?.name : undefined,
         x: marker.x,
         y: marker.y,
@@ -4996,10 +4992,8 @@ export class LayerMapUI {
     return legs
   }
 
-  private itineraryFormatCellDistance(cells: number, units: number, grid: LayerGridConfig): string {
-    const cellText = `${cells.toFixed(1)} 格`
-    if (grid.unitLabel.trim() === '格') return cellText
-    return `${cellText} ≈ ${units.toFixed(1)} ${grid.unitLabel}`
+  private itineraryFormatCellDistance(cells: number, grid: LayerGridConfig): string {
+    return formatCellDistance(cells, grid)
   }
 
   private itineraryDistanceLabel(
@@ -5012,7 +5006,7 @@ export class LayerMapUI {
         (to.x - from.x) / grid.cellW,
         (to.y - from.y) / grid.cellH,
       )
-      return this.itineraryFormatCellDistance(cells, cells * grid.unitValue, grid)
+      return this.itineraryFormatCellDistance(cells, grid)
     }
     const span = this.mapSpan()
     const percent = Math.hypot(
@@ -5032,7 +5026,7 @@ export class LayerMapUI {
           (leg.to.y - leg.from.y) / grid.cellH,
         )
       }
-      return this.itineraryFormatCellDistance(cells, cells * grid.unitValue, grid)
+      return this.itineraryFormatCellDistance(cells, grid)
     }
     const span = this.mapSpan()
     let percent = 0
@@ -6098,7 +6092,60 @@ export class LayerMapUI {
         this.actionButton('在地图上放置', () => this.startUserPlacement(), false, 'tml-position-place'),
       )
     }
+    card.append(this.distanceUnitRow())
     this.positionEl.append(card)
+  }
+
+  /**
+   * "距离换算 1 格 ≈ [5] [米]": a display conversion only. It never moves or
+   * resizes the grid; it changes how distances read in the UI and AI context.
+   */
+  private distanceUnitRow(): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'tml-distance-unit'
+    const label = document.createElement('span')
+    label.textContent = '距离换算'
+    row.append(label)
+    const grid = this.gridConfig()
+    if (!grid) {
+      const hint = document.createElement('span')
+      hint.className = 'tml-distance-unit-hint'
+      hint.textContent = '先用“# 网格”校准格子'
+      row.append(hint)
+      return row
+    }
+    const prefix = document.createElement('span')
+    prefix.textContent = '1 格 ≈'
+    const amount = document.createElement('input')
+    amount.type = 'number'
+    amount.min = '0'
+    amount.step = 'any'
+    amount.value = String(grid.unitValue)
+    amount.setAttribute('aria-label', '每格换算数值')
+    const unit = document.createElement('input')
+    unit.type = 'text'
+    unit.value = grid.unitLabel
+    unit.setAttribute('list', 'tml-grid-units')
+    unit.setAttribute('aria-label', '换算单位')
+    unit.placeholder = '米'
+    const apply = (rerender: boolean): void => {
+      const current = this.gridConfig()
+      if (!current) return
+      const value = Number(amount.value)
+      current.unitValue = Number.isFinite(value) && value > 0 ? value : 1
+      current.unitLabel = unit.value.trim() || '格'
+      this.scheduleGridSave()
+      this.updateStatus()
+      // While typing, refresh the AI context and nearby list but keep this
+      // card (and the focused input); re-render it once editing is done.
+      this.refreshContext(rerender)
+    }
+    for (const input of [amount, unit]) {
+      input.addEventListener('input', () => apply(false))
+      input.addEventListener('change', () => apply(true))
+    }
+    row.append(prefix, amount, unit)
+    return row
   }
 
   private renderNearby(): void {
@@ -6135,7 +6182,9 @@ export class LayerMapUI {
         : place.distancePercent < 0.01
           ? '<0.01%'
           : `${place.distancePercent.toFixed(2)}%`
-      meta.textContent = [place.category, location, place.direction]
+      const distance =
+        grid && place.distanceCells != null ? formatCellDistance(place.distanceCells, grid) : ''
+      meta.textContent = [place.category, distance, place.direction, location]
         .filter(Boolean)
         .join(' · ')
       button.append(name, meta)
@@ -6584,9 +6633,7 @@ export class LayerMapUI {
     const radius = this.nearbyRadiusMapUnits()
     const grid = this.gridConfig()
     if (grid) {
-      const cells = radius / grid.cellW
-      const amount = grid.unitValue * cells
-      return `${cells.toFixed(1)} 格${grid.unitValue ? ` ≈ ${amount.toFixed(1)} ${grid.unitLabel}` : ''}`
+      return formatCellDistance(radius / grid.cellW, grid)
     }
     return `${(fraction * 100).toFixed(1)}% 地图宽`
   }
@@ -6956,8 +7003,6 @@ export class LayerMapUI {
     const span = this.mapSpan()
     const percent = (value: number, total: number): string =>
       (value / total * 100).toFixed(3).replace(/\.?0+$/, '')
-    this.gridValueEl.value = String(grid.unitValue)
-    this.gridUnitEl.value = grid.unitLabel
     const cellPercent = percent(grid.cellW, span.w)
     this.gridCellEl.value = cellPercent
     this.gridRangeEl.value = String(Math.min(100, Math.max(0.01, Number(cellPercent) || 0.01)))
@@ -6975,8 +7020,6 @@ export class LayerMapUI {
       const parsed = Number(value)
       return Number.isFinite(parsed) ? parsed : fallback
     }
-    grid.unitValue = Math.max(0.000001, number(this.gridValueEl.value, grid.unitValue || 1))
-    grid.unitLabel = this.gridUnitEl.value.trim() || '格'
     const span = this.mapSpan(pkg)
     grid.cellW = Math.min(span.w * 2, Math.max(span.w * 0.0001, span.w * number(this.gridCellEl.value, (grid.cellW / span.w) * 100) / 100))
     grid.cellH =

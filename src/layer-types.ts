@@ -317,6 +317,8 @@ export type LayerNearbyPlace = {
   y: number
   direction: string
   distancePercent: number
+  /** Distance from the anchor in grid cells, when the map has a grid. */
+  distanceCells?: number
   note?: string
   sourceMaterial?: string
   wikiTexts?: Array<{ title: string; text: string }>
@@ -785,6 +787,7 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
           y: item.y,
           direction: item.direction,
           distancePercent: item.distancePercent,
+          distanceCells: Number.isFinite(item.distanceCells) ? item.distanceCells : undefined,
           note: typeof item.note === 'string' ? item.note : undefined,
           sourceMaterial:
             typeof item.sourceMaterial === 'string' && item.sourceMaterial.trim()
