@@ -202,10 +202,14 @@ export type Settings = {
   layerItineraryPoiRadius: number
   /** Maximum number of corridor places shown per itinerary leg. */
   layerItineraryPoiMax: number
-  /** Show places and roads along the itinerary (list, map rings and AI). */
+  /** Show places, roads and areas along the itinerary. */
   layerItineraryPoisShow: boolean
   /** Only the leg I am on (or the first leg before setting off). */
   layerItineraryPoisCurrentOnly: boolean
+  layerItineraryPoiSource: boolean
+  layerItineraryPoiNotes: boolean
+  /** Show notes for areas in the itinerary range. */
+  layerItineraryRegionNotes: boolean
   /** Notes of roads near my position (on it or in the nearby radius). */
   layerRoadNoteNearby: boolean
   /** Notes of the roads of the itinerary leg I am on. */

@@ -344,8 +344,11 @@ const SETTINGS_HTML = `
 
       <div class="tm-settings-group">
         <div class="tm-settings-group-title">图层地图 · 行程</div>
-        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoisShow"> 显示沿途地点和道路（列表、地图金圈、AI 一起）</label>
-        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoisCurrentOnly"> 只显示当前所在段的沿途地点和道路</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoisShow"> 显示沿途地点、道路和区域</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoisCurrentOnly"> 只显示当前所在段的沿途地点、道路和区域</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoiSource"> 显示沿途地点来源资料（行程列表和 AI）</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoiNotes"> 显示沿途地点笔记（行程列表和 AI）</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryRegionNotes"> 显示经停区域笔记（行程列表和 AI）</label>
         <label class="tm-row">沿途范围
           <input id="tm-set-itinerary-poi-radius" type="number" data-layer-setting="layerItineraryPoiRadius" min="0.1" max="40" step="0.1">
           <span>% 地图宽</span>

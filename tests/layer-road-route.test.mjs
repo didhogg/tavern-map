@@ -14,6 +14,7 @@ const { buildRoadGraph, roadRoute, roadsNearPolyline } = await import('../src/la
 const { polylineCumulative, polylineSlice, projectOnPolyline } = await import('../src/layer-polyline.ts')
 const { roadsNearPoint, buildRoadIndex } = await import('../src/layer-roads.ts')
 const { buildLayerContext } = await import('../src/layer-context.ts')
+const { LAYER_STATE_KEY, loadLayerState } = await import('../src/layer-types.ts')
 
 const street = (id, points, name = id, type = 'Main') => ({ id, name, type, points })
 const kinds = (pieces) => pieces.map((p) => (p.kind === 'road' ? `road:${p.street}` : 'straight'))
@@ -105,6 +106,28 @@ test('AI text shows nearby roads, leg route with road changes and roads in range
   assert.match(text, /1\. 河木镇 → 白漫城 · 5.0 格 · along roads \[current\]/)
   assert.match(text, /Route: 0.3 格 straight to road → A 大路 \(Main\) 3.1 格 → switch to B 小径 \(Path\) 1.0 格 → 0.6 格 straight to stop/)
   assert.match(text, /Roads in range: C 小径 \(Path\) · 0.8 格 from route/)
+})
+
+test('itinerary POI source and note survive reloading chat metadata independently', () => {
+  const state = loadLayerState({
+    chatMetadata: {
+      [LAYER_STATE_KEY]: {
+        version: 1,
+        context: {
+          mapName: 'Skyrim',
+          itinerary: {
+            start: 'Start', destination: 'End', total: '5 格', stops: ['Start', 'End'],
+            legs: [{ from: 'Start', to: 'End', distance: '5 格', pois: [
+              { name: 'Mine', sourceMaterial: 'Imported\nreference' },
+              { name: 'Inn', note: 'Ask for the key', sourceMaterial: {} },
+              { name: 'Farm', note: 42 },
+            ] }],
+          },
+        },
+      },
+    },
+  })
+  assert.match(buildLayerContext(state), /- Mine\n     Source: Imported reference\n   - Inn\n     Note: Ask for the key\n   - Farm\n/)
 })
 
 const peek = '/private/tmp/claude-501/-Users-xxx/12e271b9-cf7f-4da8-ae9b-b0fa92327e4a/scratchpad/peek'

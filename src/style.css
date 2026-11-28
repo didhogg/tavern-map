@@ -2818,6 +2818,14 @@
   color: var(--tm-faint);
 }
 
+.tml-route-detail {
+  padding: 1px 6px 4px 12px;
+  color: var(--tm-muted);
+  font-size: 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .tml-route-foot {
   display: flex;
   align-items: center;

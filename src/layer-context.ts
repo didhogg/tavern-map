@@ -182,11 +182,22 @@ export function buildLayerContext(state: LayerChatState): string {
             .join('; ')}`,
         )
       }
+      if (leg.areas?.length) {
+        lines.push('   Areas in range:')
+        for (const area of leg.areas) {
+          const note = clean(area.note)
+          lines.push(`   - ${clean(area.name)}${note ? ` · note: ${note}` : ''}`)
+        }
+      }
       for (const poi of leg.pois) {
         const category = poi.category ? ` (${clean(poi.category)})` : ''
         const along = poi.along ? ` · ${clean(poi.along)} from leg start` : ''
         const offset = poi.offset ? ` · ${clean(poi.offset)} from route` : ''
         lines.push(`   - ${clean(poi.name)}${category}${along}${offset}`)
+        const source = clean(poi.sourceMaterial)
+        const note = clean(poi.note)
+        if (source) lines.push(`     Source: ${source}`)
+        if (note) lines.push(`     Note: ${note}`)
       }
     }
   }

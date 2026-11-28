@@ -330,6 +330,8 @@ export type LayerNearbyPlace = {
 export type LayerItineraryContextPoi = {
   name: string
   category?: string
+  sourceMaterial?: string
+  note?: string
   /** Distance along this leg from its start. */
   along?: string
   /** Perpendicular distance from the route centre line. */
@@ -351,6 +353,11 @@ export type LayerItineraryContextRoad = {
   distance: string
 }
 
+export type LayerItineraryContextArea = {
+  name: string
+  note?: string
+}
+
 export type LayerItineraryContextLeg = {
   from: string
   to: string
@@ -362,6 +369,8 @@ export type LayerItineraryContextLeg = {
   route?: LayerItineraryContextPiece[]
   /** Roads in range of this leg; omitted when the leg's extras are hidden. */
   roads?: LayerItineraryContextRoad[]
+  /** Areas in range of this leg; omitted when the leg's extras are hidden. */
+  areas?: LayerItineraryContextArea[]
   pois: LayerItineraryContextPoi[]
 }
 
@@ -811,6 +820,14 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
               distance: road.distance,
             }))
         : undefined,
+      areas: Array.isArray(leg.areas)
+        ? leg.areas
+            .filter((area): area is LayerItineraryContextArea => Boolean(area) && typeof area.name === 'string')
+            .map((area) => ({
+              name: area.name,
+              note: typeof area.note === 'string' ? area.note : undefined,
+            }))
+        : undefined,
       pois: Array.isArray(leg.pois)
         ? leg.pois
             .filter((poi): poi is LayerItineraryContextPoi => {
@@ -820,6 +837,8 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
             .map((poi) => ({
               name: poi.name,
               category: typeof poi.category === 'string' ? poi.category : undefined,
+              sourceMaterial: typeof poi.sourceMaterial === 'string' ? poi.sourceMaterial : undefined,
+              note: typeof poi.note === 'string' ? poi.note : undefined,
               along: typeof poi.along === 'string' ? poi.along : undefined,
               offset: typeof poi.offset === 'string' ? poi.offset : undefined,
             }))

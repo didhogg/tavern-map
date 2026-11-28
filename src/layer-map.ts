@@ -1,6 +1,6 @@
 import { addProtocol, Map as MapLibreMap } from 'maplibre-gl'
 import { buildLayerContext } from './layer-context'
-import { pointInRing, regionChain, regionsAtPoint } from './layer-regions'
+import { itineraryRegions, pointInRing, regionChain, regionsAtPoint } from './layer-regions'
 import {
   pointAlong,
   pointDistance,
@@ -64,6 +64,7 @@ import {
   type LayerGridConfig,
   type LayerItinerary,
   type LayerItineraryContext,
+  type LayerItineraryContextPoi,
   type LayerItineraryStop,
   type LayerFavoritePlace,
   type LayerLink,
@@ -692,6 +693,14 @@ export class LayerMapUI {
   private itineraryPoiCache:
     | { key: string; markers: LayerMarker[]; result: Map<number, ItineraryPoiView[]> }
     | undefined
+  private itineraryAreaCache?: {
+    key: string
+    regions: LayerRegion[]
+    streets: LayerStreet[] | undefined
+    result: LayerRegion[][]
+  }
+  private readonly itineraryNoteRegionIds = new Set<string>()
+  private syncRegionNoteAI?: () => void
   /** Range while the slider or map handle is being dragged; saved to settings on release. */
   private itineraryRangeOverride: number | undefined
   /** Planning: the next leg added follows roads. Stays on until switched off. */
@@ -4107,20 +4116,12 @@ export class LayerMapUI {
       this.selectRoad(this.roadKey(road))
       return
     }
-    const region = this.hitRegion(sx, sy)
-    if (region) {
-      this.state.selectedRegionId = region.id
-      this.state.selectedMarkerId = undefined
-      this.state.selectedRoadKey = undefined
-      this.renderDetail()
-      this.refreshContext()
-      this.persist()
-      this.requestDraw()
-      this.syncToolButtons()
-      return
-    }
+    this.selectRegion(this.hitRegion(sx, sy))
+  }
+
+  private selectRegion(region: LayerRegion | undefined): void {
     this.state.selectedMarkerId = undefined
-    this.state.selectedRegionId = undefined
+    this.state.selectedRegionId = region?.id
     this.state.selectedRoadKey = undefined
     this.renderDetail()
     this.refreshContext()
@@ -4385,6 +4386,7 @@ export class LayerMapUI {
 
   private renderDetail(): void {
     if (!this.detailEl) return
+    this.syncRegionNoteAI = undefined
     this.detailEl.replaceChildren()
     const pkg = this.pkg
     if (!pkg) {
@@ -4669,7 +4671,7 @@ export class LayerMapUI {
         settings.layerRoadSourceAI && this.roadNotesGloballyEnabled(settings),
         () => this.roadAIScope(loadSettings(this.liveContext())).has(key),
         '这条路不在你附近，也不在勾选的行程段里',
-      ),
+      ).label,
     )
     source.append(summary, sourceAI)
     const withFields = lines.filter((line) => line.properties?.length)
@@ -4726,7 +4728,7 @@ export class LayerMapUI {
         this.roadNotesGloballyEnabled(),
         () => this.roadAIScope(loadSettings(this.liveContext())).has(key),
         '这条路不在你附近，也不在勾选的行程段里',
-      ),
+      ).label,
     )
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写一段道路笔记…'
@@ -5175,7 +5177,7 @@ export class LayerMapUI {
 
   private setMarkerSource(marker: LayerMarker, value: string): void {
     setGlobalNote(this.markerSourceKey(marker), value)
-    if (loadSettings(this.liveContext()).layerSourceAI) this.refreshContext()
+    if (this.aiPartGloballyEnabled('source')) this.refreshContext(false)
   }
 
   private savePlaceAIFlagsForMap(): void {
@@ -5252,7 +5254,8 @@ export class LayerMapUI {
       return (
         settings.layerSourceAI ||
         (nearby && settings.layerNearbySource) ||
-        (favorites && settings.layerFavoriteSource)
+        (favorites && settings.layerFavoriteSource) ||
+        (settings.layerItineraryPoisShow && settings.layerItineraryPoiSource)
       )
     }
     if (part === 'wiki') {
@@ -5265,7 +5268,8 @@ export class LayerMapUI {
     return (
       settings.layerNoteAI ||
       (nearby && settings.layerNearbyNotes) ||
-      (favorites && settings.layerFavoriteNote)
+      (favorites && settings.layerFavoriteNote) ||
+      (settings.layerItineraryPoisShow && settings.layerItineraryPoiNotes)
     )
   }
 
@@ -5286,19 +5290,24 @@ export class LayerMapUI {
       wiki: 'Wiki 正文',
       note: '笔记',
     }
-    return this.aiFlagToggle(marker.id, part, names[part], '地点', this.aiPartGloballyEnabled(part))
+    return this.aiFlagToggle(marker.id, part, names[part], '地点', this.aiPartGloballyEnabled(part)).label
   }
 
   private regionNoteAIToggle(region: LayerRegion): HTMLElement {
-    return this.aiFlagToggle(
+    const settings = loadSettings(this.liveContext())
+    const inItinerary = () => this.itineraryNoteRegionIds.has(region.id)
+    const { label, sync } = this.aiFlagToggle(
       this.regionAIKey(region),
       'note',
       '区域笔记',
       '区域',
-      loadSettings(this.liveContext()).layerRegionNoteAI,
-      () => this.contextAreaChain().some((item) => item.id === region.id),
-      '不是你现在所在的区域',
+      () => settings.layerRegionNoteAI || inItinerary(),
+      () => inItinerary() ||
+        (settings.layerRegionNoteAI && this.contextAreaChain().some((item) => item.id === region.id)),
+      '区域不在当前位置或行程的范围内',
     )
+    this.syncRegionNoteAI = sync
+    return label
   }
 
   /**
@@ -5311,10 +5320,10 @@ export class LayerMapUI {
     part: LayerAIPart,
     name: string,
     scope: string,
-    globallyEnabled: boolean,
+    globallyEnabled: boolean | (() => boolean),
     inScope?: () => boolean,
     outOfScopeText = '',
-  ): HTMLElement {
+  ): { label: HTMLElement; sync: () => void } {
     const label = document.createElement('label')
     label.className = 'tml-ai-toggle'
     const checkbox = document.createElement('input')
@@ -5324,13 +5333,15 @@ export class LayerMapUI {
     caption.textContent = '给 AI'
     label.append(checkbox, caption)
     const automatic = (): boolean => (inScope ? inScope() : true)
+    const enabled = () => typeof globallyEnabled === 'function' ? globallyEnabled() : globallyEnabled
     const sync = (): void => {
-      const on = globallyEnabled && this.aiFlagSends(key, part, automatic())
+      const isEnabled = enabled()
+      const on = isEnabled && this.aiFlagSends(key, part, automatic())
       checkbox.checked = on
-      checkbox.disabled = !globallyEnabled
+      checkbox.disabled = !isEnabled
       label.classList.toggle('is-off', !on)
-      label.classList.toggle('is-disabled', !globallyEnabled)
-      label.title = !globallyEnabled
+      label.classList.toggle('is-disabled', !isEnabled)
+      label.title = !isEnabled
         ? `没有开启${name}的全局 AI 开关`
         : on
           ? `点击取消这个${scope}的${name}进入 AI`
@@ -5340,7 +5351,7 @@ export class LayerMapUI {
     }
     sync()
     checkbox.addEventListener('change', () => {
-      if (!globallyEnabled) {
+      if (!enabled()) {
         checkbox.checked = false
         return
       }
@@ -5348,7 +5359,7 @@ export class LayerMapUI {
       this.setAIFlag(key, part, checkbox.checked === automatic() ? undefined : checkbox.checked)
       sync()
     })
-    return label
+    return { label, sync }
   }
 
   private sourceSection(marker: LayerMarker): HTMLElement {
@@ -6030,18 +6041,18 @@ export class LayerMapUI {
   }
 
   /**
-   * Legs whose places and roads are shown (list, map rings and AI), following
+   * Legs whose nearby places, roads and areas are shown, following
    * the two global switches. Planning shows every leg.
    */
   private itineraryExtrasLegs(
     route: LayerItinerary,
     legCount: number,
-    position = this.itineraryEdit ? undefined : this.itineraryPosition(route),
+    position = route === this.itineraryDraft ? undefined : this.itineraryPosition(route),
   ): Set<number> {
     const settings = loadSettings(this.liveContext())
     const all = new Set(Array.from({ length: legCount }, (_, index) => index))
     if (!settings.layerItineraryPoisShow) return new Set()
-    if (this.itineraryEdit || !settings.layerItineraryPoisCurrentOnly) return all
+    if (route === this.itineraryDraft || !settings.layerItineraryPoisCurrentOnly) return all
     if (!position || position.atFinal) return new Set()
     return new Set([position.onRoute ? position.legIndex ?? 0 : 0])
   }
@@ -6154,6 +6165,37 @@ export class LayerMapUI {
     return result
   }
 
+  private itineraryPoiDetails(
+    marker: LayerMarker,
+    settings: Settings,
+    forAI: boolean,
+  ): Pick<LayerItineraryContextPoi, 'sourceMaterial' | 'note'> {
+    return {
+      sourceMaterial: settings.layerItineraryPoiSource && (!forAI || this.placeAIPartAllowed(marker, 'source'))
+        ? this.markerSourceValue(marker).trim() || undefined
+        : undefined,
+      note: settings.layerItineraryPoiNotes && (!forAI || this.placeAIPartAllowed(marker, 'note'))
+        ? this.markerNoteValue(marker).trim() || undefined
+        : undefined,
+    }
+  }
+
+  private itineraryLegAreas(legs: ItineraryLegView[]): LayerRegion[][] {
+    const pkg = this.pkg
+    if (!pkg?.regions.length) return []
+    const radius = this.itineraryRangeUnits()
+    const yScale = this.itineraryYScale()
+    const geometry = legs.map(({ from, to, snap }) => [from.x, from.y, to.x, to.y, snap])
+    const key = JSON.stringify([radius, yScale, geometry])
+    const cached = this.itineraryAreaCache
+    if (cached?.key === key && cached.regions === pkg.regions && cached.streets === pkg.streets) {
+      return cached.result
+    }
+    const result = itineraryRegions(pkg.regions, legs.map((leg) => leg.points), radius, yScale)
+    this.itineraryAreaCache = { key, regions: pkg.regions, streets: pkg.streets, result }
+    return result
+  }
+
   /** Road touching or crossing the route (same tolerance as "on road"). */
   private roadTouches(distance: number): boolean {
     return distance <= this.mapSpan().w * ON_ROAD_SPAN_FRACTION
@@ -6179,13 +6221,14 @@ export class LayerMapUI {
     return leg.pieces[leg.pieces.length - 1]
   }
 
-  private itineraryContext(route: LayerItinerary): LayerItineraryContext | undefined {
+  private itineraryContext(route: LayerItinerary, settings: Settings): LayerItineraryContext | undefined {
     if (!route.showToAI || route.stops.length < 2) return undefined
     const legs = this.itineraryLegs(route)
     const position = this.itineraryPosition(route)
     const pois = this.itineraryPois(route)
     const legRoads = this.itineraryLegRoads(legs)
     const extras = this.itineraryExtrasLegs(route, legs.length, position)
+    const legAreas = extras.size ? this.itineraryLegAreas(legs) : []
     const names = route.stops.map((stop) => this.itineraryStopName(stop))
     const currentLeg = position?.onRoute && !position.atFinal ? position.legIndex : undefined
     const current =
@@ -6236,12 +6279,25 @@ export class LayerMapUI {
               distance: this.roadTouches(road.distance) ? 'touches' : this.roadUnitsLabel(road.distance),
             }))
           : undefined,
+        areas: extras.has(index)
+          ? legAreas[index]?.map((area) => {
+              if (!settings.layerItineraryRegionNotes || this.itineraryNoteRegionIds.has(area.id)) {
+                return { name: area.name }
+              }
+              this.itineraryNoteRegionIds.add(area.id)
+              const note = this.aiFlagAllowed(this.regionAIKey(area), 'note')
+                ? this.regionNoteValue(area).trim() || undefined
+                : undefined
+              return { name: area.name, note }
+            })
+          : undefined,
         pois: extras.has(index)
           ? (pois.get(index) ?? []).map((poi) => ({
               name: poi.marker.name,
               category: this.categoryById(poi.marker.categoryId)?.name,
               along: this.itineraryAlongLabel(leg, 0, poi.along),
               offset: this.itineraryDistanceLabel(poi.marker, poi.projected),
+              ...this.itineraryPoiDetails(poi.marker, settings, true),
             }))
           : [],
       })),
@@ -6500,6 +6556,8 @@ export class LayerMapUI {
     const extras = route
       ? this.itineraryExtrasLegs(route, legs.length, this.itineraryEdit ? undefined : position)
       : new Set<number>()
+    const settings = loadSettings(this.liveContext())
+    const legAreas = extras.size ? this.itineraryLegAreas(legs) : []
     const head = document.createElement('header')
     head.className = 'tml-route-head'
     const titleWrap = document.createElement('div')
@@ -6650,6 +6708,7 @@ export class LayerMapUI {
             leg.snap ? '沿路' : '直线',
             shown ? `沿途 ${pois.get(index)?.length ?? 0} 个地点` : '',
             shown && legRoads.get(index)?.length ? `${legRoads.get(index)?.length} 条道路` : '',
+            shown && legAreas[index]?.length ? `${legAreas[index].length} 个区域` : '',
           ]
             .filter(Boolean)
             .join(' · '),
@@ -6713,9 +6772,9 @@ export class LayerMapUI {
               textElement(
                 'div',
                 'tml-route-poi-empty',
-                loadSettings(this.liveContext()).layerItineraryPoisShow
-                  ? '设置为只显示当前所在段的沿途地点和道路。'
-                  : '沿途地点和道路已在设置中关闭。',
+                settings.layerItineraryPoisShow
+                  ? '设置为只显示当前所在段的沿途地点、道路和区域。'
+                  : '沿途地点、道路和区域已在设置中关闭。',
               ),
             )
           } else {
@@ -6729,12 +6788,28 @@ export class LayerMapUI {
               button.addEventListener('click', () => this.selectRoad(key, true))
               poiList.append(button)
             }
+            if (legAreas[index]?.length) {
+              poiList.append(textElement('div', 'tml-route-piece is-road', '经停区域'))
+              for (const area of legAreas[index]) {
+                const button = document.createElement('button')
+                button.type = 'button'
+                button.className = 'tml-route-poi'
+                button.textContent = area.name
+                button.title = '查看区域详情'
+                button.addEventListener('click', () => this.selectRegion(area))
+                poiList.append(button)
+                const note = settings.layerItineraryRegionNotes && this.regionNoteValue(area).trim()
+                if (note) poiList.append(textElement('div', 'tml-route-detail', note))
+              }
+            }
             const legPois = pois.get(index) ?? []
             if (legPois.length === 0) {
               poiList.append(
                 textElement('div', 'tml-route-poi-empty', '这段沿线暂无地点。'),
               )
             }
+            const showPoiDetails = !settings.layerItineraryPoisCurrentOnly ||
+              (!position?.atFinal && (position?.legIndex ?? 0) === index)
             for (const poi of legPois) {
               const poiButton = document.createElement('button')
               poiButton.type = 'button'
@@ -6746,6 +6821,13 @@ export class LayerMapUI {
                 if (marker) this.selectMarker(marker, true)
               })
               poiList.append(poiButton)
+              if (showPoiDetails) {
+                const { sourceMaterial, note } = this.itineraryPoiDetails(poi.marker, settings, false)
+                if (sourceMaterial) {
+                  poiList.append(textElement('div', 'tml-route-detail', `来源资料 · ${sourceMaterial}`))
+                }
+                if (note) poiList.append(textElement('div', 'tml-route-detail', `笔记 · ${note}`))
+              }
             }
           }
           list.append(poiList)
@@ -7263,7 +7345,9 @@ export class LayerMapUI {
     const contextGrid = this.gridConfig()
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
     const nearbyRoads = user ? this.buildNearbyRoads(user, settings) : []
-    const itinerary = this.itinerary ? this.itineraryContext(this.itinerary) : undefined
+    this.itineraryNoteRegionIds.clear()
+    const itinerary = this.itinerary ? this.itineraryContext(this.itinerary, settings) : undefined
+    this.syncRegionNoteAI?.()
     const note =
       settings.layerNoteAI && marker && this.placeAIPartAllowed(marker, 'note')
         ? this.markerNoteValue(marker)
