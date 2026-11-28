@@ -99,7 +99,8 @@ test('AI text shows nearby roads, leg route with road changes and roads in range
             { kind: 'straight', distance: '0.6 格' },
           ],
           roads: [{ name: 'C 小径', type: 'Path', distance: '0.8 格' }],
-          pois: [],
+          areas: [{ name: '河木镇', note: '村中巡逻' }],
+          pois: [{ name: '沉睡巨人旅店', category: '门', note: '记得问店主' }],
         }],
       },
       updatedAt: 1,
@@ -113,6 +114,7 @@ test('AI text shows nearby roads, leg route with road changes and roads in range
   assert.match(text, /1\. 河木镇 → 白漫城 · 5.0 格 · along roads \[current\]/)
   assert.match(text, /Route: 0.3 格 straight to road → A 大路 \(Main\) 3.1 格 → switch to B 小径 \(Path\) 1.0 格 → 0.6 格 straight to stop/)
   assert.match(text, /Roads in range: C 小径 \(Path\) · 0.8 格 from route/)
+  assert.match(text, /POIs in range:\n   - 沉睡巨人旅店 \(门\)\n     Note: 记得问店主\n   Areas in range:\n   - 河木镇 · note: 村中巡逻/)
 })
 
 test('the itinerary reports arrival only when stored progress confirms the destination', () => {

@@ -36492,18 +36492,19 @@ function UI(e) {
 		} else e.nextStop ? n.push("Current: not started") : e.atDestination && n.push("Current: at destination");
 		e.nextStop && n.push(`Next stop: ${Z(e.nextStop)}`);
 		for (let [t, r] of e.legs.entries()) {
-			if (n.push(`${t + 1}. ${Z(r.from)} → ${Z(r.to)} · ${Z(r.distance)}${r.mode === "road" ? " · along roads" : ""}${r.current ? " [current]" : ""}`), r.route?.length && n.push(`   Route: ${HI(r.route)}`), r.roads?.length && n.push(`   Roads in range: ${r.roads.map((e) => `${Z(e.name) || "unnamed road"}${e.type ? ` (${Z(e.type)})` : ""} · ${e.distance === "touches" ? "touches route" : `${Z(e.distance)} from route`}`).join("; ")}`), r.areas?.length) {
-				n.push("   Areas in range:");
-				for (let e of r.areas) {
-					let t = Z(e.note);
-					n.push(`   - ${Z(e.name)}${t ? ` · note: ${t}` : ""}`);
-				}
-			}
+			n.push(`${t + 1}. ${Z(r.from)} → ${Z(r.to)} · ${Z(r.distance)}${r.mode === "road" ? " · along roads" : ""}${r.current ? " [current]" : ""}`), r.route?.length && n.push(`   Route: ${HI(r.route)}`), r.roads?.length && n.push(`   Roads in range: ${r.roads.map((e) => `${Z(e.name) || "unnamed road"}${e.type ? ` (${Z(e.type)})` : ""} · ${e.distance === "touches" ? "touches route" : `${Z(e.distance)} from route`}`).join("; ")}`), r.pois.length > 0 && n.push("   POIs in range:");
 			for (let e of r.pois) {
 				let t = e.category ? ` (${Z(e.category)})` : "", r = e.along ? ` · ${Z(e.along)} from leg start` : "", i = e.offset ? ` · ${Z(e.offset)} from route` : "";
 				n.push(`   - ${Z(e.name)}${t}${r}${i}`);
 				let a = Z(e.sourceMaterial), o = Z(e.note);
 				a && n.push(`     Source: ${a}`), o && n.push(`     Note: ${o}`);
+			}
+			if (r.areas?.length) {
+				n.push("   Areas in range:");
+				for (let e of r.areas) {
+					let t = Z(e.note);
+					n.push(`   - ${Z(e.name)}${t ? ` · note: ${t}` : ""}`);
+				}
 			}
 		}
 	}
@@ -42896,12 +42897,14 @@ var JH = `
 	drawItineraryPoiRings(e, t, n) {
 		let r = this.activeItinerary();
 		if (!r || r.stops.length < 2) return;
-		let i = this.itineraryPois(r), a = this.itineraryEdit ? void 0 : this.itineraryPosition(r), o = a?.onRoute && !a.atFinal ? a.legIndex : this.routeExpandedLeg >= 0 ? this.routeExpandedLeg : void 0;
-		if (o === void 0 || !this.itineraryExtrasLegs(r, r.stops.length - 1, a).has(o)) return;
-		let s = i.get(o) ?? [];
-		if (s.length !== 0) {
+		let i = this.itineraryEdit ? void 0 : this.itineraryPosition(r), a = i?.onRoute && !i.atFinal ? i.legIndex : this.routeExpandedLeg >= 0 ? this.routeExpandedLeg : void 0;
+		if (a === void 0) return;
+		let o = this.itineraryLegs(r), s = this.itineraryExtrasLegs(r, o.length, i);
+		if (!s.has(a)) return;
+		let c = this.itineraryPois(r, o, s).get(a) ?? [];
+		if (c.length !== 0) {
 			e.save(), e.strokeStyle = "rgba(243, 200, 127, 0.8)", e.lineWidth = 1.5;
-			for (let r of s) {
+			for (let r of c) {
 				let [i, a] = this.project(r.marker.x, r.marker.y, t, n);
 				e.beginPath(), e.arc(i, a, 10, 0, Math.PI * 2), e.stroke();
 			}
@@ -44170,58 +44173,59 @@ var JH = `
 		let r = mV(this.liveContext()), i = new Set(Array.from({ length: t }, (e, t) => t));
 		return r.layerItineraryPoisShow ? e === this.itineraryDraft || !r.layerItineraryPoisCurrentOnly ? i : !n || n.atFinal ? /* @__PURE__ */ new Set() : /* @__PURE__ */ new Set([n.onRoute ? n.legIndex ?? 0 : 0]) : /* @__PURE__ */ new Set();
 	}
-	itineraryPois(e) {
-		let t = this.itineraryLegs(e), n = mV(this.liveContext()), r = this.itineraryRange(), i = Math.min(30, Math.max(1, n.layerItineraryPoiMax || 8)), a = [...this.state.hiddenCategories ?? []].sort().join(","), o = [
+	itineraryPois(e, t, n) {
+		if (n.size === 0) return /* @__PURE__ */ new Map();
+		let r = mV(this.liveContext()), i = this.itineraryRange(), a = Math.min(30, Math.max(1, r.layerItineraryPoiMax || 8)), o = [...this.state.hiddenCategories ?? []].sort().join(","), s = [
 			t.map((e) => `${e.points.length}:${e.from.x},${e.from.y}>${e.to.x},${e.to.y}:${e.snap}`).join("|"),
 			e.stops.map((e) => e.markerId ?? "").join(","),
-			r,
 			i,
-			a
-		].join("#"), s = this.itineraryPoiCache;
-		if (s && s.key === o && s.markers === this.effectiveMarkerList) return s.result;
-		let c = /* @__PURE__ */ new Map();
-		if (t.length === 0) return c;
-		let l = new Set(this.state.hiddenCategories ?? []), u = this.mapSpan(), d = this.itineraryYScale(), f = r * u.w, p = new Set(e.stops.map((e) => e.markerId).filter((e) => !!e)), m = t.flatMap((e) => [e.from, e.to]), h = t.map((e) => {
-			let t = Infinity, n = Infinity, r = -Infinity, i = -Infinity;
-			for (let a of e.points) t = Math.min(t, a.x), r = Math.max(r, a.x), n = Math.min(n, a.y), i = Math.max(i, a.y);
-			let a = f / Math.max(1e-8, d);
+			a,
+			o,
+			[...n].join(",")
+		].join("#"), c = this.itineraryPoiCache;
+		if (c && c.key === s && c.markers === this.effectiveMarkerList) return c.result;
+		let l = /* @__PURE__ */ new Map(), u = new Set(this.state.hiddenCategories ?? []), d = this.mapSpan(), f = this.itineraryYScale(), p = i * d.w, m = new Set(e.stops.map((e) => e.markerId).filter((e) => !!e)), h = [...n].map((e) => {
+			let n = t[e], r = Infinity, i = Infinity, a = -Infinity, o = -Infinity;
+			for (let e of n.points) r = Math.min(r, e.x), a = Math.max(a, e.x), i = Math.min(i, e.y), o = Math.max(o, e.y);
+			let s = p / Math.max(1e-8, f);
 			return {
-				minX: t - f,
-				maxX: r + f,
-				minY: n - a,
-				maxY: i + a
+				legIndex: e,
+				leg: n,
+				minX: r - p,
+				maxX: a + p,
+				minY: i - s,
+				maxY: o + s
 			};
 		});
 		for (let e of this.effectiveMarkerList) {
-			if (l.has(e.categoryId) || p.has(e.id) || m.some((t) => GI(t, e, d) / Math.max(1e-8, u.w) <= .01 * Math.min(1, r / .08))) continue;
-			let n;
-			for (let [r, i] of t.entries()) {
-				let t = h[r];
-				if (e.x < t.minX || e.x > t.maxX || e.y < t.minY || e.y > t.maxY) continue;
-				let a = qI(e, i.points, i.cumulative, d);
-				(!n || a.distance < n.offset) && (n = {
-					legIndex: r,
-					along: a.along,
-					offset: a.distance,
-					projected: a.point
+			if (u.has(e.categoryId) || m.has(e.id)) continue;
+			let t;
+			for (let { legIndex: n, leg: r, minX: i, maxX: a, minY: o, maxY: s } of h) {
+				if (e.x < i || e.x > a || e.y < o || e.y > s) continue;
+				let c = qI(e, r.points, r.cumulative, f);
+				(!t || c.distance < t.offset) && (t = {
+					legIndex: n,
+					along: c.along,
+					offset: c.distance,
+					projected: c.point
 				});
 			}
-			if (n && n.offset <= f) {
-				let t = c.get(n.legIndex) ?? [];
-				t.push({
+			if (t && t.offset <= p) {
+				let n = l.get(t.legIndex) ?? [];
+				n.push({
 					marker: e,
-					along: n.along,
-					offset: n.offset / Math.max(1e-8, u.w),
-					projected: n.projected
-				}), c.set(n.legIndex, t);
+					along: t.along,
+					offset: t.offset / Math.max(1e-8, d.w),
+					projected: t.projected
+				}), l.set(t.legIndex, n);
 			}
 		}
-		for (let [e, t] of c) c.set(e, t.sort((e, t) => e.along - t.along || e.offset - t.offset).slice(0, i));
+		for (let [e, t] of l) l.set(e, t.sort((e, t) => e.along - t.along || e.offset - t.offset).slice(0, a));
 		return this.itineraryPoiCache = {
-			key: o,
+			key: s,
 			markers: this.effectiveMarkerList,
-			result: c
-		}, c;
+			result: l
+		}, l;
 	}
 	itineraryLegRoads(e) {
 		let t = /* @__PURE__ */ new Map(), n = this.roadGraph();
@@ -44289,7 +44293,7 @@ var JH = `
 	}
 	itineraryContext(e, t) {
 		if (!e.showToAI || e.stops.length < 2) return;
-		let n = this.itineraryLegs(e), r = this.itineraryPosition(e), i = this.itineraryPois(e), a = this.itineraryLegRoads(n), o = this.itineraryExtrasLegs(e, n.length, r), s = o.size ? this.itineraryLegAreas(n) : [], c = e.stops.map((e) => this.itineraryStopName(e)), l = r?.onRoute && !r.atFinal ? r.legIndex : void 0, u = l === void 0 ? void 0 : (() => {
+		let n = this.itineraryLegs(e), r = this.itineraryPosition(e), i = this.itineraryExtrasLegs(e, n.length, r), a = this.itineraryPois(e, n, i), o = this.itineraryLegRoads(n), s = i.size ? this.itineraryLegAreas(n) : [], c = e.stops.map((e) => this.itineraryStopName(e)), l = r?.onRoute && !r.atFinal ? r.legIndex : void 0, u = l === void 0 ? void 0 : (() => {
 			let e = n[l], t = r?.along ?? 0, i = e.snap ? this.legPieceAt(e, t) : void 0;
 			return {
 				legIndex: l,
@@ -44320,12 +44324,12 @@ var JH = `
 					type: e.type,
 					distance: this.itineraryPathLabel(e.points)
 				})) : void 0,
-				roads: o.has(n) ? (a.get(n) ?? []).map((e) => ({
+				roads: i.has(n) ? (o.get(n) ?? []).map((e) => ({
 					name: this.roadDisplayName(e.street),
 					type: e.street.type || void 0,
 					distance: this.roadTouches(e.distance) ? "touches" : this.roadUnitsLabel(e.distance)
 				})) : void 0,
-				areas: o.has(n) ? s[n]?.map((e) => {
+				areas: i.has(n) ? s[n]?.map((e) => {
 					if (!t.layerItineraryRegionNotes || this.itineraryNoteRegionIds.has(e.id)) return { name: e.name };
 					this.itineraryNoteRegionIds.add(e.id);
 					let n = this.aiFlagAllowed(this.regionAIKey(e), "note") && this.regionNoteValue(e).trim() || void 0;
@@ -44334,7 +44338,7 @@ var JH = `
 						note: n
 					};
 				}) : void 0,
-				pois: o.has(n) ? (i.get(n) ?? []).map((n) => ({
+				pois: i.has(n) ? (a.get(n) ?? []).map((n) => ({
 					name: n.marker.name,
 					category: this.categoryById(n.marker.categoryId)?.name,
 					along: this.itineraryAlongLabel(e, 0, n.along),
@@ -44447,7 +44451,7 @@ var JH = `
 			return;
 		}
 		this.routeShelfEl.hidden = !1, this.routeShelfEl.replaceChildren();
-		let t = e ? this.itineraryLegs(e) : [], n = e ? this.itineraryPosition(e) : void 0, r = e ? this.itineraryPois(e) : /* @__PURE__ */ new Map(), i = e ? this.itineraryLegRoads(t) : /* @__PURE__ */ new Map(), a = e ? this.itineraryExtrasLegs(e, t.length, this.itineraryEdit ? void 0 : n) : /* @__PURE__ */ new Set(), o = mV(this.liveContext()), s = a.size ? this.itineraryLegAreas(t) : [], c = document.createElement("header");
+		let t = e ? this.itineraryLegs(e) : [], n = e ? this.itineraryPosition(e) : void 0, r = e ? this.itineraryExtrasLegs(e, t.length, this.itineraryEdit ? void 0 : n) : /* @__PURE__ */ new Set(), i = e ? this.itineraryPois(e, t, r) : /* @__PURE__ */ new Map(), a = e ? this.itineraryLegRoads(t) : /* @__PURE__ */ new Map(), o = mV(this.liveContext()), s = r.size ? this.itineraryLegAreas(t) : [], c = document.createElement("header");
 		c.className = "tml-route-head";
 		let l = document.createElement("div");
 		l.className = "tml-route-heading";
@@ -44514,11 +44518,11 @@ var JH = `
 				c.append(d);
 				let _ = t[l];
 				if (!_) continue;
-				let v = a.has(l), y = this.routeActionButton([
+				let v = r.has(l), y = this.routeActionButton([
 					this.itineraryPathLabel(_.points),
 					_.snap ? "沿路" : "直线",
-					v ? `沿途 ${r.get(l)?.length ?? 0} 个地点` : "",
-					v && i.get(l)?.length ? `${i.get(l)?.length} 条道路` : "",
+					v ? `沿途 ${i.get(l)?.length ?? 0} 个地点` : "",
+					v && a.get(l)?.length ? `${a.get(l)?.length} 条道路` : "",
 					v && s[l]?.length ? `${s[l].length} 个区域` : ""
 				].filter(Boolean).join(" · "), "toggle-leg");
 				y.classList.add("tml-route-leg"), n?.onRoute && n.legIndex === l && (y.classList.add("is-current"), y.setAttribute("aria-current", "step")), this.routeExpandedLeg === l && (y.classList.add("is-open"), y.setAttribute("aria-expanded", "true")), y.dataset.legIndex = String(l);
@@ -44544,33 +44548,38 @@ var JH = `
 						e.append(r);
 					}), !v) e.append(ZH("div", "tml-route-poi-empty", o.layerItineraryPoisShow ? "设置为只显示当前所在段的沿途地点、道路和区域。" : "沿途地点、道路和区域已在设置中关闭。"));
 					else {
-						for (let t of i.get(l) ?? []) {
+						for (let t of a.get(l) ?? []) {
 							let n = document.createElement("button");
 							n.type = "button", n.className = "tml-route-piece is-near", n.title = "查看这条路", n.textContent = `━ ${this.roadDisplayName(t.street)}${t.street.type ? `（${t.street.type}）` : ""} · ${this.roadTouches(t.distance) ? "与本段相接" : `距本段 ${this.roadUnitsLabel(t.distance)}`}`;
 							let r = this.roadKey(t.street);
 							n.addEventListener("click", () => this.selectRoad(r, !0)), e.append(n);
 						}
-						if (s[l]?.length) {
-							e.append(ZH("div", "tml-route-piece is-road", "经停区域"));
-							for (let t of s[l]) {
-								let n = document.createElement("button");
-								n.type = "button", n.className = "tml-route-poi", n.textContent = t.name, n.title = "查看区域详情", n.addEventListener("click", () => this.selectRegion(t)), e.append(n);
-								let r = o.layerItineraryRegionNotes && this.regionNoteValue(t).trim();
-								r && e.append(ZH("div", "tml-route-detail", r));
+						let t = document.createElement("section");
+						t.className = "tml-route-section", t.setAttribute("aria-label", "沿途兴趣点"), t.append(ZH("div", "tml-route-section-title", "沿途兴趣点")), e.append(t);
+						let r = i.get(l) ?? [];
+						r.length === 0 && t.append(ZH("div", "tml-route-poi-empty", "这段范围内暂无兴趣点。"));
+						let c = !o.layerItineraryPoisCurrentOnly || !n?.atFinal && (n?.legIndex ?? 0) === l;
+						for (let e of r) {
+							let n = document.createElement("button");
+							if (n.type = "button", n.className = "tml-route-poi", n.textContent = `${e.marker.name}${this.categoryById(e.marker.categoryId) ? ` · ${this.categoryById(e.marker.categoryId)?.name}` : ""}`, n.title = `沿程 ${this.itineraryAlongLabel(_, 0, e.along)}`, n.addEventListener("click", () => {
+								let t = this.markerById(e.marker.id);
+								t && this.selectMarker(t, !0);
+							}), t.append(n), c) {
+								let { sourceMaterial: n, note: r } = this.itineraryPoiDetails(e.marker, o, !1);
+								n && t.append(ZH("div", "tml-route-detail", `来源资料 · ${n}`)), r && t.append(ZH("div", "tml-route-detail", `笔记 · ${r}`));
 							}
 						}
-						let t = r.get(l) ?? [];
-						t.length === 0 && e.append(ZH("div", "tml-route-poi-empty", "这段沿线暂无地点。"));
-						let a = !o.layerItineraryPoisCurrentOnly || !n?.atFinal && (n?.legIndex ?? 0) === l;
-						for (let n of t) {
-							let t = document.createElement("button");
-							if (t.type = "button", t.className = "tml-route-poi", t.textContent = `${n.marker.name}${this.categoryById(n.marker.categoryId) ? ` · ${this.categoryById(n.marker.categoryId)?.name}` : ""}`, t.title = `沿程 ${this.itineraryAlongLabel(_, 0, n.along)}`, t.addEventListener("click", () => {
-								let e = this.markerById(n.marker.id);
-								e && this.selectMarker(e, !0);
-							}), e.append(t), a) {
-								let { sourceMaterial: t, note: r } = this.itineraryPoiDetails(n.marker, o, !1);
-								t && e.append(ZH("div", "tml-route-detail", `来源资料 · ${t}`)), r && e.append(ZH("div", "tml-route-detail", `笔记 · ${r}`));
+						let u = s[l] ?? [];
+						if (u.length > 0) {
+							let t = document.createElement("section");
+							t.className = "tml-route-section", t.setAttribute("aria-label", "经停区域"), t.append(ZH("div", "tml-route-section-title", "经停区域"));
+							for (let e of u) {
+								let n = document.createElement("button");
+								n.type = "button", n.className = "tml-route-poi", n.textContent = e.name, n.title = "查看区域详情", n.addEventListener("click", () => this.selectRegion(e)), t.append(n);
+								let r = o.layerItineraryRegionNotes && this.regionNoteValue(e).trim();
+								r && t.append(ZH("div", "tml-route-detail", r));
 							}
+							e.append(t);
 						}
 					}
 					c.append(e);

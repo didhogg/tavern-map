@@ -3635,7 +3635,6 @@ export class LayerMapUI {
   ): void {
     const route = this.activeItinerary()
     if (!route || route.stops.length < 2) return
-    const pois = this.itineraryPois(route)
     const position = this.itineraryEdit ? undefined : this.itineraryPosition(route)
     const legIndex =
       position?.onRoute && !position.atFinal
@@ -3644,8 +3643,10 @@ export class LayerMapUI {
           ? this.routeExpandedLeg
           : undefined
     if (legIndex === undefined) return
-    if (!this.itineraryExtrasLegs(route, route.stops.length - 1, position).has(legIndex)) return
-    const items = pois.get(legIndex) ?? []
+    const legs = this.itineraryLegs(route)
+    const extras = this.itineraryExtrasLegs(route, legs.length, position)
+    if (!extras.has(legIndex)) return
+    const items = this.itineraryPois(route, legs, extras).get(legIndex) ?? []
     if (items.length === 0) return
     context.save()
     context.strokeStyle = 'rgba(243, 200, 127, 0.8)'
@@ -6057,8 +6058,12 @@ export class LayerMapUI {
     return new Set([position.onRoute ? position.legIndex ?? 0 : 0])
   }
 
-  private itineraryPois(route: LayerItinerary): Map<number, ItineraryPoiView[]> {
-    const legs = this.itineraryLegs(route)
+  private itineraryPois(
+    route: LayerItinerary,
+    legs: ItineraryLegView[],
+    shownLegs: ReadonlySet<number>,
+  ): Map<number, ItineraryPoiView[]> {
+    if (shownLegs.size === 0) return new Map()
     const settings = loadSettings(this.liveContext())
     const radius = this.itineraryRange()
     const max = Math.min(30, Math.max(1, settings.layerItineraryPoiMax || 8))
@@ -6069,11 +6074,11 @@ export class LayerMapUI {
       radius,
       max,
       hidden,
+      [...shownLegs].join(','),
     ].join('#')
     const cached = this.itineraryPoiCache
     if (cached && cached.key === key && cached.markers === this.effectiveMarkerList) return cached.result
     const result = new Map<number, ItineraryPoiView[]>()
-    if (legs.length === 0) return result
     const hiddenSet = new Set(this.state.hiddenCategories ?? [])
     const span = this.mapSpan()
     const yScale = this.itineraryYScale()
@@ -6081,8 +6086,8 @@ export class LayerMapUI {
     const stopMarkerIds = new Set(
       route.stops.map((stop) => stop.markerId).filter((id): id is string => Boolean(id)),
     )
-    const stopPoints = legs.flatMap((leg) => [leg.from, leg.to])
-    const boxes = legs.map((leg) => {
+    const candidates = [...shownLegs].map((legIndex) => {
+      const leg = legs[legIndex]
       let minX = Infinity
       let minY = Infinity
       let maxX = -Infinity
@@ -6094,21 +6099,13 @@ export class LayerMapUI {
         maxY = Math.max(maxY, point.y)
       }
       const dy = units / Math.max(1e-8, yScale)
-      return { minX: minX - units, maxX: maxX + units, minY: minY - dy, maxY: maxY + dy }
+      return { legIndex, leg, minX: minX - units, maxX: maxX + units, minY: minY - dy, maxY: maxY + dy }
     })
     for (const marker of this.effectiveMarkerList) {
       if (hiddenSet.has(marker.categoryId) || stopMarkerIds.has(marker.id)) continue
-      if (
-        stopPoints.some(
-          (point) => pointDistance(point, marker, yScale) / Math.max(1e-8, span.w) <= 0.01 * Math.min(1, radius / 0.08),
-        )
-      ) {
-        continue
-      }
       let best: { legIndex: number; along: number; offset: number; projected: Pt } | undefined
-      for (const [legIndex, leg] of legs.entries()) {
-        const box = boxes[legIndex]
-        if (marker.x < box.minX || marker.x > box.maxX || marker.y < box.minY || marker.y > box.maxY) continue
+      for (const { legIndex, leg, minX, maxX, minY, maxY } of candidates) {
+        if (marker.x < minX || marker.x > maxX || marker.y < minY || marker.y > maxY) continue
         const projected = projectOnPolyline(marker, leg.points, leg.cumulative, yScale)
         if (!best || projected.distance < best.offset) {
           best = { legIndex, along: projected.along, offset: projected.distance, projected: projected.point }
@@ -6225,9 +6222,9 @@ export class LayerMapUI {
     if (!route.showToAI || route.stops.length < 2) return undefined
     const legs = this.itineraryLegs(route)
     const position = this.itineraryPosition(route)
-    const pois = this.itineraryPois(route)
-    const legRoads = this.itineraryLegRoads(legs)
     const extras = this.itineraryExtrasLegs(route, legs.length, position)
+    const pois = this.itineraryPois(route, legs, extras)
+    const legRoads = this.itineraryLegRoads(legs)
     const legAreas = extras.size ? this.itineraryLegAreas(legs) : []
     const names = route.stops.map((stop) => this.itineraryStopName(stop))
     const currentLeg = position?.onRoute && !position.atFinal ? position.legIndex : undefined
@@ -6552,11 +6549,11 @@ export class LayerMapUI {
     this.routeShelfEl.replaceChildren()
     const legs = route ? this.itineraryLegs(route) : []
     const position = route ? this.itineraryPosition(route) : undefined
-    const pois = route ? this.itineraryPois(route) : new Map<number, ItineraryPoiView[]>()
-    const legRoads = route ? this.itineraryLegRoads(legs) : new Map<number, Array<{ street: LayerStreet; distance: number }>>()
     const extras = route
       ? this.itineraryExtrasLegs(route, legs.length, this.itineraryEdit ? undefined : position)
       : new Set<number>()
+    const pois = route ? this.itineraryPois(route, legs, extras) : new Map<number, ItineraryPoiView[]>()
+    const legRoads = route ? this.itineraryLegRoads(legs) : new Map<number, Array<{ street: LayerStreet; distance: number }>>()
     const settings = loadSettings(this.liveContext())
     const legAreas = extras.size ? this.itineraryLegAreas(legs) : []
     const head = document.createElement('header')
@@ -6789,24 +6786,15 @@ export class LayerMapUI {
               button.addEventListener('click', () => this.selectRoad(key, true))
               poiList.append(button)
             }
-            if (legAreas[index]?.length) {
-              poiList.append(textElement('div', 'tml-route-piece is-road', '经停区域'))
-              for (const area of legAreas[index]) {
-                const button = document.createElement('button')
-                button.type = 'button'
-                button.className = 'tml-route-poi'
-                button.textContent = area.name
-                button.title = '查看区域详情'
-                button.addEventListener('click', () => this.selectRegion(area))
-                poiList.append(button)
-                const note = settings.layerItineraryRegionNotes && this.regionNoteValue(area).trim()
-                if (note) poiList.append(textElement('div', 'tml-route-detail', note))
-              }
-            }
+            const poiSection = document.createElement('section')
+            poiSection.className = 'tml-route-section'
+            poiSection.setAttribute('aria-label', '沿途兴趣点')
+            poiSection.append(textElement('div', 'tml-route-section-title', '沿途兴趣点'))
+            poiList.append(poiSection)
             const legPois = pois.get(index) ?? []
             if (legPois.length === 0) {
-              poiList.append(
-                textElement('div', 'tml-route-poi-empty', '这段沿线暂无地点。'),
+              poiSection.append(
+                textElement('div', 'tml-route-poi-empty', '这段范围内暂无兴趣点。'),
               )
             }
             const showPoiDetails = !settings.layerItineraryPoisCurrentOnly ||
@@ -6821,14 +6809,33 @@ export class LayerMapUI {
                 const marker = this.markerById(poi.marker.id)
                 if (marker) this.selectMarker(marker, true)
               })
-              poiList.append(poiButton)
+              poiSection.append(poiButton)
               if (showPoiDetails) {
                 const { sourceMaterial, note } = this.itineraryPoiDetails(poi.marker, settings, false)
                 if (sourceMaterial) {
-                  poiList.append(textElement('div', 'tml-route-detail', `来源资料 · ${sourceMaterial}`))
+                  poiSection.append(textElement('div', 'tml-route-detail', `来源资料 · ${sourceMaterial}`))
                 }
-                if (note) poiList.append(textElement('div', 'tml-route-detail', `笔记 · ${note}`))
+                if (note) poiSection.append(textElement('div', 'tml-route-detail', `笔记 · ${note}`))
               }
+            }
+            const areas = legAreas[index] ?? []
+            if (areas.length > 0) {
+              const areaSection = document.createElement('section')
+              areaSection.className = 'tml-route-section'
+              areaSection.setAttribute('aria-label', '经停区域')
+              areaSection.append(textElement('div', 'tml-route-section-title', '经停区域'))
+              for (const area of areas) {
+                const button = document.createElement('button')
+                button.type = 'button'
+                button.className = 'tml-route-poi'
+                button.textContent = area.name
+                button.title = '查看区域详情'
+                button.addEventListener('click', () => this.selectRegion(area))
+                areaSection.append(button)
+                const note = settings.layerItineraryRegionNotes && this.regionNoteValue(area).trim()
+                if (note) areaSection.append(textElement('div', 'tml-route-detail', note))
+              }
+              poiList.append(areaSection)
             }
           }
           list.append(poiList)
