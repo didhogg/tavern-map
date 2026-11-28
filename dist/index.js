@@ -36455,7 +36455,7 @@ function UI(e) {
 		})}` : "", i = t.region && t.position?.region !== t.region ? ` · Area: ${BI(t.region, t.regionParents)}` : "";
 		if (n.push(`Current place: ${Z(t.currentPlace)}${e}${r}${i}`), t.note && n.push(`Current place note: ${Z(t.note)}`), t.sourceMaterial && n.push(`Current place source: ${Z(t.sourceMaterial)}`), t.wikiTexts?.length) for (let e of t.wikiTexts) n.push(`Current place wiki (${Z(e.title)}): ${Z(e.text)}`);
 	} else t.region && !t.position?.region && n.push(`Area: ${BI(t.region, t.regionParents)}`);
-	for (let e of t.areaNotes ?? []) Z(e.text) && n.push(`Area note (${Z(e.name)}): ${Z(e.text)}`);
+	for (let e of t.areaNotes ?? []) Z(e.text) && n.push(`${e.other ? "Other area note" : "Area note"} (${Z(e.name)}): ${Z(e.text)}`);
 	let r = (t.roadNotes ?? []).filter((e) => Z(e.text) || Z(e.source));
 	if (r.length > 0) {
 		n.push(r.some((e) => Z(e.source)) ? "Road notes and source:" : "Road notes:");
@@ -40356,7 +40356,11 @@ function QB(e) {
 			text: e.text,
 			source: typeof e.source == "string" && e.source ? e.source : void 0
 		})) : void 0,
-		areaNotes: Array.isArray(t.areaNotes) ? t.areaNotes.filter((e) => !!e && typeof e.name == "string" && typeof e.text == "string") : void 0,
+		areaNotes: Array.isArray(t.areaNotes) ? t.areaNotes.filter((e) => !!e && typeof e.name == "string" && typeof e.text == "string").map((e) => ({
+			name: e.name,
+			text: e.text,
+			other: e.other === !0 || void 0
+		})) : void 0,
 		note: typeof t.note == "string" ? t.note : void 0,
 		sourceMaterial: typeof t.sourceMaterial == "string" && t.sourceMaterial.trim() ? t.sourceMaterial : void 0,
 		wikiTexts: Array.isArray(t.wikiTexts) ? t.wikiTexts.filter((e) => !!e && typeof e.title == "string" && typeof e.text == "string") : void 0,
@@ -42470,6 +42474,32 @@ var zH = `
 	}
 	roadNotesForAI(e) {
 		if (!this.pkg?.streets?.length || !this.roadNotesGloballyEnabled(e)) return [];
+		let t = this.roadAIScope(e);
+		for (let e of Object.keys(this.placeAIFlags)) {
+			if (!e.startsWith("road:")) continue;
+			let n = e.slice(5);
+			if (t.has(n) || this.aiFlagState(e, "note") !== !0 && this.aiFlagState(e, "source") !== !0) continue;
+			let r = this.roadLines(n)[0];
+			r && t.set(n, {
+				name: this.roadDisplayName(r),
+				type: r.type || void 0,
+				tags: ["pinned"]
+			});
+		}
+		let n = [];
+		for (let [r, i] of t) {
+			let t = this.roadAIKey(r), a = !i.tags.includes("pinned"), o = this.aiFlagSends(t, "note", a) ? this.roadNoteValue(r).trim() : "", s = e.layerRoadSourceAI && this.aiFlagSends(t, "source", a) ? this.roadSourceText(r) : "";
+			(o || s) && n.push({
+				name: i.name,
+				type: i.type,
+				tags: i.tags,
+				text: o,
+				source: s || void 0
+			});
+		}
+		return n;
+	}
+	roadAIScope(e) {
 		let t = /* @__PURE__ */ new Map(), n = (e, n, r, i) => {
 			if (!e) return;
 			let a = t.get(e) ?? {
@@ -42491,18 +42521,7 @@ var zH = `
 				if (a.has(r)) for (let e of o.get(r) ?? []) n(this.roadKey(e.street), this.roadDisplayName(e.street), e.street.type || void 0, c);
 			});
 		}
-		let a = [];
-		for (let [n, r] of t) {
-			let t = this.roadAIKey(n), i = this.aiFlagAllowed(t, "note") ? this.roadNoteValue(n).trim() : "", o = e.layerRoadSourceAI && this.aiFlagAllowed(t, "source") ? this.roadSourceText(n) : "";
-			(i || o) && a.push({
-				name: r.name,
-				type: r.type,
-				tags: r.tags,
-				text: i,
-				source: o || void 0
-			});
-		}
-		return a;
+		return t;
 	}
 	drawRoads(e, t, n) {
 		if (!this.pkg?.streets?.length || this.state.showRoads !== !0) return;
@@ -43190,7 +43209,7 @@ var zH = `
 		let p = document.createElement("summary");
 		p.textContent = "来源资料（随道路显示）";
 		let m = aV(this.liveContext()), h = document.createElement("div");
-		h.className = "tml-road-source-ai", h.append(this.aiFlagToggle(this.roadAIKey(e), "source", "道路来源资料", "道路", m.layerRoadSourceAI && this.roadNotesGloballyEnabled(m))), f.append(p, h);
+		h.className = "tml-road-source-ai", h.append(this.aiFlagToggle(this.roadAIKey(e), "source", "道路来源资料", "道路", m.layerRoadSourceAI && this.roadNotesGloballyEnabled(m), () => this.roadAIScope(aV(this.liveContext())).has(e), "这条路不在你附近，也不在勾选的行程段里")), f.append(p, h);
 		let g = t.filter((e) => e.properties?.length);
 		if (g.length === 0) f.append(HH("div", "tml-road-source-empty", "这张地图包导入时还没有保留道路的原始字段，重新导入地图包后会在这里显示。")), f.append(this.roadFieldList([["Name", n.name], ["Type", n.type ?? ""]].filter(([, e]) => e)));
 		else {
@@ -43211,7 +43230,7 @@ var zH = `
 		let v = document.createElement("div");
 		v.className = "tml-section-head";
 		let y = document.createElement("label");
-		y.className = "tml-note-label", y.textContent = "道路笔记", v.append(y, this.aiFlagToggle(this.roadAIKey(e), "note", "道路笔记", "道路", this.roadNotesGloballyEnabled()));
+		y.className = "tml-note-label", y.textContent = "道路笔记", v.append(y, this.aiFlagToggle(this.roadAIKey(e), "note", "道路笔记", "道路", this.roadNotesGloballyEnabled(), () => this.roadAIScope(aV(this.liveContext())).has(e), "这条路不在你附近，也不在勾选的行程段里"));
 		let b = document.createElement("textarea");
 		return b.placeholder = "写一段道路笔记…", b.setAttribute("aria-label", "道路笔记"), b.value = this.roadNoteValue(e), b.addEventListener("input", () => this.setNoteValue(this.roadNoteKey(e), b.value)), _.append(v, b), r.append(_), r;
 	}
@@ -43464,18 +43483,40 @@ var zH = `
 	aiFlagAllowed(e, t) {
 		return this.placeAIFlags[e]?.[t] !== !1;
 	}
+	aiFlagState(e, t) {
+		let n = this.placeAIFlags[e]?.[t];
+		return typeof n == "boolean" ? n : void 0;
+	}
+	aiFlagSends(e, t, n) {
+		let r = this.aiFlagState(e, t);
+		return r === !0 || r === void 0 && n;
+	}
+	contextAreaChain() {
+		let e = this.state.userPosition, t = this.markerById(this.state.atPlaceId);
+		return [...e ? this.regionChain(this.regionForPoint(e.x, e.y), e.x, e.y) : [], ...t ? this.regionChain(this.regionForMarker(t), t.x, t.y) : []];
+	}
 	regionAIKey(e) {
 		return `region:${e.id}`;
 	}
 	areaNotesForAI(e, t) {
-		if (!t.layerRegionNoteAI) return [];
+		if (!t.layerRegionNoteAI || !this.pkg) return [];
 		let n = [], r = /* @__PURE__ */ new Set();
 		for (let t of e) {
-			if (r.has(t.id) || (r.add(t.id), !this.aiFlagAllowed(this.regionAIKey(t), "note"))) continue;
+			if (r.has(t.id) || (r.add(t.id), !this.aiFlagSends(this.regionAIKey(t), "note", !0))) continue;
 			let e = this.regionNoteValue(t).trim();
 			e && n.push({
 				name: t.name,
 				text: e
+			});
+		}
+		for (let e of this.pkg.regions) {
+			if (r.has(e.id) || this.aiFlagState(this.regionAIKey(e), "note") !== !0) continue;
+			r.add(e.id);
+			let t = this.regionNoteValue(e).trim();
+			t && n.push({
+				name: e.name,
+				text: t,
+				other: !0
 			});
 		}
 		return n;
@@ -43486,7 +43527,7 @@ var zH = `
 	}
 	setAIFlag(e, t, n) {
 		let r = { ...this.placeAIFlags[e] ?? {} };
-		n ? delete r[t] : r[t] = !1, Object.keys(r).length > 0 ? this.placeAIFlags[e] = r : delete this.placeAIFlags[e], this.savePlaceAIFlagsForMap(), this.refreshContext();
+		n === void 0 ? delete r[t] : r[t] = n, Object.keys(r).length > 0 ? this.placeAIFlags[e] = r : delete this.placeAIFlags[e], this.savePlaceAIFlagsForMap(), this.refreshContext();
 	}
 	aiContentToggle(e, t) {
 		return this.aiFlagToggle(e.id, t, {
@@ -43496,22 +43537,22 @@ var zH = `
 		}[t], "地点", this.aiPartGloballyEnabled(t));
 	}
 	regionNoteAIToggle(e) {
-		return this.aiFlagToggle(this.regionAIKey(e), "note", "区域笔记", "区域", aV(this.liveContext()).layerRegionNoteAI);
+		return this.aiFlagToggle(this.regionAIKey(e), "note", "区域笔记", "区域", aV(this.liveContext()).layerRegionNoteAI, () => this.contextAreaChain().some((t) => t.id === e.id), "不是你现在所在的区域");
 	}
-	aiFlagToggle(e, t, n, r, i) {
-		let a = document.createElement("label");
-		a.className = "tml-ai-toggle";
-		let o = document.createElement("input");
-		o.type = "checkbox", o.setAttribute("aria-label", `${n}是否显示给 AI`);
-		let s = document.createElement("span");
-		s.textContent = "给 AI", a.append(o, s);
-		let c = () => {
-			let s = i && this.aiFlagAllowed(e, t);
-			o.checked = s, o.disabled = !i, a.classList.toggle("is-off", !s), a.classList.toggle("is-disabled", !i), a.title = i ? s ? `点击取消这个${r}的${n}进入 AI` : `点击让这个${r}的${n}重新进入 AI` : `没有开启${n}的全局 AI 开关`;
+	aiFlagToggle(e, t, n, r, i, a, o = "") {
+		let s = document.createElement("label");
+		s.className = "tml-ai-toggle";
+		let c = document.createElement("input");
+		c.type = "checkbox", c.setAttribute("aria-label", `${n}是否显示给 AI`);
+		let l = document.createElement("span");
+		l.textContent = "给 AI", s.append(c, l);
+		let u = () => !a || a(), d = () => {
+			let a = i && this.aiFlagSends(e, t, u());
+			c.checked = a, c.disabled = !i, s.classList.toggle("is-off", !a), s.classList.toggle("is-disabled", !i), s.title = i ? a ? `点击取消这个${r}的${n}进入 AI` : !u() && o ? `${o}；勾上后也会把${n}发给 AI` : `点击让这个${r}的${n}进入 AI` : `没有开启${n}的全局 AI 开关`;
 		};
-		return c(), o.addEventListener("change", () => {
-			i ? (this.setAIFlag(e, t, o.checked), c()) : o.checked = !1;
-		}), a;
+		return d(), c.addEventListener("change", () => {
+			i ? (this.setAIFlag(e, t, c.checked === u() ? void 0 : c.checked), d()) : c.checked = !1;
+		}), s;
 	}
 	sourceSection(e) {
 		let t = document.createElement("details");

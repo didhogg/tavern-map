@@ -55,3 +55,18 @@ test('AI text names the enclosing areas and area notes', () => {
   assert.match(text, /Area: 河木镇 Riverwood \(in 白漫领 Whiterun Hold\)/)
   assert.match(text, /Area note \(白漫领 Whiterun Hold\): 内战前线/)
 })
+
+test('a ticked area elsewhere is sent as another area note', () => {
+  const text = buildLayerContext({
+    version: 1,
+    context: {
+      mapName: 'Skyrim',
+      areaNotes: [
+        { name: '白漫领 Whiterun Hold', text: '内战前线' },
+        { name: '裂谷城 Riften', text: '盗贼公会', other: true },
+      ],
+      updatedAt: 1,
+    },
+  })
+  assert.match(text, /^Area note \(白漫领 Whiterun Hold\): 内战前线\nOther area note \(裂谷城 Riften\): 盗贼公会$/m)
+})

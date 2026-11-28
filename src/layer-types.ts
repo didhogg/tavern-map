@@ -427,8 +427,8 @@ export type LayerContextSnapshot = {
   region?: string
   /** Enclosing areas of the current place's `region`, nearest first. */
   regionParents?: string[]
-  /** Area notes allowed into AI, for my area and the areas around it. */
-  areaNotes?: Array<{ name: string; text: string }>
+  /** Area notes allowed into AI: my area and the areas around it; `other` = ticked area elsewhere. */
+  areaNotes?: Array<{ name: string; text: string; other?: boolean }>
   /** Road notes allowed into AI, each road once, with why it is included. */
   roadNotes?: LayerContextRoadNote[]
   note?: string
@@ -970,10 +970,12 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
           }))
       : undefined,
     areaNotes: Array.isArray(value.areaNotes)
-      ? value.areaNotes.filter(
-          (item): item is { name: string; text: string } =>
-            Boolean(item) && typeof item.name === 'string' && typeof item.text === 'string',
-        )
+      ? value.areaNotes
+          .filter(
+            (item): item is { name: string; text: string; other?: boolean } =>
+              Boolean(item) && typeof item.name === 'string' && typeof item.text === 'string',
+          )
+          .map((item) => ({ name: item.name, text: item.text, other: item.other === true ? true : undefined }))
       : undefined,
     note: typeof value.note === 'string' ? value.note : undefined,
     sourceMaterial:

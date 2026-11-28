@@ -131,7 +131,9 @@ export function buildLayerContext(state: LayerChatState): string {
     lines.push(`Area: ${areaText(snapshot.region, snapshot.regionParents)}`)
   }
   for (const area of snapshot.areaNotes ?? []) {
-    if (clean(area.text)) lines.push(`Area note (${clean(area.name)}): ${clean(area.text)}`)
+    if (clean(area.text)) {
+      lines.push(`${area.other ? 'Other area note' : 'Area note'} (${clean(area.name)}): ${clean(area.text)}`)
+    }
   }
   const roadNotes = (snapshot.roadNotes ?? []).filter((road) => clean(road.text) || clean(road.source))
   if (roadNotes.length > 0) {

@@ -3065,6 +3065,32 @@ export class LayerMapUI {
    */
   private roadNotesForAI(settings: Settings): LayerContextRoadNote[] {
     if (!this.pkg?.streets?.length || !this.roadNotesGloballyEnabled(settings)) return []
+    const roads = this.roadAIScope(settings)
+    // Roads ticked "给 AI" outside the automatic range are sent too.
+    for (const key of Object.keys(this.placeAIFlags)) {
+      if (!key.startsWith('road:')) continue
+      const roadKey = key.slice('road:'.length)
+      if (roads.has(roadKey)) continue
+      if (this.aiFlagState(key, 'note') !== true && this.aiFlagState(key, 'source') !== true) continue
+      const street = this.roadLines(roadKey)[0]
+      if (street) roads.set(roadKey, { name: this.roadDisplayName(street), type: street.type || undefined, tags: ['pinned'] })
+    }
+    const result: LayerContextRoadNote[] = []
+    for (const [key, entry] of roads) {
+      const aiKey = this.roadAIKey(key)
+      const inScope = !entry.tags.includes('pinned')
+      const text = this.aiFlagSends(aiKey, 'note', inScope) ? this.roadNoteValue(key).trim() : ''
+      const source =
+        settings.layerRoadSourceAI && this.aiFlagSends(aiKey, 'source', inScope) ? this.roadSourceText(key) : ''
+      if (text || source) {
+        result.push({ name: entry.name, type: entry.type, tags: entry.tags, text, source: source || undefined })
+      }
+    }
+    return result
+  }
+
+  /** Roads whose notes go to AI automatically, with why each is included. */
+  private roadAIScope(settings: Settings): Map<string, { name: string; type?: string; tags: string[] }> {
     const roads = new Map<string, { name: string; type?: string; tags: string[] }>()
     const add = (key: string | undefined, name: string, type: string | undefined, tag: string): void => {
       if (!key) return
@@ -3101,17 +3127,7 @@ export class LayerMapUI {
         }
       })
     }
-    const result: LayerContextRoadNote[] = []
-    for (const [key, entry] of roads) {
-      const aiKey = this.roadAIKey(key)
-      const text = this.aiFlagAllowed(aiKey, 'note') ? this.roadNoteValue(key).trim() : ''
-      const source =
-        settings.layerRoadSourceAI && this.aiFlagAllowed(aiKey, 'source') ? this.roadSourceText(key) : ''
-      if (text || source) {
-        result.push({ name: entry.name, type: entry.type, tags: entry.tags, text, source: source || undefined })
-      }
-    }
-    return result
+    return roads
   }
 
 
@@ -4617,6 +4633,8 @@ export class LayerMapUI {
         '道路来源资料',
         '道路',
         settings.layerRoadSourceAI && this.roadNotesGloballyEnabled(settings),
+        () => this.roadAIScope(loadSettings(this.liveContext())).has(key),
+        '这条路不在你附近，也不在勾选的行程段里',
       ),
     )
     source.append(summary, sourceAI)
@@ -4666,7 +4684,15 @@ export class LayerMapUI {
     label.textContent = '道路笔记'
     noteHead.append(
       label,
-      this.aiFlagToggle(this.roadAIKey(key), 'note', '道路笔记', '道路', this.roadNotesGloballyEnabled()),
+      this.aiFlagToggle(
+        this.roadAIKey(key),
+        'note',
+        '道路笔记',
+        '道路',
+        this.roadNotesGloballyEnabled(),
+        () => this.roadAIScope(loadSettings(this.liveContext())).has(key),
+        '这条路不在你附近，也不在勾选的行程段里',
+      ),
     )
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写一段道路笔记…'
@@ -5130,24 +5156,56 @@ export class LayerMapUI {
     return this.placeAIFlags[key]?.[part] !== false
   }
 
+  /** true = always send, false = never send, undefined = follow the automatic rule. */
+  private aiFlagState(key: string, part: LayerAIPart): boolean | undefined {
+    const value = this.placeAIFlags[key]?.[part]
+    return typeof value === 'boolean' ? value : undefined
+  }
+
+  /** Sent to AI: ticked explicitly, or left automatic and inside the automatic range. */
+  private aiFlagSends(key: string, part: LayerAIPart, inScope: boolean): boolean {
+    const state = this.aiFlagState(key, part)
+    return state === true || (state === undefined && inScope)
+  }
+
+  /** My area chain and the current place's chain: the areas whose notes go to AI automatically. */
+  private contextAreaChain(): LayerRegion[] {
+    const user = this.state.userPosition
+    const marker = this.markerById(this.state.atPlaceId)
+    return [
+      ...(user ? this.regionChain(this.regionForPoint(user.x, user.y), user.x, user.y) : []),
+      ...(marker ? this.regionChain(this.regionForMarker(marker), marker.x, marker.y) : []),
+    ]
+  }
+
   /** Region notes share the place AI flag store under a `region:` key. */
   private regionAIKey(region: LayerRegion): string {
     return `region:${region.id}`
   }
 
+  /**
+   * Area notes for AI: my area and the areas around it (unless unticked),
+   * plus any other area whose note was ticked "给 AI".
+   */
   private areaNotesForAI(
     chain: LayerRegion[],
     settings: ReturnType<typeof loadSettings>,
-  ): Array<{ name: string; text: string }> {
-    if (!settings.layerRegionNoteAI) return []
-    const result: Array<{ name: string; text: string }> = []
+  ): Array<{ name: string; text: string; other?: boolean }> {
+    if (!settings.layerRegionNoteAI || !this.pkg) return []
+    const result: Array<{ name: string; text: string; other?: boolean }> = []
     const seen = new Set<string>()
     for (const region of chain) {
       if (seen.has(region.id)) continue
       seen.add(region.id)
-      if (!this.aiFlagAllowed(this.regionAIKey(region), 'note')) continue
+      if (!this.aiFlagSends(this.regionAIKey(region), 'note', true)) continue
       const text = this.regionNoteValue(region).trim()
       if (text) result.push({ name: region.name, text })
+    }
+    for (const region of this.pkg.regions) {
+      if (seen.has(region.id) || this.aiFlagState(this.regionAIKey(region), 'note') !== true) continue
+      seen.add(region.id)
+      const text = this.regionNoteValue(region).trim()
+      if (text) result.push({ name: region.name, text, other: true })
     }
     return result
   }
@@ -5177,10 +5235,11 @@ export class LayerMapUI {
     )
   }
 
-  private setAIFlag(key: string, part: LayerAIPart, enabled: boolean): void {
+  /** `undefined` returns the part to the automatic rule. */
+  private setAIFlag(key: string, part: LayerAIPart, value: boolean | undefined): void {
     const flags = { ...(this.placeAIFlags[key] ?? {}) }
-    if (enabled) delete flags[part]
-    else flags[part] = false
+    if (value === undefined) delete flags[part]
+    else flags[part] = value
     if (Object.keys(flags).length > 0) this.placeAIFlags[key] = flags
     else delete this.placeAIFlags[key]
     this.savePlaceAIFlagsForMap()
@@ -5203,15 +5262,24 @@ export class LayerMapUI {
       '区域笔记',
       '区域',
       loadSettings(this.liveContext()).layerRegionNoteAI,
+      () => this.contextAreaChain().some((item) => item.id === region.id),
+      '不是你现在所在的区域',
     )
   }
 
+  /**
+   * "给 AI" checkbox. Places only narrow (ticked by default). Areas and roads
+   * pass `inScope`: ticked by default only inside the automatic range, and a
+   * tick outside it sends the content anyway — what the box shows is what AI gets.
+   */
   private aiFlagToggle(
     key: string,
     part: LayerAIPart,
     name: string,
     scope: string,
     globallyEnabled: boolean,
+    inScope?: () => boolean,
+    outOfScopeText = '',
   ): HTMLElement {
     const label = document.createElement('label')
     label.className = 'tml-ai-toggle'
@@ -5221,8 +5289,9 @@ export class LayerMapUI {
     const caption = document.createElement('span')
     caption.textContent = '给 AI'
     label.append(checkbox, caption)
+    const automatic = (): boolean => (inScope ? inScope() : true)
     const sync = (): void => {
-      const on = globallyEnabled && this.aiFlagAllowed(key, part)
+      const on = globallyEnabled && this.aiFlagSends(key, part, automatic())
       checkbox.checked = on
       checkbox.disabled = !globallyEnabled
       label.classList.toggle('is-off', !on)
@@ -5231,7 +5300,9 @@ export class LayerMapUI {
         ? `没有开启${name}的全局 AI 开关`
         : on
           ? `点击取消这个${scope}的${name}进入 AI`
-          : `点击让这个${scope}的${name}重新进入 AI`
+          : !automatic() && outOfScopeText
+            ? `${outOfScopeText}；勾上后也会把${name}发给 AI`
+            : `点击让这个${scope}的${name}进入 AI`
     }
     sync()
     checkbox.addEventListener('change', () => {
@@ -5239,7 +5310,8 @@ export class LayerMapUI {
         checkbox.checked = false
         return
       }
-      this.setAIFlag(key, part, checkbox.checked)
+      // Matching the automatic rule clears the explicit choice.
+      this.setAIFlag(key, part, checkbox.checked === automatic() ? undefined : checkbox.checked)
       sync()
     })
     return label
