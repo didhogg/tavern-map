@@ -326,7 +326,8 @@ const SETTINGS_HTML = `
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerSourceAI"> 来源资料进入 AI</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerWikiAI"> Wiki 正文进入 AI</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNoteAI"> 笔记进入 AI</label>
-        <div class="tm-hint">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选。</div>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRegionNoteAI"> 区域笔记进入 AI（所在区域和它的上级区域）</label>
+        <div class="tm-hint">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选；每个区域的详情里可以单独取消区域笔记。</div>
       </div>
 
       <div class="tm-settings-group">

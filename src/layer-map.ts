@@ -1,5 +1,6 @@
 import { addProtocol, Map as MapLibreMap } from 'maplibre-gl'
 import { buildLayerContext } from './layer-context'
+import { pointInRing, regionChain, regionsAtPoint } from './layer-regions'
 import { buildRoadIndex, nearestRoad, roadRank, roadsInRect, type NearestRoad, type RoadIndex } from './layer-roads'
 import { estimateTokens } from './context'
 import { errorMessage } from './http'
@@ -4245,16 +4246,20 @@ export class LayerMapUI {
     wrap.append(head, meta, actions)
     const noteWrap = document.createElement('div')
     noteWrap.className = 'tml-note-section'
+    const noteHead = document.createElement('div')
+    noteHead.className = 'tml-section-head'
     const label = document.createElement('label')
+    label.className = 'tml-note-label'
     label.textContent = '区域笔记'
+    noteHead.append(label, this.regionNoteAIToggle(region))
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写一段区域笔记…'
+    textarea.setAttribute('aria-label', '区域笔记')
     textarea.value = this.regionNoteValue(region)
     textarea.addEventListener('input', () => {
       this.setRegionNote(region, textarea.value)
     })
-    label.append(textarea)
-    noteWrap.append(label)
+    noteWrap.append(noteHead, textarea)
     wrap.append(noteWrap)
     return wrap
   }
@@ -4636,7 +4641,33 @@ export class LayerMapUI {
   }
 
   private placeAIPartAllowed(marker: LayerMarker, part: LayerAIPart): boolean {
-    return this.placeAIFlags[marker.id]?.[part] !== false
+    return this.aiFlagAllowed(marker.id, part)
+  }
+
+  private aiFlagAllowed(key: string, part: LayerAIPart): boolean {
+    return this.placeAIFlags[key]?.[part] !== false
+  }
+
+  /** Region notes share the place AI flag store under a `region:` key. */
+  private regionAIKey(region: LayerRegion): string {
+    return `region:${region.id}`
+  }
+
+  private areaNotesForAI(
+    chain: LayerRegion[],
+    settings: ReturnType<typeof loadSettings>,
+  ): Array<{ name: string; text: string }> {
+    if (!settings.layerRegionNoteAI) return []
+    const result: Array<{ name: string; text: string }> = []
+    const seen = new Set<string>()
+    for (const region of chain) {
+      if (seen.has(region.id)) continue
+      seen.add(region.id)
+      if (!this.aiFlagAllowed(this.regionAIKey(region), 'note')) continue
+      const text = this.regionNoteValue(region).trim()
+      if (text) result.push({ name: region.name, text })
+    }
+    return result
   }
 
   private aiPartGloballyEnabled(part: LayerAIPart): boolean {
@@ -4664,12 +4695,12 @@ export class LayerMapUI {
     )
   }
 
-  private setPlaceAIPart(marker: LayerMarker, part: LayerAIPart, enabled: boolean): void {
-    const flags = { ...(this.placeAIFlags[marker.id] ?? {}) }
+  private setAIFlag(key: string, part: LayerAIPart, enabled: boolean): void {
+    const flags = { ...(this.placeAIFlags[key] ?? {}) }
     if (enabled) delete flags[part]
     else flags[part] = false
-    if (Object.keys(flags).length > 0) this.placeAIFlags[marker.id] = flags
-    else delete this.placeAIFlags[marker.id]
+    if (Object.keys(flags).length > 0) this.placeAIFlags[key] = flags
+    else delete this.placeAIFlags[key]
     this.savePlaceAIFlagsForMap()
     this.refreshContext()
   }
@@ -4680,8 +4711,26 @@ export class LayerMapUI {
       wiki: 'Wiki 正文',
       note: '笔记',
     }
-    const name = names[part]
-    const globallyEnabled = this.aiPartGloballyEnabled(part)
+    return this.aiFlagToggle(marker.id, part, names[part], '地点', this.aiPartGloballyEnabled(part))
+  }
+
+  private regionNoteAIToggle(region: LayerRegion): HTMLElement {
+    return this.aiFlagToggle(
+      this.regionAIKey(region),
+      'note',
+      '区域笔记',
+      '区域',
+      loadSettings(this.liveContext()).layerRegionNoteAI,
+    )
+  }
+
+  private aiFlagToggle(
+    key: string,
+    part: LayerAIPart,
+    name: string,
+    scope: string,
+    globallyEnabled: boolean,
+  ): HTMLElement {
     const label = document.createElement('label')
     label.className = 'tml-ai-toggle'
     const checkbox = document.createElement('input')
@@ -4691,7 +4740,7 @@ export class LayerMapUI {
     caption.textContent = '给 AI'
     label.append(checkbox, caption)
     const sync = (): void => {
-      const on = globallyEnabled && this.placeAIPartAllowed(marker, part)
+      const on = globallyEnabled && this.aiFlagAllowed(key, part)
       checkbox.checked = on
       checkbox.disabled = !globallyEnabled
       label.classList.toggle('is-off', !on)
@@ -4699,8 +4748,8 @@ export class LayerMapUI {
       label.title = !globallyEnabled
         ? `没有开启${name}的全局 AI 开关`
         : on
-          ? `点击取消这个地点的${name}进入 AI`
-          : `点击让这个地点的${name}重新进入 AI`
+          ? `点击取消这个${scope}的${name}进入 AI`
+          : `点击让这个${scope}的${name}重新进入 AI`
     }
     sync()
     checkbox.addEventListener('change', () => {
@@ -4708,7 +4757,7 @@ export class LayerMapUI {
         checkbox.checked = false
         return
       }
-      this.setPlaceAIPart(marker, part, checkbox.checked)
+      this.setAIFlag(key, part, checkbox.checked)
       sync()
     })
     return label
@@ -4861,31 +4910,21 @@ export class LayerMapUI {
   }
 
 
+  private regionsAtPoint(x: number, y: number): Array<{ region: LayerRegion; area: number }> {
+    return this.pkg ? regionsAtPoint(this.pkg.regions, x, y) : []
+  }
+
   private regionForPoint(x: number, y: number): LayerRegion | undefined {
-    if (!this.pkg) return undefined
-    let best: LayerRegion | undefined
-    let bestArea = Infinity
-    for (const region of this.pkg.regions) {
-      for (const ring of region.polygons) {
-        if (!pointInRing(x, y, ring)) continue
-        let minX = Infinity
-        let maxX = -Infinity
-        let minY = Infinity
-        let maxY = -Infinity
-        for (const [px, py] of ring) {
-          minX = Math.min(minX, px)
-          maxX = Math.max(maxX, px)
-          minY = Math.min(minY, py)
-          maxY = Math.max(maxY, py)
-        }
-        const area = Math.max(0, maxX - minX) * Math.max(0, maxY - minY)
-        if (area < bestArea) {
-          best = region
-          bestArea = area
-        }
-      }
-    }
-    return best
+    return this.regionsAtPoint(x, y)[0]?.region
+  }
+
+  private regionChain(start: LayerRegion | undefined, x: number, y: number): LayerRegion[] {
+    return this.pkg ? regionChain(this.pkg.regions, start, x, y) : []
+  }
+
+  private regionChainNames(chain: LayerRegion[]): string[] | undefined {
+    const names = chain.slice(1).map((region) => region.name).filter(Boolean)
+    return names.length > 0 ? names : undefined
   }
 
   private regionForMarker(marker: LayerMarker): LayerRegion | undefined {
@@ -6108,6 +6147,9 @@ export class LayerMapUI {
     const category = marker ? this.categoryById(marker.categoryId) : undefined
     const user = this.state.userPosition
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
+    const positionChain = user ? this.regionChain(positionRegion, user.x, user.y) : []
+    const placeChain = marker ? this.regionChain(region, marker.x, marker.y) : []
+    const areaNotes = this.areaNotesForAI([...positionChain, ...placeChain], settings)
     const road = user ? this.currentRoad() : undefined
     const contextGrid = this.gridConfig()
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
@@ -6124,6 +6166,7 @@ export class LayerMapUI {
             x: user.x,
             y: user.y,
             region: positionRegion?.name,
+            regionParents: this.regionChainNames(positionChain),
             road: road
               ? {
                   name: road.road.street.name,
@@ -6148,6 +6191,8 @@ export class LayerMapUI {
       currentY: marker?.y,
       category: category?.name,
       region: region?.name,
+      regionParents: this.regionChainNames(placeChain),
+      areaNotes: areaNotes.length > 0 ? areaNotes : undefined,
       note: note?.trim() || undefined,
       sourceMaterial:
         marker &&
@@ -6211,7 +6256,9 @@ export class LayerMapUI {
     head.append(flag, title, value)
     card.append(head)
     if (user) {
-      const area = this.regionForPoint(user.x, user.y)?.name
+      const area = this.regionChain(this.regionForPoint(user.x, user.y), user.x, user.y)
+        .map((item) => item.name)
+        .join(' · ')
       if (area) {
         const areaEl = document.createElement('div')
         areaEl.className = 'tml-position-area'
@@ -8159,17 +8206,6 @@ function textElement<K extends keyof HTMLElementTagNameMap>(
   element.className = className
   element.textContent = text
   return element
-}
-
-function pointInRing(x: number, y: number, ring: Array<[number, number]>): boolean {
-  let inside = false
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
-    const [xi, yi] = ring[index]
-    const [xj, yj] = ring[previous]
-    const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi
-    if (intersects) inside = !inside
-  }
-  return inside
 }
 
 const PALETTE = [

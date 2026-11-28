@@ -188,6 +188,7 @@ export type Settings = {
   layerSourceAI: boolean
   layerWikiAI: boolean
   layerNoteAI: boolean
+  layerRegionNoteAI: boolean
   layerNearbyAI: boolean
   layerNearbyName: boolean
   layerNearbyType: boolean

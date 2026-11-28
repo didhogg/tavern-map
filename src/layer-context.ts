@@ -47,6 +47,11 @@ function placeLine(
   return `- ${clean(place.name)}${category} — ${coords}${direction}${note}`
 }
 
+function areaText(name: string, parents: string[] | undefined): string {
+  const outer = (parents ?? []).map(clean).filter(Boolean)
+  return outer.length > 0 ? `${clean(name)} (in ${outer.join(' · ')})` : clean(name)
+}
+
 function roadLine(road: LayerContextRoad, grid: LayerGridConfig | undefined): string {
   const name = clean(road.name) || 'unnamed road'
   const type = road.type ? ` (${clean(road.type)})` : ''
@@ -73,7 +78,9 @@ export function buildLayerContext(state: LayerChatState): string {
   }
   if (snapshot.position) {
     const coords = snapshot.grid ? gridPoint(snapshot.position, snapshot.grid) : mapPoint(snapshot.position)
-    const area = snapshot.position.region ? ` · Area: ${clean(snapshot.position.region)}` : ''
+    const area = snapshot.position.region
+      ? ` · Area: ${areaText(snapshot.position.region, snapshot.position.regionParents)}`
+      : ''
     lines.push(`My position: ${coords}${area}`)
     if (snapshot.position.road) lines.push(roadLine(snapshot.position.road, snapshot.grid))
   }
@@ -88,7 +95,7 @@ export function buildLayerContext(state: LayerChatState): string {
         : ''
     const area =
       snapshot.region && snapshot.position?.region !== snapshot.region
-        ? ` · Area: ${clean(snapshot.region)}`
+        ? ` · Area: ${areaText(snapshot.region, snapshot.regionParents)}`
         : ''
     lines.push(`Current place: ${clean(snapshot.currentPlace)}${category}${coords}${area}`)
     if (snapshot.note) lines.push(`Current place note: ${clean(snapshot.note)}`)
@@ -101,7 +108,10 @@ export function buildLayerContext(state: LayerChatState): string {
       }
     }
   } else if (snapshot.region && !snapshot.position?.region) {
-    lines.push(`Area: ${clean(snapshot.region)}`)
+    lines.push(`Area: ${areaText(snapshot.region, snapshot.regionParents)}`)
+  }
+  for (const area of snapshot.areaNotes ?? []) {
+    if (clean(area.text)) lines.push(`Area note (${clean(area.name)}): ${clean(area.text)}`)
   }
   if (snapshot.itinerary) {
     const itinerary = snapshot.itinerary

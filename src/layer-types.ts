@@ -377,6 +377,8 @@ export type LayerContextSnapshot = {
     x: number
     y: number
     region?: string
+    /** Enclosing areas of `region`, nearest first (declared parents, else containing polygons). */
+    regionParents?: string[]
     /** Road nearest to my position (within the nearby radius), from the map's road lines. */
     road?: LayerContextRoad
   }
@@ -385,6 +387,10 @@ export type LayerContextSnapshot = {
   currentY?: number
   category?: string
   region?: string
+  /** Enclosing areas of the current place's `region`, nearest first. */
+  regionParents?: string[]
+  /** Area notes allowed into AI, for my area and the areas around it. */
+  areaNotes?: Array<{ name: string; text: string }>
   note?: string
   /** User-edited source material, only when explicitly included. */
   sourceMaterial?: string
@@ -783,6 +789,12 @@ function validContextRoad(raw: unknown): LayerContextRoad | undefined {
   }
 }
 
+function stringList(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const list = raw.filter((item): item is string => typeof item === 'string' && item.length > 0)
+  return list.length > 0 ? list : undefined
+}
+
 function validContext(raw: unknown): LayerContextSnapshot | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const value = raw as Partial<LayerContextSnapshot>
@@ -796,6 +808,7 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
           y: value.position.y,
           region:
             typeof value.position.region === 'string' ? value.position.region : undefined,
+          regionParents: stringList(value.position.regionParents),
           road: validContextRoad(value.position.road),
         }
       : undefined
@@ -859,6 +872,13 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
     currentY: Number.isFinite(value.currentY) ? value.currentY : undefined,
     category: typeof value.category === 'string' ? value.category : undefined,
     region: typeof value.region === 'string' ? value.region : undefined,
+    regionParents: stringList(value.regionParents),
+    areaNotes: Array.isArray(value.areaNotes)
+      ? value.areaNotes.filter(
+          (item): item is { name: string; text: string } =>
+            Boolean(item) && typeof item.name === 'string' && typeof item.text === 'string',
+        )
+      : undefined,
     note: typeof value.note === 'string' ? value.note : undefined,
     sourceMaterial:
       typeof value.sourceMaterial === 'string' && value.sourceMaterial.trim()
