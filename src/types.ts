@@ -188,6 +188,8 @@ export type Settings = {
   enabled: boolean
   provider: 'osm'
   wikiLangs: string[]
+  wikiDisplayLang?: string
+  wikiDisplayMode: 'intro' | 'full'
   radiusM: number
   maxNearby: number
   depth: number

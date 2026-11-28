@@ -26,7 +26,7 @@ import {
   type Poi,
 } from './poi'
 import { syncPrompt, clearPrompt } from './prompt'
-import { nearbyPlaces, reverseGeocode, reverseStreet } from './providers'
+import { nearbyPlaces, osmPlaceTags, reverseGeocode, reverseStreet } from './providers'
 import { matchDrawnRoute, routeBetween, type Route, type RouteStep } from './route'
 import { searchPlaces, type SearchResult } from './search'
 import { loadState, saveState } from './state'
@@ -52,19 +52,13 @@ import type {
   WikiPage,
   WikiRef,
 } from './types'
-import { wikiLangLinks, wikiNearby, wikiPage, wikiPageFull } from './wiki'
+import { wikiArticleLink, wikiLangLinks, wikiNearby, wikiPage, wikiPageFull, wikiRelated } from './wiki'
 
 const PANEL_ID = 'tm-panel'
 const WIKI_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const FAB_POS_KEY = 'tavern-map:fab-position'
 const ROUTE_SOURCE = 'tm-route'
 const WIKI_LANG_LABELS: Record<string, string> = { en: 'EN', ja: 'JA', zh: 'ZH' }
-const ROUTE_MODE_LABELS: Record<RouteProfile, string> = {
-  foot: '步行',
-  driving: '驾车',
-  transit: '公共交通',
-}
-const ROUTE_MODES: RouteProfile[] = ['foot', 'driving', 'transit']
 
 function wikiKey(lang: string, pageId: number): string {
   return `${lang}:${pageId}`
@@ -150,12 +144,7 @@ const PANEL_HTML = `
     </div>
   </header>
   <div class="tm-workspace">
-  <aside class="tm-real-side">
-    <div class="tm-tabs" role="tablist">
-      <button type="button" data-tab="nearby" class="active" role="tab">周边</button>
-      <button type="button" data-tab="saved" role="tab">收藏 <span id="tm-saved-count" class="tm-badge">0</span></button>
-      <button type="button" data-tab="wiki" role="tab">维基</button>
-    </div>
+  <aside class="tm-real-side" id="tm-real-filters">
     <button id="tm-poi-toggle" class="tm-poi-toggle active" type="button" aria-pressed="true">POI 图层</button>
     <div id="tm-poi-filters" class="tm-real-filters"></div>
   </aside>
@@ -169,7 +158,10 @@ const PANEL_HTML = `
       <input id="tm-search-input" type="search" placeholder="搜索国家、城市、地点…" autocomplete="off" spellcheck="false" aria-label="搜索地点">
       <div id="tm-search-results" class="tm-search-results" role="listbox" hidden></div>
     </div>
-    <button type="button" class="tm-map-route" data-tab="route">行程 <span id="tm-route-count" class="tm-badge">0</span></button>
+    <button type="button" class="tm-filter-toggle" data-action="real-filters" aria-controls="tm-real-filters" aria-expanded="false">筛选</button>
+    <button type="button" class="tm-map-route" data-action="real-itinerary" aria-controls="tm-route-shelf" aria-expanded="false">行程 <span id="tm-route-count" class="tm-badge">0</span></button>
+    <canvas id="tm-route-band" class="tm-route-band" aria-hidden="true" hidden></canvas>
+    <div id="tm-route-shelf" class="tml-route-shelf tm-route-shelf" role="region" aria-label="行程" hidden></div>
     <div id="tm-map-tool" class="tm-map-tool" hidden></div>
     <button type="button" id="tm-route-width" class="tm-route-width" aria-label="拖动调整沿途 POI 范围" title="拖动调整沿途 POI 范围" hidden>↔</button>
     <button id="tm-recenter" class="tm-recenter" type="button" title="回到人物位置" aria-label="回到人物位置">
@@ -201,23 +193,24 @@ const PANEL_HTML = `
       </label>
     </div>
   </div>
-  <div id="tm-list" class="tm-list"></div>
-  </aside>
+  <div class="tm-inspector-tabs tm-tabs" role="tablist" aria-label="地点列表">
+    <button type="button" role="tab" data-tab="nearby">附近</button>
+    <button type="button" role="tab" data-tab="saved">收藏 <span id="tm-saved-count" class="tm-badge">0</span></button>
+    <button type="button" role="tab" data-tab="wiki">附近 Wiki</button>
   </div>
-  ${['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'].map((edge) => `<span class="tml-resize" data-resize="${edge}" aria-hidden="true"></span>`).join('')}
-  <footer class="tm-foot">© OpenStreetMap contributors · Wikipedia CC BY-SA 4.0</footer>
-  <div id="tm-wiki" class="tm-wiki" role="dialog" aria-label="Wikipedia article" hidden>
+  <div id="tm-list" class="tm-list"></div>
+  <div id="tm-wiki" class="tm-wiki" role="region" aria-label="Wikipedia article" hidden>
     <header class="tm-head">
-      <strong id="tm-wiki-title">Wiki</strong>
+      <button type="button" class="tm-mini-btn" data-action="close-wiki" aria-label="返回上一页">‹ 返回</button>
+      <strong id="tm-wiki-title" tabindex="-1">Wiki</strong>
       <div class="tm-head-actions">
         <button type="button" id="tm-star" data-action="star" title="加入 AI 上下文" aria-pressed="false">☆</button>
-        <button type="button" data-action="close-wiki" title="关闭">×</button>
       </div>
     </header>
     <div class="tm-wiki-toolbar">
       <div id="tm-wiki-langs" class="tm-pill-row" role="group" aria-label="Wikipedia 语言"></div>
       <div id="tm-wiki-modes" class="tm-pill-row" role="group" aria-label="显示范围">
-        <button type="button" class="tm-pill active" data-wiki-mode="intro">概览</button>
+        <button type="button" class="tm-pill active" data-wiki-mode="intro">简介</button>
         <button type="button" class="tm-pill" data-wiki-mode="full">全文</button>
       </div>
     </div>
@@ -226,16 +219,28 @@ const PANEL_HTML = `
       <select id="tm-wiki-ai-lang" aria-label="选择展示给 AI 的语言"></select>
       <span id="tm-ai-lang-hint" class="tm-ai-lang-hint">星标后可选择</span>
     </div>
+    <div id="tm-wiki-ai-mode" class="tm-pill-row tm-wiki-ai-mode" role="group" aria-label="给 AI 的正文范围" hidden>
+      <span>给 AI</span>
+      <button type="button" class="tm-pill" data-wiki-ai-mode="intro">简介</button>
+      <button type="button" class="tm-pill" data-wiki-ai-mode="full">全文</button>
+    </div>
     <div id="tm-wiki-full-hint" class="tm-wiki-full-hint" hidden>全文会完整注入 AI，token 会显著增加。</div>
-    <div id="tm-wiki-body" class="tm-wiki-body"></div>
+    <div id="tm-wiki-body" class="tm-wiki-body" aria-live="polite"></div>
     <div class="tm-wiki-note">
       <label for="tm-wiki-note">我的笔记</label>
       <textarea id="tm-wiki-note" placeholder="点亮星标后可为这篇 Wiki 添加笔记…" disabled></textarea>
       <div id="tm-wiki-note-status" class="tm-note-status"></div>
     </div>
-    <a id="tm-wiki-link" class="tm-wiki-link" target="_blank" rel="noreferrer">打开 Wikipedia</a>
+    <div class="tm-wiki-footer">
+      <a id="tm-wiki-link" class="tm-wiki-link" target="_blank" rel="noreferrer">打开 Wikipedia</a>
+      <button type="button" class="tm-mini-btn" data-action="wiki-attach" hidden>存入地点的 Wiki 正文</button>
+    </div>
   </div>
-  <div id="tm-place" class="tm-place" role="dialog" aria-label="Place details" hidden>
+  </aside>
+  </div>
+  ${['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'].map((edge) => `<span class="tml-resize" data-resize="${edge}" aria-hidden="true"></span>`).join('')}
+  <footer class="tm-foot">© OpenStreetMap contributors · Wikipedia CC BY-SA 4.0</footer>
+  <div id="tm-place" class="tm-place" role="region" aria-label="Place details" hidden>
     <header class="tm-head">
       <strong id="tm-place-title">地点</strong>
       <div class="tm-head-actions">
@@ -246,38 +251,10 @@ const PANEL_HTML = `
     <div class="tm-place-body">
       <div id="tm-place-meta" class="tm-place-detail-meta"></div>
       <div class="tm-place-actions">
-        <select id="tm-place-route-mode" class="tm-route-mode" aria-label="路线方式" title="路线方式">
-          <option value="foot">步行</option>
-          <option value="driving">驾车</option>
-          <option value="transit">公共交通</option>
-        </select>
-        <button type="button" data-action="place-route">路线</button>
         <button type="button" data-action="place-center">居中</button>
         <button type="button" data-action="place-go">移我到这里</button>
-        <button type="button" data-action="place-add-stop">+ 经停</button>
-        <button type="button" data-action="place-clear-route" hidden>清除路线</button>
-        <button type="button" data-action="place-wiki">附近 Wiki</button>
       </div>
       <div id="tm-place-info" class="tm-place-info"></div>
-      <div id="tm-route-summary" class="tm-route-summary" hidden>
-        <span id="tm-route-text"></span>
-        <label class="tm-route-ai"><input type="checkbox" data-route-ai> 把行程显示给 AI</label>
-        <div class="tm-route-actions">
-          <button type="button" data-action="route-copy">复制行程</button>
-          <button type="button" data-action="place-itinerary">完整行程</button>
-          <button type="button" data-action="place-start" class="tm-route-start" hidden>开始移动</button>
-          <button type="button" data-action="place-stop" class="tm-route-stop" hidden>停止</button>
-        </div>
-        <div class="tm-route-poi-controls">
-          <label><input type="checkbox" data-route-pois> 显示沿途 POI</label>
-          <label class="tm-route-poi-radius">范围
-            <input type="range" data-route-poi-radius min="25" max="500" step="5" aria-label="沿途 POI 范围">
-            <span data-route-poi-radius-value>100m</span>
-          </label>
-        </div>
-        <div class="tm-route-progress" id="tm-route-progress"><div id="tm-route-bar" class="tm-route-bar"></div></div>
-        <ol id="tm-place-route-steps" class="tm-route-steps tm-place-route-steps"></ol>
-      </div>
       <div class="tm-place-note">
         <label for="tm-place-note">我的笔记</label>
         <span id="tm-place-note-ai"></span>
@@ -325,6 +302,21 @@ const SETTINGS_HTML = `
         </div>
       </div>
 
+      <div class="tm-settings-group">
+        <div class="tm-settings-group-title">现实地图 · Wiki 阅读</div>
+        <fieldset class="tm-wiki-setting">
+          <legend>首选语言</legend>
+          <label><input type="radio" name="tavern-map-wiki-language" value=""> 条目原语言</label>
+          <label><input type="radio" name="tavern-map-wiki-language" value="zh"> 中文</label>
+          <label><input type="radio" name="tavern-map-wiki-language" value="ja"> 日本語</label>
+          <label><input type="radio" name="tavern-map-wiki-language" value="en"> English</label>
+        </fieldset>
+        <fieldset class="tm-wiki-setting">
+          <legend>默认阅读范围</legend>
+          <label><input type="radio" name="tavern-map-wiki-display" value="intro"> 简介</label>
+          <label><input type="radio" name="tavern-map-wiki-display" value="full"> 全文</label>
+        </fieldset>
+      </div>
       <div class="tm-settings-group">
         <div class="tm-settings-group-title">现实地图 · 所在地点</div>
         <label class="checkbox_label"><input type="checkbox" data-real-setting="realSourceAI"> 来源资料进入 AI</label>
@@ -462,7 +454,7 @@ export class MapUI {
   private wikiSeq = 0
   private fullSeq = 0
   private searchSeq = 0
-  private tab: 'nearby' | 'wiki' | 'saved' | 'route' = 'nearby'
+  private tab: 'nearby' | 'wiki' | 'saved' = 'nearby'
   private currentWiki: WikiPage | null = null
   private currentPlace: Place | null = null
   private wikiMode: 'intro' | 'full' = 'intro'
@@ -471,13 +463,9 @@ export class MapUI {
   private fullPromise: Promise<void> | null = null
   private wikiLangLinks: Record<string, string> = {}
   private currentRoute: Route | null = null
-  private routeMode: RouteProfile = 'foot'
   private routeSeq = 0
   private routePoiSeq = 0
   private draftPoiTimer?: number
-  private moveFrame: number | null = null
-  private moving = false
-  private moveProgress = 0
   private loadingNearby = false
   private loadingWiki = false
   private settingsBound = false
@@ -493,6 +481,12 @@ export class MapUI {
   private windowController: LayerWindowController
   private mapTool: 'browse' | 'move' | 'stop' | 'draw' = 'browse'
   private routeSelection = 0
+  private expandedRouteLeg = -1
+  private routeShelfOpen = false
+  private nextLegMode: LegMode = 'manual'
+  private routeStatus = ''
+  private routeBandFrame = 0
+  private wikiReturn?: { trigger: HTMLElement | null; scroll: number }
   private insertStopAt?: number
   private routeRedo: Array<{ stop: RealStop; leg: RealLeg }> = []
   private get pendingGuide(): RoutePoint[] {
@@ -547,15 +541,6 @@ export class MapUI {
   private placeInfoEl!: HTMLElement
   private placeNoteEl!: HTMLTextAreaElement
   private placeNoteStatusEl!: HTMLElement
-  private placeRouteSummaryEl!: HTMLElement
-  private placeRouteTextEl!: HTMLElement
-  private placeRouteModeEl!: HTMLSelectElement
-  private placeStartEl!: HTMLButtonElement
-  private placeStopEl!: HTMLButtonElement
-  private placeClearEl!: HTMLButtonElement
-  private placeProgressEl!: HTMLElement
-  private placeBarEl!: HTMLElement
-  private placeRouteStepsEl!: HTMLElement
 
   private enabledEl!: HTMLInputElement
   private realContextEl!: HTMLInputElement
@@ -568,23 +553,24 @@ export class MapUI {
   private readonly onUnload = (): void => this.cleanup()
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape') return
-    if (this.layerUI?.isOpen()) return
-    if (!this.panelEl.hidden && this.mapTool !== 'browse') {
-      this.setMapTool('browse')
-      return
-    }
+    if (event.key !== 'Escape' || this.layerUI?.isOpen() || this.panelEl.hidden) return
     const target = event.target as HTMLElement | null
     if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
-    if (!this.previewEl.hidden) {
-      this.previewEl.hidden = true
+    if (!this.previewEl.hidden) { this.previewEl.hidden = true; return }
+    if (!this.wikiEl.hidden) { this.closeWiki(); return }
+    const picker = this.panelEl.querySelector<HTMLDetailsElement>('.tm-leg-picker[open]')
+    if (picker) { picker.open = false; picker.querySelector('summary')?.focus(); return }
+    if (this.mapTool === 'move' || this.mapTool === 'draw') {
+      this.setMapTool(this.mapTool === 'draw' ? 'stop' : 'browse')
+      this.renderRealRouteShelf()
       return
     }
-    if (!this.wikiEl.hidden) {
-      this.wikiEl.hidden = true
+    if (this.routeShelfOpen) {
+      this.toggleRealRouteShelf()
+      this.panelEl.querySelector<HTMLButtonElement>('[data-action=real-itinerary]')?.focus()
       return
     }
-    if (!this.panelEl.hidden) this.closePanel()
+    this.closePanel()
   }
 
   private readonly onDocumentClick = (event: MouseEvent): void => {
@@ -606,7 +592,6 @@ export class MapUI {
     this.hydrateRealFavorites()
     this.loadSharedRoute()
     this.loadSharedWiki()
-    this.routeMode = this.state.itinerary?.profile ?? 'foot'
     this.restoreRealRoute()
     this.mount()
     this.windowController = new LayerWindowController(
@@ -668,15 +653,6 @@ export class MapUI {
     this.placeInfoEl = document.getElementById('tm-place-info') as HTMLElement
     this.placeNoteEl = document.getElementById('tm-place-note') as HTMLTextAreaElement
     this.placeNoteStatusEl = document.getElementById('tm-place-note-status') as HTMLElement
-    this.placeRouteSummaryEl = document.getElementById('tm-route-summary') as HTMLElement
-    this.placeRouteTextEl = document.getElementById('tm-route-text') as HTMLElement
-    this.placeRouteModeEl = document.getElementById('tm-place-route-mode') as HTMLSelectElement
-    this.placeStartEl = document.querySelector('[data-action="place-start"]') as HTMLButtonElement
-    this.placeStopEl = document.querySelector('[data-action="place-stop"]') as HTMLButtonElement
-    this.placeClearEl = document.querySelector('[data-action="place-clear-route"]') as HTMLButtonElement
-    this.placeProgressEl = document.getElementById('tm-route-progress') as HTMLElement
-    this.placeBarEl = document.getElementById('tm-route-bar') as HTMLElement
-    this.placeRouteStepsEl = document.getElementById('tm-place-route-steps') as HTMLElement
   }
 
   private mountSettings(retries = 0): void {
@@ -728,7 +704,6 @@ export class MapUI {
     this.wikiNoteEl.addEventListener('change', () => this.flushNoteSave())
     this.placeNoteEl.addEventListener('input', () => this.onPlaceNoteInput())
     this.placeNoteEl.addEventListener('change', () => this.flushNoteSave())
-    this.placeRouteModeEl.addEventListener('change', () => this.onPlaceRouteModeChange())
     this.aiLangEl.addEventListener('change', () => void this.onAiLangChange())
     this.recenterEl.addEventListener('click', () => this.recenterOnPerson())
     this.panelEl.addEventListener('change', (event) => this.onPanelChange(event))
@@ -778,6 +753,9 @@ export class MapUI {
       this.scheduleRefresh(0)
     }
     for (const input of this.langEls) input.addEventListener('change', onLanguagesChanged)
+    for (const input of document.querySelectorAll<HTMLInputElement>('#tm-settings .tm-wiki-setting input')) {
+      input.addEventListener('change', () => this.readSettings())
+    }
     this.radiusEl.addEventListener('change', () => {
       this.readSettings()
       this.syncRadiusUi()
@@ -834,12 +812,6 @@ export class MapUI {
       this.clearPosition()
       return
     }
-    if (action === 'place-add-stop' && this.currentPlace) {
-      const place = this.currentPlace
-      this.editRealRoute()
-      this.addRealStop(place)
-      return
-    }
     if (action === 'close') {
       this.closePanel()
       return
@@ -856,10 +828,32 @@ export class MapUI {
       this.preview()
       return
     }
+    if (action === 'real-filters') {
+      const open = this.panelEl.classList.toggle('tm-filters-open')
+      this.panelEl.querySelector('[data-action=real-filters]')?.setAttribute('aria-expanded', String(open))
+      return
+    }
+    if (action === 'wiki-attach') {
+      const place = this.currentPlace
+      const page = this.currentWiki
+      if (!place || !page) return
+      const text = this.wikiMode === 'full' ? this.wikiFullText : page.extract
+      if (!text?.trim()) return
+      const key = `real-wiki:${placeKey(place)}`
+      const existing = realWiki(place)
+      if (!existing.includes(text)) setGlobalNote(key, [existing, `${page.title} · ${page.url}\n${text}`].filter(Boolean).join('\n\n'))
+      const field = this.placeInfoEl.querySelector<HTMLTextAreaElement>('[aria-label="Wiki 正文"]')
+      if (field) field.value = realWiki(place)
+      this.sync()
+      this.toast('已存入地点的 Wiki 正文')
+      return
+    }
+    if (action === 'real-itinerary') {
+      this.toggleRealRouteShelf()
+      return
+    }
     if (action === 'close-wiki') {
-      this.wikiEl.hidden = true
-      this.state.wikiOpen = false
-      saveState(this.ctx, this.state)
+      this.closeWiki()
       return
     }
     if (action === 'star') {
@@ -881,14 +875,6 @@ export class MapUI {
       }
       return
     }
-    if (action === 'place-route') {
-      if (this.currentPlace) {
-        const selected = this.placeRouteModeEl.value as RouteProfile
-        const mode = ROUTE_MODES.includes(selected) ? selected : this.routeMode
-        void this.planRouteTo(this.currentPlace, mode)
-      }
-      return
-    }
     if (action === 'place-go') {
       if (this.currentPlace) {
         void this.moveTo(this.currentPlace.lat, this.currentPlace.lng, true, this.currentPlace)
@@ -896,47 +882,10 @@ export class MapUI {
       }
       return
     }
-    if (action === 'place-clear-route' || action === 'route-clear') {
-      this.clearItinerary()
-      return
-    }
-    if (action === 'place-wiki') {
-      const place = this.currentPlace
-      if (place) {
-        this.closePlace()
-        this.tab = 'wiki'
-        this.render()
-        void this.browseWikiAt(place)
-      }
-      return
-    }
-    if (action === 'place-itinerary') {
-      this.closePlace()
-      this.tab = 'route'
-      this.render()
-      return
-    }
-    if (action === 'place-start' || action === 'route-start') {
-      this.startMovement()
-      return
-    }
-    if (action === 'place-stop' || action === 'route-stop') {
-      this.stopMovement()
-      return
-    }
-    if (action === 'route-copy') {
-      this.copyItinerary()
-      return
-    }
-    if (action === 'route-replan') {
-      this.replanItinerary()
-      return
-    }
-
     const tab = target.closest<HTMLElement>('[data-tab]')?.dataset.tab
-    if (tab === 'nearby' || tab === 'wiki' || tab === 'saved' || tab === 'route') {
+    if (tab === 'nearby' || tab === 'wiki' || tab === 'saved') {
+      this.closeWiki(false)
       if (this.currentPlace) this.closePlace()
-      if (tab !== 'route' && (this.mapTool === 'draw' || this.mapTool === 'stop')) this.setMapTool('browse')
       this.tab = tab
       this.state.lastTab = tab
       this.drawActiveRoute()
@@ -945,6 +894,12 @@ export class MapUI {
       return
     }
 
+    const aiMode = target.closest<HTMLElement>('[data-wiki-ai-mode]')?.dataset.wikiAiMode
+    if (aiMode === 'intro' || aiMode === 'full') {
+      const star = this.currentWiki && this.findStar(this.currentWiki)
+      if (star) void this.setWikiAIContent(star, aiMode)
+      return
+    }
     const wikiMode = target.closest<HTMLElement>('[data-wiki-mode]')?.dataset.wikiMode
     if (wikiMode === 'intro' || wikiMode === 'full') {
       this.setWikiMode(wikiMode)
@@ -957,11 +912,7 @@ export class MapUI {
 
   private onPanelChange(event: Event): void {
     const target = event.target as HTMLInputElement
-    if (target.matches('[data-route-ai]')) {
-      if (!this.state.itinerary) return
-      this.state.itinerary.showToAI = target.checked
-      this.commit()
-    } else if (target.matches('[data-route-pois]')) {
+    if (target.matches('[data-route-pois]')) {
       this.settings.showRoutePois = target.checked
       saveSettings(this.ctx, this.settings)
       this.writeRealAiSettingsToForm()
@@ -978,7 +929,7 @@ export class MapUI {
     this.drawActiveRoute()
     this.sync()
     this.syncRoutePoiControls()
-    if (this.tab === 'route') this.renderList()
+    this.renderRealRouteShelf()
   }
 
   private setRealRouteRadius(radius: number, save: boolean): void {
@@ -1038,8 +989,9 @@ export class MapUI {
     saveState(this.ctx, this.state)
     this.panelEl.hidden = false
     this.windowController.open()
-    this.tab = this.state.lastTab ?? 'nearby'
+    this.tab = this.state.lastTab === 'route' ? 'nearby' : this.state.lastTab ?? 'nearby'
     this.ensureMap()
+    if (this.state.routeDraft && this.routeShelfOpen && !this.routeRunning) this.setMapTool('stop')
     const view = this.state.view
     this.viewRestoring = true
     this.map?.resize()
@@ -1053,7 +1005,7 @@ export class MapUI {
     this.render()
     if (this.state.wikiOpen && this.state.lastWiki) {
       window.setTimeout(() => {
-        if (!this.panelEl.hidden) void this.restoreWiki(this.state.lastWiki!)
+        if (!this.panelEl.hidden && this.wikiEl.hidden && this.state.wikiOpen && this.state.lastWiki) void this.restoreWiki(this.state.lastWiki)
       }, 120)
     }
     if (!this.pois.length && this.state.place && !this.state.positionCleared && !this.loadingPois) {
@@ -1069,7 +1021,6 @@ export class MapUI {
 
   private openLayerMap(): void {
     if (!this.panelEl.hidden) this.rememberRealView()
-    if (this.moving) this.stopMovement()
     this.setMapTool('browse')
     this.panelEl.hidden = true
     this.ctx = this.liveContext()
@@ -1100,7 +1051,6 @@ export class MapUI {
 
   private closePanel(): void {
     this.rememberRealView()
-    if (this.moving) this.stopMovement()
     this.setMapTool('browse')
     this.panelEl.hidden = true
     this.state.lastMapMode = 'real'
@@ -1143,13 +1093,19 @@ export class MapUI {
     }
 
     const map = this.map
+    map.getCanvas().after(this.panelEl.querySelector('#tm-route-band')!)
     map.touchZoomRotate.disableRotation()
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
     this.marker = new Marker({ element: this.personMarkerElement(), draggable: true, anchor: 'bottom' })
       .setLngLat([this.state.center.lng, this.state.center.lat])
       .addTo(map)
     this.marker.getElement().addEventListener('click', (event) => {
-      if (this.mapTool !== 'browse' || this.markerDragging || this.moving || !this.state.place) return
+      if (this.mapTool === 'stop') {
+        event.stopPropagation()
+        this.addRealStop(this.realStart())
+        return
+      }
+      if (this.mapTool !== 'browse' || this.markerDragging || !this.state.place) return
       event.stopPropagation()
       this.openPlace(this.state.place)
     })
@@ -1166,7 +1122,7 @@ export class MapUI {
         }], 25)[0][0]
         const distance = pathLength(line)
         if (nearest?.alongM !== undefined && distance > 0) {
-          this.moveProgress = itinerary.progress = Math.min(1, nearest.alongM / distance)
+          itinerary.progress = Math.min(1, nearest.alongM / distance)
           this.routeSelection = Math.max(0, currentRouteLeg(itinerary))
           this.drawActiveRoute()
         }
@@ -1434,7 +1390,6 @@ export class MapUI {
   }
 
   private async moveTo(lat: number, lng: number, fly = false, place?: Place): Promise<void> {
-    if (this.moving) this.stopMovement()
     this.seq += 1
     this.poiSeq += 1
     this.positionLookup += 1
@@ -1460,7 +1415,6 @@ export class MapUI {
   }
 
   private clearPosition(): void {
-    if (this.moving) this.stopMovement()
     this.seq += 1
     this.poiSeq += 1
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
@@ -1480,7 +1434,7 @@ export class MapUI {
   }
 
   private renderPositionMarker(): void {
-    if (!this.marker || this.markerDragging || this.moving) return
+    if (!this.marker || this.markerDragging) return
     const element = this.marker.getElement()
     element.hidden = this.state.positionCleared === true
     if (!element.hidden) this.marker.setLngLat([this.state.center.lng, this.state.center.lat])
@@ -1488,18 +1442,17 @@ export class MapUI {
 
   private setMapTool(tool: MapUI['mapTool']): void {
     this.mapTool = tool
+    this.drawRouteInk([])
     if (tool !== 'stop') this.insertStopAt = undefined
     const bar = this.panelEl.querySelector<HTMLElement>('#tm-map-tool')!
-    bar.hidden = tool === 'browse'
+    bar.hidden = tool === 'browse' || tool === 'stop' || tool === 'draw'
     bar.replaceChildren()
     if (!bar.hidden) {
-      const hint = tool === 'move' ? '点击地图放置“我”' :
-        tool === 'stop' ? '点击地图添加经停点' : '点击折点或按住拖画路径'
-      bar.append(hint, this.miniButton('退出', () => this.setMapTool('browse')))
+      bar.append('点击地图放置“我”', this.miniButton('退出', () => this.setMapTool('browse')))
     }
     this.map?.dragPan[tool === 'draw' ? 'disable' : 'enable']()
     this.map?.getCanvas().classList.toggle('tm-pick-map', tool !== 'browse')
-    this.marker?.setDraggable(tool === 'browse' && !this.moving)
+    this.marker?.setDraggable(tool === 'browse')
   }
 
   private clickedPoi(event: MapMouseEvent): Place | undefined {
@@ -1516,7 +1469,6 @@ export class MapUI {
     const poi = this.clickedPoi(event)
     if (this.mapTool === 'stop') {
       this.addRealStop(poi ?? { name: `经停点 ${(this.state.routeDraft?.stops.length ?? 0) + 1}`, lat, lng })
-      this.setMapTool('browse')
       return
     }
     if (this.mapTool === 'move') {
@@ -1541,16 +1493,6 @@ export class MapUI {
       if (this.currentPlace !== current || seq !== this.positionLookup) return
       this.openPlace(place)
     }).catch(() => undefined)
-  }
-
-  private async browseWikiAt(place: Place): Promise<void> {
-    const seq = ++this.wikiSeq
-    const pages = await wikiNearby(place.lat, place.lng, Math.max(300, this.settings.radiusM), this.settings.wikiLangs)
-    if (seq !== this.wikiSeq || this.tab !== 'wiki') return
-    this.renderList()
-    this.listEl.replaceChildren()
-    for (const candidate of pages) this.listEl.append(this.wikiItem(candidate))
-    if (!pages.length) this.listEl.append(this.empty('此地点附近没有维基条目。'))
   }
 
   private scheduleRefresh(delay = 650): void {
@@ -1690,7 +1632,7 @@ export class MapUI {
     this.panelEl.querySelector('[data-action=my-move]')!.textContent = this.state.positionCleared ? '放置' : '移动'
     const nearbyCount = this.nearbyVisible().length
     const nearbyTab = this.panelEl.querySelector('[data-tab=nearby]')
-    if (nearbyTab) nearbyTab.textContent = nearbyCount ? `周边 ${nearbyCount}` : '周边'
+    if (nearbyTab) nearbyTab.textContent = nearbyCount ? `附近 ${nearbyCount}` : '附近'
     this.renderPoiFilters()
     this.placeAddressEl.textContent = this.state.place?.address ?? ''
     for (const button of this.panelEl.querySelectorAll<HTMLElement>('[data-tab]')) {
@@ -1701,6 +1643,7 @@ export class MapUI {
     this.updateSavedCount()
     this.updateRouteCount()
     this.renderList()
+    this.renderRealRouteShelf()
     this.updateStarButton()
     this.syncRoutePoiControls()
   }
@@ -1747,13 +1690,11 @@ export class MapUI {
   private bindInspectorResize(): void {
     const handle = this.panelEl.querySelector<HTMLElement>('#tm-split')!
     const workspace = handle.parentElement!
-    const apply = (x: number, y: number) => {
+    const apply = (x: number) => {
       const rect = workspace.getBoundingClientRect()
-      const compact = this.windowController.isCompact()
-      const span = compact ? rect.height : rect.width
-      const position = compact ? rect.bottom - y : rect.right - x
-      const value = Math.min(span * 0.72, Math.max(Math.min(240, span * 0.46), position))
-      workspace.style.setProperty(compact ? '--tm-bottom-size' : '--tm-inspector-size', `${value}px`)
+      const position = rect.right - x
+      const value = Math.min(rect.width * 0.72, Math.max(240, position))
+      workspace.style.setProperty('--tm-inspector-size', `${value}px`)
     }
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
@@ -1761,15 +1702,14 @@ export class MapUI {
       event.preventDefault()
     })
     handle.addEventListener('pointermove', (event) => {
-      if (handle.hasPointerCapture(event.pointerId)) apply(event.clientX, event.clientY)
+      if (handle.hasPointerCapture(event.pointerId)) apply(event.clientX)
     })
     handle.addEventListener('keydown', (event) => {
-      const delta = ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -18 :
-        ['ArrowRight', 'ArrowDown'].includes(event.key) ? 18 : 0
+      const delta = event.key === 'ArrowLeft' ? -18 : event.key === 'ArrowRight' ? 18 : 0
       if (delta === 0) return
       event.preventDefault()
       const rect = handle.getBoundingClientRect()
-      apply(rect.left + delta, rect.top + delta)
+      apply(rect.left + delta)
     })
   }
 
@@ -1778,7 +1718,7 @@ export class MapUI {
     const itinerary = this.state.itinerary
     const draft = this.state.routeDraft
     const plan = draft ?? itinerary?.plan
-    if (!map || !plan?.legs.length || this.tab !== 'route' || !this.settings.showRoutePois) return undefined
+    if (!map || !plan?.legs.length || (!this.routeShelfOpen && !draft) || !this.settings.showRoutePois) return undefined
     const active = itinerary ? currentRouteLeg(itinerary) : 0
     const index = draft || !this.settings.realRouteCurrentOnly ? this.routeSelection : active
     if (index < 0) return undefined
@@ -1808,12 +1748,15 @@ export class MapUI {
   private updateRouteWidthHandle(): void {
     const map = this.map
     const handle = this.panelEl.querySelector<HTMLElement>('#tm-route-width')!
-    if (!map?.getLayer('tm-route-range')) { handle.hidden = true; return }
+    if (!map || this.panelEl.hidden) { handle.hidden = true; return }
+    if (!this.routeBandFrame) this.routeBandFrame = window.requestAnimationFrame(() => {
+      this.routeBandFrame = 0
+      this.drawRealRouteBand()
+    })
     const anchor = this.routeWidthAnchor()
     const middle = map.getCenter()
     const metresPerPixel = anchor?.metresPerPixel ?? 156543.03392 * Math.cos(middle.lat * Math.PI / 180) / 2 ** map.getZoom()
     const offset = this.settings.routePoiRadiusM / Math.max(0.001, metresPerPixel)
-    map.setPaintProperty('tm-route-range', 'line-width', Math.min(15000, offset * 2))
     handle.hidden = !anchor && !this.routeWidthDragging
     if (!anchor) return
     const width = this.canvasEl.clientWidth
@@ -1822,6 +1765,68 @@ export class MapUI {
     handle.style.left = `${x}px`
     handle.style.top = `${anchor.y}px`
     handle.title = `拖动调整沿途范围 · ${formatRadius(this.settings.routePoiRadiusM)}`
+  }
+
+  private drawRealRouteBand(): void {
+    const map = this.map
+    const canvas = this.panelEl.querySelector<HTMLCanvasElement>('#tm-route-band')!
+    const draft = this.state.routeDraft
+    const itinerary = this.state.itinerary
+    const plan = draft ?? itinerary?.plan
+    const active = itinerary ? currentRouteLeg(itinerary) : 0
+    const width = this.canvasEl.clientWidth
+    const height = this.canvasEl.clientHeight
+    canvas.hidden = !map || !plan?.legs.length || this.panelEl.hidden || !width || !height ||
+      !this.settings.showRoutePois || (!draft && (!this.routeShelfOpen || (active < 0 && this.settings.realRouteCurrentOnly)))
+    if (canvas.hidden || !map || !plan) return
+    const scale = Math.min(2, window.devicePixelRatio || 1)
+    const pixelWidth = Math.round(width * scale)
+    const pixelHeight = Math.round(height * scale)
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
+    }
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(scale, 0, 0, scale, 0, 0)
+    ctx.clearRect(0, 0, width, height)
+    const { lat, lng } = map.getCenter()
+    const metresPerPixel = 78271.51696 * Math.cos(lat * Math.PI / 180) / 2 ** map.getZoom()
+    const radius = this.settings.routePoiRadiusM / Math.max(0.001, metresPerPixel)
+    if (radius < 2) return
+    const path = new Path2D()
+    for (const index of plan.legs.keys()) {
+      if (!draft && this.settings.realRouteCurrentOnly && index !== active) continue
+      let previousLongitude = lng
+      legPath(plan, index).forEach(([longitude, latitude], vertex) => {
+        previousLongitude += ((longitude - previousLongitude) % 360 + 540) % 360 - 180
+        const { x, y } = map.project([previousLongitude, latitude])
+        if (vertex === 0) path.moveTo(x, y)
+        else path.lineTo(x, y)
+      })
+    }
+
+    // Paint the union once, as on the layer map. Clear its centre before drawing
+    // the optional tint so round joins never stack or create internal edges.
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.strokeStyle = 'rgba(181, 114, 35, 0.70)'
+    ctx.lineWidth = radius * 2 + 1
+    ctx.stroke(path)
+    ctx.globalCompositeOperation = 'destination-out'
+    ctx.strokeStyle = '#000'
+    ctx.lineWidth = radius * 2 - 2
+    ctx.stroke(path)
+    ctx.globalCompositeOperation = 'source-over'
+    if (radius * 2 <= Math.min(width, height)) {
+      ctx.strokeStyle = 'rgba(230, 181, 106, 0.10)'
+      ctx.stroke(path)
+      ctx.globalCompositeOperation = 'destination-out'
+      ctx.strokeStyle = '#000'
+      ctx.lineWidth = Math.min(9, radius)
+      ctx.stroke(path)
+      ctx.globalCompositeOperation = 'source-over'
+    }
   }
 
   private bindRealMapTools(): void {
@@ -1863,19 +1868,22 @@ export class MapUI {
       const point = map.unproject([event.clientX - rect.left, event.clientY - rect.top]).wrap()
       return [point.lng, point.lat]
     }
-    const displayStroke = (points: RoutePoint[]) => {
-      const data: FeatureCollection<LineString> = { type: 'FeatureCollection',
-        features: points.length >= 2 ? [{ type: 'Feature', properties: {},
-          geometry: { type: 'LineString', coordinates: points } }] : [] }
-      if (!this.mapStyleReady) return
-      const source = map.getSource('tm-route-ink') as GeoJSONSource | undefined
-      if (source) source.setData(data)
-      else {
-        map.addSource('tm-route-ink', { type: 'geojson', data })
-        map.addLayer({ id: 'tm-route-ink', type: 'line', source: 'tm-route-ink',
-          paint: { 'line-color': '#e6b56a', 'line-width': 3 } })
-      }
-    }
+    canvas.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || this.mapTool !== 'stop' || !this.state.routeDraft) return
+      event.preventDefault()
+      const point = map.getCenter().wrap()
+      this.addRealStop({ name: `经停点 ${this.state.routeDraft.stops.length + 1}`, lat: point.lat, lng: point.lng })
+    })
+    map.on('mousemove', (event) => {
+      const draft = this.state.routeDraft
+      const from = draft?.stops.at(this.insertStopAt ?? -1)
+      if (this.mapTool !== 'stop' || !from) return
+      const point = event.lngLat.wrap()
+      const guide = this.insertStopAt === undefined ? this.pendingGuide : []
+      const to = draft?.stops[(this.insertStopAt ?? -2) + 1]
+      this.drawRouteInk([stopPoint(from), ...guide, [point.lng, point.lat], ...(to ? [stopPoint(to)] : [])])
+    })
+    map.on('mouseout', () => this.drawRouteInk([]))
     canvas.addEventListener('pointerdown', (event) => {
       if (this.mapTool !== 'draw' || !event.isPrimary || event.button !== 0 || !this.state.routeDraft) return
       canvas.setPointerCapture(event.pointerId)
@@ -1887,13 +1895,13 @@ export class MapUI {
       if (stroke.points.length >= 500 || Math.hypot(event.clientX - stroke.last[0], event.clientY - stroke.last[1]) < 7) return
       stroke.points.push(sample(event))
       stroke.last = [event.clientX, event.clientY]
-      displayStroke(stroke.points)
+      this.drawRouteInk(stroke.points)
     })
     canvas.addEventListener('pointerup', (event) => {
       if (!stroke || stroke.id !== event.pointerId) return
       const points = stroke.points
       stroke = undefined
-      displayStroke([])
+      this.drawRouteInk([])
       const draft = this.state.routeDraft
       if (!draft || this.mapTool !== 'draw') return
       const leg = draft.legs[this.routeSelection]
@@ -1903,11 +1911,28 @@ export class MapUI {
     })
     canvas.addEventListener('pointercancel', () => {
       stroke = undefined
-      displayStroke([])
+      this.drawRouteInk([])
     })
   }
 
+  private drawRouteInk(points: RoutePoint[]): void {
+    const map = this.map
+    if (!map || !this.mapStyleReady || this.panelEl.hidden) return
+    const source = map.getSource('tm-route-ink') as GeoJSONSource | undefined
+    if (!source && points.length < 2) return
+    const data: FeatureCollection<LineString> = { type: 'FeatureCollection',
+      features: points.length >= 2 ? [{ type: 'Feature', properties: {},
+        geometry: { type: 'LineString', coordinates: points } }] : [] }
+    if (source) source.setData(data)
+    else {
+      map.addSource('tm-route-ink', { type: 'geojson', data })
+      map.addLayer({ id: 'tm-route-ink', type: 'line', source: 'tm-route-ink',
+        paint: { 'line-color': '#bb8138', 'line-width': 3, 'line-dasharray': [2, 1] } })
+    }
+  }
+
   private renderList(): void {
+    if (!this.wikiEl.hidden) return
     if (this.currentPlace) {
       this.placeEl.classList.add('tm-place-inline')
       this.placeEl.hidden = false
@@ -1958,11 +1983,6 @@ export class MapUI {
       for (const candidate of this.state.wiki) {
         this.listEl.append(this.wikiItem(candidate))
       }
-      return
-    }
-
-    if (this.tab === 'route') {
-      this.renderRouteTab()
       return
     }
 
@@ -2197,11 +2217,10 @@ export class MapUI {
   }
 
   private openPlace(place: Place): void {
+    this.closeWiki(false)
     this.currentPlace = place
     this.state.viewedPlace = place
     this.renderViewedMarker()
-    this.wikiEl.hidden = true
-    this.state.wikiOpen = false
     saveState(this.ctx, this.state)
     this.placeEl.classList.add('tm-place-inline')
     this.placeEl.hidden = false
@@ -2249,9 +2268,7 @@ export class MapUI {
       : '写下地点笔记（不收藏也会保存）…'
     if (document.activeElement !== this.placeNoteEl) this.placeNoteEl.value = note
     this.placeNoteStatusEl.textContent = note || saved ? '自动保存' : ''
-    if (this.placeRouteModeEl) this.placeRouteModeEl.value = this.routeMode
     this.renderPlaceInfo(place)
-    this.renderPlaceRoute()
   }
 
   private realCheck(labelText: string, checked: boolean, change: (checked: boolean) => void): HTMLLabelElement {
@@ -2305,6 +2322,10 @@ export class MapUI {
 
   private renderPlaceInfo(place: Place): void {
     const key = placeKey(place)
+    if (this.placeInfoEl.dataset.placeKey === key) {
+      this.syncRealPlaceChecks()
+      return
+    }
     const section = (name: string, part: RealPlacePart): HTMLElement => {
       const content = document.createElement('section')
       content.className = 'tm-real-content'
@@ -2326,29 +2347,9 @@ export class MapUI {
       this.sync()
     })
     source.append(sourceText)
-    const links = section('链接来源 / Wiki 正文', 'wiki')
-    for (const url of realLinks(place)) {
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.target = '_blank'
-      anchor.rel = 'noreferrer'
-      anchor.textContent = url.replace(/^https?:\/\//i, '').split('/')[0]
-      anchor.title = url
-      const row = document.createElement('div')
-      row.className = 'tm-saved-actions'
-      row.append(anchor)
-      const wiki = /^https?:\/\/([a-z-]+)\.wikipedia\.org\/wiki\/([^?#]+)$/i.exec(url)
-      if (wiki) row.append(this.miniButton('抓取 Wiki 正文', () => {
-        void wikiPageFull(wiki[1], decodeURIComponent(wiki[2]).replaceAll('_', ' ')).then((text) => {
-          if (!text.trim()) { this.toast('维基没有返回正文'); return }
-          setGlobalNote(`real-wiki:${key}`, text)
-          if (this.currentPlace && placeKey(this.currentPlace) === key) this.placeInfoEl.replaceChildren()
-          this.sync()
-          if (this.currentPlace && placeKey(this.currentPlace) === key) this.renderPlace()
-        }).catch((error) => this.toast(`读取 Wiki 失败：${errorMessage(error)}`))
-      }))
-      links.append(row)
-    }
+    const links = section('Wiki 链接', 'wiki')
+    this.renderPlaceSourceLinks(place, source)
+    links.append(this.placeWikiLinks(place))
     const add = document.createElement('input')
     add.type = 'url'
     add.placeholder = 'https://…'
@@ -2363,6 +2364,7 @@ export class MapUI {
           const previous = globalNote(`real-links:${key}`)
           setGlobalNote(`real-links:${key}`, [previous, url.href].filter(Boolean).join('\n'))
         }
+        delete this.placeInfoEl.dataset.placeKey
         this.renderPlace()
       } catch { this.toast('请输入有效的 HTTP 或 HTTPS 链接') }
     }))
@@ -2376,12 +2378,96 @@ export class MapUI {
       this.sync()
     })
     links.append(wikiText)
-    if (!this.placeInfoEl.contains(document.activeElement) || this.placeInfoEl.dataset.placeKey !== key) {
-      this.placeInfoEl.replaceChildren(source, links)
-      this.placeInfoEl.dataset.placeKey = key
-    }
+    this.placeInfoEl.replaceChildren(source, links)
+    this.placeInfoEl.dataset.placeKey = key
     this.placeInfoEl.hidden = false
     this.panelEl.querySelector('#tm-place-note-ai')!.replaceChildren(this.realPlaceCheck(place, 'note'))
+  }
+
+  private renderPlaceSourceLinks(place: Place, root: HTMLElement): void {
+    const urls = realLinks(place).filter((url) => !wikiArticleLink(url))
+    if (!urls.length) return
+    const list = document.createElement('div')
+    list.className = 'tm-source-links'
+    for (const url of urls) {
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.target = '_blank'
+      anchor.rel = 'noreferrer'
+      anchor.textContent = url.replace(/^https?:\/\//i, '').split('/')[0]
+      anchor.title = url
+      list.append(anchor)
+    }
+    root.append(list)
+  }
+
+  private placeWikiLinks(place: Place): HTMLElement {
+    const host = document.createElement('div')
+    host.className = 'tm-place-wiki-links'
+    const direct = document.createElement('div')
+    direct.className = 'tm-wiki-entries'
+    const articles = (current: Place): WikiCandidate[] => realLinks(current).flatMap((url) => {
+      const article = wikiArticleLink(url)
+      return article ? [article] : []
+    })
+    const articleKey = ({ lang, title }: WikiCandidate) => `${lang}:${title.trim().toLowerCase()}`
+    let directArticles = articles(place)
+    const button = (article: WikiCandidate): HTMLButtonElement =>
+      this.miniButton(`${article.title} · ${langLabel(article.lang)} ›`, () => void this.openWiki(article))
+    const fillDirect = () => direct.replaceChildren(...(directArticles.length
+      ? [...new Map(directArticles.map((article) => [articleKey(article), article])).values()].map(button)
+      : [this.empty('暂无本地点的 Wiki 条目')]))
+    const details = (title: string, load: () => Promise<WikiCandidate[]>): HTMLDetailsElement => {
+      const container = document.createElement('details')
+      const summary = document.createElement('summary')
+      summary.textContent = title
+      const results = document.createElement('div')
+      results.className = 'tm-wiki-entries'
+      results.setAttribute('aria-live', 'polite')
+      let loaded = false
+      let loading = false
+      const run = async () => {
+        if (loaded || loading) return
+        loading = true
+        results.textContent = '正在查找 Wiki 条目…'
+        try {
+          const candidates = await load()
+          const unique = new Map(candidates.map((article) => [articleKey(article), article]))
+          directArticles.forEach((article) => unique.delete(articleKey(article)))
+          // Nearby and related articles are suggestions, even without map markers.
+          const available = [...unique.values()].slice(0, 8)
+          results.replaceChildren(...(available.length ? available.map(button) : [this.empty('暂无 Wiki 条目')]))
+          loaded = true
+        } catch {
+          results.replaceChildren(this.empty('Wiki 列表加载失败'), this.miniButton('重试', () => void run()))
+        } finally {
+          loading = false
+        }
+      }
+      container.append(summary, results)
+      container.addEventListener('toggle', () => { if (container.open) void run() })
+      return container
+    }
+    const loadTags = async () => {
+      const osm = /^(node|way|relation)\/(\d+)$/.exec(placeKey(place))
+      if (!osm || place.tags) return
+      const tags = await osmPlaceTags(osm[1], Number(osm[2]))
+      if (tags) {
+        place.tags = tags
+        directArticles = articles(place)
+      }
+    }
+    host.append('本地点', direct,
+      details('附近 Wiki', () => wikiNearby(place.lat, place.lng, Math.max(300, this.settings.radiusM), this.settings.wikiLangs)),
+      details('相关 Wiki', async () => {
+        await tagsReady
+        const preferred = directArticles.find((article) => article.lang === this.settings.wikiDisplayLang) ?? directArticles[0]
+        return preferred ? wikiRelated(preferred) : []
+      }))
+    const tagsReady = loadTags().finally(fillDirect)
+    if (directArticles.length) fillDirect()
+    else direct.textContent = '正在查找本地点的 Wiki 条目…'
+    return host
   }
 
   private onPlaceNoteInput(): void {
@@ -2391,17 +2477,6 @@ export class MapUI {
     this.sync()
     this.placeNoteStatusEl.textContent = '保存中…'
     this.scheduleNoteSave()
-  }
-
-  private itineraryMatches(place: Place): boolean {
-    const itinerary = this.state.itinerary
-    if (!itinerary) return false
-    if (itinerary.to.id && place.id) {
-      return (
-        placeKey({ id: itinerary.to.id, lat: itinerary.to.lat, lng: itinerary.to.lng }) === placeKey(place)
-      )
-    }
-    return haversine(itinerary.to.lat, itinerary.to.lng, place.lat, place.lng) < 15
   }
 
   private itineraryText(itinerary: RouteItinerary): string {
@@ -2454,33 +2529,6 @@ export class MapUI {
       .catch(() => this.toast('复制失败，请手动选择文本'))
   }
 
-  private renderPlaceRoute(): void {
-    const itinerary = this.state.itinerary
-    const place = this.currentPlace
-    const matches = Boolean(place && itinerary && this.itineraryMatches(place))
-    this.placeRouteSummaryEl.hidden = !matches
-    this.placeClearEl.hidden = !matches
-    if (!matches || !itinerary) {
-      this.placeStartEl.hidden = true
-      this.placeStopEl.hidden = true
-      this.placeProgressEl.hidden = true
-      this.placeBarEl.style.width = '0%'
-      this.placeRouteStepsEl.replaceChildren()
-      return
-    }
-    const fallback = itinerary.fallback ? ' · 直线估计' : ''
-    const mode = itinerary.plan ? `${itinerary.plan.legs.length} 段` : ROUTE_MODE_LABELS[itinerary.profile]
-    this.placeRouteTextEl.textContent = `${mode} · ${formatDistance(itinerary.distance)}${itinerary.plan ? '' : fallback}`
-    this.placeStartEl.hidden = !this.currentRoute || this.moving
-    this.placeStopEl.hidden = !this.moving
-    this.placeProgressEl.hidden = !this.moving
-    this.placeBarEl.style.width = `${Math.round(this.moveProgress * 100)}%`
-    if (itinerary.plan) this.placeRouteStepsEl.replaceChildren()
-    else this.fillRouteSteps(this.placeRouteStepsEl, itinerary)
-    this.syncRoutePoiControls()
-    this.syncRouteAiCheckboxes()
-  }
-
   private syncRoutePoiControls(): void {
     if (!this.panelEl) return
     for (const input of this.panelEl.querySelectorAll<HTMLInputElement>('[data-route-pois]')) {
@@ -2524,7 +2572,7 @@ export class MapUI {
       this.writeRealAiSettingsToForm()
       this.sync()
       this.drawActiveRoute()
-      this.renderList()
+      this.renderRealRouteShelf()
     })
     const limit = document.createElement('label')
     limit.className = 'tm-route-limit'
@@ -2541,7 +2589,7 @@ export class MapUI {
       this.writeRealAiSettingsToForm()
       this.sync()
       this.drawActiveRoute()
-      this.renderList()
+      this.renderRealRouteShelf()
     })
     limit.append('每段最多 ', count)
     controls.append(toggle, radius, limit, current)
@@ -2618,20 +2666,6 @@ export class MapUI {
     })
   }
 
-  private syncRouteAiCheckboxes(): void {
-    const checked = Boolean(this.state.itinerary?.showToAI)
-    for (const input of this.panelEl.querySelectorAll<HTMLInputElement>('[data-route-ai]')) {
-      input.checked = checked
-    }
-  }
-
-  private onPlaceRouteModeChange(): void {
-    const value = this.placeRouteModeEl.value as RouteProfile
-    if (!ROUTE_MODES.includes(value)) return
-    this.routeMode = value
-    if (this.currentPlace) void this.planRouteTo(this.currentPlace, value)
-  }
-
   private fallbackStreet(place: Place): string | undefined {
     const address = this.state.place?.address || place.address || ''
     return address.split(',')[0]?.trim() || undefined
@@ -2706,49 +2740,46 @@ export class MapUI {
     })
   }
 
-  private async planRouteTo(place: Place, mode: RouteProfile = this.routeMode): Promise<void> {
-    if (this.state.positionCleared) {
-      this.toast('请先放置“我”，或从地图上选择行程起点')
-      this.editRealRoute()
-      this.setMapTool('stop')
-      return
-    }
-    if (haversine(this.state.center.lat, this.state.center.lng, place.lat, place.lng) < 5) {
-      this.toast('已经在这个地点')
-      return
-    }
-    this.routeMode = mode
-    this.state.routeDraft = {
-      stops: [this.realStart(), place],
-      legs: [{ mode, guide: [] }],
-    }
-    this.setRouteTab()
-    await this.saveRealRoute(true)
-  }
-
   private realStart(): RealStop {
     return { ...this.state.center, id: this.state.place?.id, name: this.state.place?.name ?? '当前位置' }
   }
 
-  private setRouteTab(): void {
-    this.closePlace()
-    this.tab = 'route'
-    this.state.lastTab = 'route'
+  private toggleRealRouteShelf(): void {
+    this.routeShelfOpen = !this.routeShelfOpen
+    if (this.routeShelfOpen && this.state.routeDraft && this.mapTool === 'browse' && !this.routeRunning) this.setMapTool('stop')
+    this.renderRealRouteShelf()
+    this.drawActiveRoute()
+    if (this.routeShelfOpen) this.panelEl.querySelector<HTMLButtonElement>('#tm-route-shelf button')?.focus()
   }
 
-  private editRealRoute(): void {
-    if (this.moving) this.stopMovement()
+  private editRealRoute(fromHere = false): void {
     if (!this.state.routeDraft) {
       this.state.routeDraft = this.state.itinerary
         ? editableRoute(this.state.itinerary)
-        : this.state.positionCleared
-          ? { stops: [], legs: [] }
-          : { stops: [this.realStart()], legs: [] }
+        : { stops: [], legs: [] }
       this.routeSelection = this.state.routeDraft.legs.length
+      this.expandedRouteLeg = -1
+      this.nextLegMode = 'manual'
       this.routeRedo = []
     }
-    this.setRouteTab()
+    this.routeShelfOpen = true
+    this.routeStatus = ''
+    this.setMapTool('stop')
+    if (fromHere && !this.state.positionCleared && !this.state.routeDraft.stops.length) {
+      this.addRealStop(this.realStart())
+    } else {
+      this.updateRouteDraft()
+    }
+  }
+
+  private cancelRealRoute(): void {
+    delete this.state.routeDraft
+    this.routeRedo = []
+    this.routeShelfOpen = false
+    this.routeStatus = ''
+    this.setMapTool('browse')
     this.updateRouteDraft()
+    this.panelEl.querySelector<HTMLButtonElement>('[data-action=real-itinerary]')?.focus()
   }
 
   private updateRouteDraft(): void {
@@ -2758,7 +2789,7 @@ export class MapUI {
     saveState(this.ctx, this.state)
     this.drawActiveRoute()
     this.updateRouteCount()
-    this.renderList()
+    this.renderRealRouteShelf()
     this.refreshDraftPois()
   }
 
@@ -2788,22 +2819,27 @@ export class MapUI {
       }
       draft.legs.splice(index, 1, ...guides.map((guide) => ({ mode: leg.mode, guide })))
       this.insertStopAt = undefined
+      this.drawRouteInk([])
       this.routeRedo = []
       this.routeSelection = index
       this.updateRouteDraft()
       return
     }
-    if (previous) draft.legs.push({ mode: 'manual', guide: [...this.pendingGuide] })
+    if (previous) draft.legs.push({ mode: this.nextLegMode, guide: [...this.pendingGuide] })
+    this.drawRouteInk([])
     draft.stops.push({ id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng })
     this.pendingGuide = []
     this.routeRedo = []
-    this.routeSelection = draft.legs.length ? draft.legs.length - 1 : 0
+    this.routeSelection = Math.max(0, draft.legs.length - 1)
+    this.routeStatus = ''
     this.updateRouteDraft()
   }
 
   private undoRealStop(): void {
     const draft = this.state.routeDraft
     if (!draft?.legs.length) return
+    this.setMapTool('stop')
+    this.routeStatus = ''
     this.routeRedo.push({ stop: draft.stops.pop()!, leg: draft.legs.pop()! })
     this.pendingGuide = []
     this.routeSelection = Math.max(0, draft.legs.length - 1)
@@ -2814,6 +2850,7 @@ export class MapUI {
     const draft = this.state.routeDraft
     const next = this.routeRedo.pop()
     if (!draft || !next) return
+    this.setMapTool('stop')
     draft.stops.push(next.stop)
     draft.legs.push(next.leg)
     this.routeSelection = draft.legs.length - 1
@@ -2825,6 +2862,7 @@ export class MapUI {
     if (!draft || draft.legs[index].mode === mode) return
     draft.legs[index] = { mode, guide: draft.legs[index].guide }
     this.routeSelection = index
+    this.expandedRouteLeg = index
     this.updateRouteDraft()
   }
 
@@ -2875,17 +2913,19 @@ export class MapUI {
     if (!draft?.legs[index] || this.routeRunning) return
     const seq = ++this.routeSeq
     this.routeRunning = true
-    this.setStatus('正在计算本段…')
+    this.routeStatus = `正在计算第 ${index + 1} 段…`
+    this.renderRealRouteShelf()
     try {
       const leg = await this.solveRealLeg(draft, index, draft.departure)
       if (seq !== this.routeSeq) return
       draft.legs[index] = leg
-      this.setStatus(leg.fallback ? this.legFallback(leg) : '本段预览已更新')
+      this.routeStatus = leg.fallback ? this.legFallback(leg) : `第 ${index + 1} 段已更新`
       this.updateRouteDraft()
     } catch (error) {
       if (seq !== this.routeSeq) return
       this.routeRunning = false
-      this.setStatus(errorMessage(error))
+      this.routeStatus = `第 ${index + 1} 段计算失败：${errorMessage(error)}`
+      this.renderRealRouteShelf()
     }
   }
 
@@ -2899,12 +2939,17 @@ export class MapUI {
     const seq = ++this.routeSeq
     this.routeRunning = true
     this.setMapTool('browse')
-    this.setStatus('正在计算行程…')
+    this.routeStatus = '正在计算行程…'
+    this.renderRealRouteShelf()
     const plan = structuredClone(draft)
     plan.departure ??= Date.now()
     let departure: number | undefined = plan.departure
     try {
       for (let index = 0; index < plan.legs.length; index += 1) {
+        if (plan.legs[index].mode !== 'manual') {
+          this.routeStatus = `正在计算第 ${index + 1}/${plan.legs.length} 段…`
+          this.renderRealRouteShelf()
+        }
         const leg = await this.solveRealLeg(plan, index, departure)
         if (seq !== this.routeSeq) return
         plan.legs[index] = leg
@@ -2915,7 +2960,8 @@ export class MapUI {
       this.state.itinerary = {
         from: plan.stops[0],
         to: plan.stops.at(-1)!,
-        profile: this.routeMode,
+        profile: plan.legs.map((leg) => leg.mode).find((mode): mode is RouteProfile =>
+          mode === 'foot' || mode === 'driving' || mode === 'transit') ?? 'foot',
         distance: plan.legs.reduce((total, leg) => total + (leg.distance ?? 0), 0),
         duration: plan.legs.reduce((total, leg) => total + (leg.duration ?? 0), 0),
         fallback: plan.legs.some((leg) => leg.fallback),
@@ -2927,7 +2973,8 @@ export class MapUI {
       }
       this.routeRunning = false
       delete this.state.routeDraft
-      this.pendingGuide = []
+      this.routeShelfOpen = false
+      this.routeStatus = ''
       this.routeRedo = []
       this.restoreRealRoute()
       this.saveSharedRoute()
@@ -2938,7 +2985,9 @@ export class MapUI {
     } catch (error) {
       if (seq !== this.routeSeq) return
       this.routeRunning = false
-      this.setStatus(`路线规划失败：${errorMessage(error)}`)
+      this.routeStatus = `路线规划失败：${errorMessage(error)}`
+      this.setMapTool('stop')
+      this.renderRealRouteShelf()
     }
   }
 
@@ -2981,7 +3030,6 @@ export class MapUI {
   private restoreRealRoute(): void {
     const itinerary = this.state.itinerary
     const plan = itinerary?.plan
-    this.moveProgress = itinerary?.progress ?? 0
     this.currentRoute = itinerary && plan?.legs.length ? {
       coordinates: planPath(plan),
       distance: itinerary.distance,
@@ -3005,7 +3053,7 @@ export class MapUI {
     saveState(this.ctx, this.state)
     this.sync()
     this.drawActiveRoute()
-    if (this.tab === 'route' && !this.state.routeDraft) this.renderList()
+    if (!this.state.routeDraft) this.renderRealRouteShelf()
   }
 
   private populateLegPois(plan: RealRouteDraft, pois: RoutePoi[]): void {
@@ -3037,14 +3085,14 @@ export class MapUI {
       const local = this.visibleRouteCandidates()
       this.populateLegPois(draft, local)
       this.drawActiveRoute()
-      if (this.tab === 'route' && this.mapTool !== 'draw') this.renderList()
+      if (this.mapTool !== 'draw') this.renderRealRouteShelf()
       void fetchRoutePois(path, radius).then((fetched) => {
         if (draft !== this.state.routeDraft || seq !== this.routeSeq ||
             radius !== this.settings.routePoiRadiusM || !this.settings.showRoutePois) return
         const candidates = new Map([...local, ...fetched].map((poi) => [placeKey(poi), poi]))
         this.populateLegPois(draft, [...candidates.values()])
         this.drawActiveRoute()
-        if (this.tab === 'route' && this.mapTool !== 'draw') this.renderList()
+        if (this.mapTool !== 'draw') this.renderRealRouteShelf()
       })
     }, 650)
   }
@@ -3094,7 +3142,7 @@ export class MapUI {
     const itinerary = this.state.itinerary
     const plan = draft ?? itinerary?.plan
     const features: Array<Feature<LineString>> = []
-    const showRange = this.settings.showRoutePois && (this.tab === 'route' || Boolean(draft))
+    const showRange = this.settings.showRoutePois && (this.routeShelfOpen || Boolean(draft))
     const active = itinerary ? currentRouteLeg(itinerary) : 0
     plan?.legs.forEach((leg, index) => {
       features.push({
@@ -3102,7 +3150,6 @@ export class MapUI {
         properties: {
           color: leg.mode === 'manual' ? '#e6b56a' : leg.mode === 'snap' ? '#93d6a9' : '#64c8ed',
           dash: Boolean(leg.fallback || (!leg.line && leg.mode !== 'manual')),
-          range: showRange && (draft || !this.settings.realRouteCurrentOnly || index === active) ? 1 : 0,
           selected: draft && index === this.routeSelection ? 1 : 0,
         },
         geometry: { type: 'LineString', coordinates: legPath(plan, index) },
@@ -3120,12 +3167,6 @@ export class MapUI {
     if (source) source.setData(data)
     else {
       map.addSource(ROUTE_SOURCE, { type: 'geojson', data })
-      map.addLayer({
-        id: 'tm-route-range', type: 'line', source: ROUTE_SOURCE,
-        filter: ['==', ['get', 'range'], 1],
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#e9bf68', 'line-opacity': 0.14, 'line-width': 0 },
-      })
       for (const dash of [false, true]) {
         map.addLayer({
           id: dash ? 'tm-route-dashed' : 'tm-route-line', type: 'line', source: ROUTE_SOURCE,
@@ -3141,22 +3182,21 @@ export class MapUI {
     }
     this.routeMarkers.forEach((marker) => marker.remove())
     this.routeMarkers = []
-    if (plan && (this.tab === 'route' || draft)) {
+    if (plan) {
       plan.stops.forEach((stop, index) => {
         const button = this.miniButton(String(index + 1), () => undefined)
         button.className = 'tm-route-stop-pin'
         button.title = stop.name
         button.addEventListener('click', (event) => {
           event.stopPropagation()
-          this.routeSelection = Math.min(index, Math.max(0, plan.legs.length - 1))
-          this.selectRealLeg(this.routeSelection)
+          this.viewRealStop(stop)
         })
-        const marker = new Marker({ element: button, draggable: Boolean(draft) })
+        const marker = new Marker({ element: button, draggable: Boolean(draft && !this.routeRunning) })
           .setLngLat(stopPoint(stop)).addTo(map)
         if (draft) marker.on('dragend', () => {
           if (this.state.routeDraft !== draft) return
           const point = marker.getLngLat().wrap()
-          draft.stops[index] = { name: stop.name, lat: point.lat, lng: point.lng }
+          draft.stops[index] = { name: `经停点 ${index + 1}`, lat: point.lat, lng: point.lng }
           for (const legIndex of [index - 1, index]) {
             const leg = draft.legs[legIndex]
             if (leg) draft.legs[legIndex] = { mode: leg.mode, guide: leg.guide }
@@ -3234,17 +3274,18 @@ export class MapUI {
     const poiSource = this.map?.getSource('tm-route-pois') as GeoJSONSource | undefined
     poiSource?.setData({ type: 'FeatureCollection', features: [] })
     this.panelEl.querySelector<HTMLElement>('#tm-route-width')!.hidden = true
+    this.panelEl.querySelector<HTMLElement>('#tm-route-band')!.hidden = true
   }
 
   private clearItinerary(): void {
-    if (this.moving) this.stopMovement()
     this.routeSeq += 1
     this.routeRunning = false
     delete this.state.itinerary
     delete this.state.routeDraft
     this.pendingGuide = []
     this.routeRedo = []
-    this.moveProgress = 0
+    this.routeShelfOpen = false
+    this.routeStatus = ''
     this.clearRouteLine()
     this.setMapTool('browse')
     this.saveSharedRoute()
@@ -3263,155 +3304,223 @@ export class MapUI {
 
   private selectRealLeg(index: number): void {
     this.routeSelection = index
+    this.expandedRouteLeg = this.expandedRouteLeg === index ? -1 : index
     this.drawActiveRoute()
-    this.renderList()
+    this.renderRealRouteShelf()
   }
 
-  private renderRouteTab(): void {
+  private viewRealStop(stop: RealStop): void {
+    const place = stop.id && (this.poisById.get(stop.id) ?? this.routePoiById.get(stop.id) ??
+      [...this.state.nearby, ...this.state.savedPlaces, this.state.place].find((candidate) => candidate?.id === stop.id))
+    if (stop.id) this.openPlace(place || { ...stop, id: stop.id })
+    this.map?.easeTo({ center: stopPoint(stop), duration: 250 })
+  }
+
+  private routeModePicker(value: LegMode, change: (mode: LegMode) => void, guide = false): HTMLElement {
+    const picker = document.createElement('details')
+    picker.className = 'tm-leg-picker'
+    const summary = document.createElement('summary')
+    summary.textContent = value === 'manual' && !guide ? '直线' : LEG_MODES[value]
+    const choices = document.createElement('div')
+    for (const [mode, name] of Object.entries(LEG_MODES) as [LegMode, string][]) {
+      const title = mode === 'manual' ? '直线 / 手绘' : name
+      const choose = this.miniButton(title, () => {
+        picker.open = false
+        change(mode)
+      })
+      choose.setAttribute('aria-pressed', String(mode === value))
+      choices.append(choose)
+    }
+    picker.append(summary, choices)
+    return picker
+  }
+
+  private renderRealRouteShelf(): void {
+    const shelf = this.panelEl.querySelector<HTMLElement>('#tm-route-shelf')!
+    const trigger = this.panelEl.querySelector<HTMLButtonElement>('[data-action=real-itinerary]')!
     const draft = this.state.routeDraft
     const itinerary = this.state.itinerary
-    const plan = draft ?? itinerary?.plan
-    this.listEl.replaceChildren()
-    const card = document.createElement('div')
-    card.className = 'tm-itinerary-card'
-    const head = document.createElement('div')
-    head.className = 'tm-itinerary-head'
+    const plan = draft ?? (itinerary ? editableRoute(itinerary) : undefined)
+    const savedBodyScroll = shelf.querySelector('.tml-route-body')?.scrollTop ?? 0
+    shelf.hidden = !this.routeShelfOpen && !plan
+    trigger.setAttribute('aria-expanded', String(this.routeShelfOpen))
+    if (shelf.hidden) return
+    const head = document.createElement('header')
+    head.className = 'tml-route-head'
+    const heading = document.createElement('div')
+    heading.className = 'tml-route-heading'
     const title = document.createElement('strong')
-    title.textContent = draft ? '行程编辑' : '行程'
-    head.append(title)
-    card.append(head)
+    title.textContent = draft ? '行程编辑' : itinerary ? '行程' : '规划行程'
+    const summary = document.createElement('span')
+    summary.className = 'tml-route-summary'
+    summary.textContent = draft
+      ? this.routeStatus || (this.mapTool === 'draw' ? '点折点或拖画路径'
+        : this.mapTool === 'browse' ? '展开继续编辑'
+        : draft.stops.length ? `${draft.stops.length} 站 · 点击地图添加下一站` : '点击地图选择第一站')
+      : itinerary ? `${plan!.stops.length} 站 · ${formatDistance(itinerary.distance)}${itinerary.duration ? ` · 约 ${formatDurationShort(itinerary.duration)}` : ''}`
+        : '依次添加起点、经停点和终点'
+    summary.setAttribute('role', 'status')
+    heading.append(title, summary)
+    const actions = document.createElement('div')
+    actions.className = 'tml-route-actions'
+    const button = (label: string, run: () => void, primary = false): HTMLButtonElement => {
+      const result = this.miniButton(label, run)
+      result.className = `tml-route-action${primary ? ' tml-primary' : ''}`
+      return result
+    }
     if (draft) {
-      head.append(
-        this.miniButton('撤销上一站', () => this.undoRealStop()),
-        this.miniButton('重做', () => this.redoRealStop()),
-        this.miniButton('保存', () => void this.saveRealRoute()),
-        this.miniButton('取消', () => {
-          delete this.state.routeDraft
+      const undo = button('撤销上一站', () => this.undoRealStop())
+      undo.disabled = this.routeRunning || draft.legs.length === 0
+      const finish = button(this.routeRunning ? '计算中…' : '完成', () => void this.saveRealRoute(), true)
+      finish.disabled = this.routeRunning || draft.legs.length === 0
+      actions.append(undo, finish, button('取消', () => this.cancelRealRoute()))
+    } else if (itinerary) {
+      const nextStop = this.realRouteNextIndex(itinerary)
+      const next = button(nextStop === undefined ? '已到终点' : nextStop === 0 ? '前往起点：1' : `前往下一站：${nextStop + 1}`, () => this.goToNextRealStop(), true)
+      next.disabled = nextStop === undefined
+      actions.append(next, button('编辑', () => this.editRealRoute()))
+      const clear = button('清除', () => {
+        if (window.confirm('清除当前行程？')) this.clearItinerary()
+      })
+      clear.classList.add('tml-danger-text')
+      actions.append(clear)
+    } else {
+      actions.append(button('规划行程', () => this.editRealRoute(), true))
+      if (!this.state.positionCleared) actions.append(button('从我的位置开始', () => this.editRealRoute(true)))
+    }
+    actions.append(button(this.routeShelfOpen ? '收起' : '展开', () => this.toggleRealRouteShelf()))
+    head.append(heading, actions)
+    shelf.replaceChildren(head)
+    if (!this.routeShelfOpen || !plan) return
+    if (draft && !draft.stops.length) {
+      const body = document.createElement('div')
+      body.className = 'tml-route-body'
+      if (!this.state.positionCleared) body.append(button('从我的位置开始', () => this.editRealRoute(true)))
+      body.append(this.empty('也可聚焦地图，按 Enter 将地图中心设为一站。'))
+      shelf.append(body)
+      return
+    }
+    const tools = document.createElement('div')
+    tools.className = 'tml-route-tools'
+    if (draft && !this.routeRunning) {
+      const caption = document.createElement('span')
+      caption.textContent = '下一段'
+      tools.append(caption, this.routeModePicker(this.nextLegMode, (mode) => {
+        this.nextLegMode = mode
+        this.routeStatus = ''
+        if (mode !== 'manual' && mode !== 'snap') {
           this.pendingGuide = []
-          this.routeRedo = []
-          this.setMapTool('browse')
-          this.updateRouteDraft()
-        }),
-      )
-      const buttons = head.querySelectorAll('button')
-      buttons[0].disabled = !draft.legs.length
-      buttons[1].disabled = !this.routeRedo.length
-      buttons[2].disabled = !draft.legs.length
-      const tools = document.createElement('div')
-      tools.className = 'tm-saved-actions'
-      tools.append(
-        this.miniButton('浏览', () => this.setMapTool('browse')),
-        this.miniButton('画下一段', () => {
-          if (!draft.stops.length) { this.setMapTool('stop'); return }
+          this.setMapTool('stop')
+        }
+        this.updateRouteDraft()
+      }, this.pendingGuide.length > 0))
+      if (this.nextLegMode === 'manual' || this.nextLegMode === 'snap') {
+        const drawing = this.mapTool === 'draw' && this.routeSelection === draft.legs.length
+        tools.append(button(drawing ? '选下一站' : '加折点 / 手绘', () => {
           this.routeSelection = draft.legs.length
-          this.setMapTool('draw')
-          this.renderList()
-        }),
-        this.miniButton('+ 地图经停点', () => this.setMapTool('stop')),
-      )
-      if (this.pendingGuide.length) tools.append(this.miniButton('撤销折点', () => {
+          this.routeStatus = ''
+          this.setMapTool(drawing ? 'stop' : 'draw')
+          this.renderRealRouteShelf()
+        }))
+      }
+      if (this.pendingGuide.length) tools.append(button('撤销折点', () => {
         this.pendingGuide.pop()
         this.updateRouteDraft()
       }))
-      card.append(tools)
-    } else if (itinerary) {
-      head.append(
-        this.miniButton('编辑行程', () => this.editRealRoute()),
-        this.miniButton('复制', () => this.copyItinerary()),
-        this.miniButton('清除', () => this.clearItinerary()),
-      )
-      const actions = document.createElement('div')
-      actions.className = 'tm-saved-actions'
-      if (this.moving) actions.append(this.miniButton('暂停', () => this.stopMovement()))
-      else if (this.currentRoute && this.moveProgress < 1) actions.append(
-        this.miniButton(this.moveProgress > 0 ? '继续移动' : '开始移动', () => this.startMovement()),
-        this.miniButton('前往下一站', () => this.goToNextRealStop()),
-      )
-      if (!this.currentRoute || this.moveProgress >= 1) {
-        actions.append(this.miniButton('重新规划', () => this.replanItinerary()))
-      }
-      const ai = this.realCheck('给 AI', itinerary.showToAI, (on) => {
-        itinerary.showToAI = on
-        this.commit()
-      })
-      actions.append(ai)
-      const summary = document.createElement('p')
-      const duration = itinerary.duration > 0
-        ? ` · 约 ${formatDurationShort(itinerary.duration)}${plan?.legs.some((leg) => leg.duration === undefined) ? '（已估时的段）' : ''}`
-        : ''
-      const active = currentRouteLeg(itinerary)
-      const position = plan && active >= 0 && this.moveProgress > 0 ? ` · 第 ${active + 1}/${plan.legs.length} 段`
-        : this.moveProgress >= 1 ? ' · 已到达' : ''
-      summary.textContent = `${formatDistance(itinerary.distance)}${duration}${position}`
-      card.append(summary, actions)
-      if (this.moveProgress > 0 || this.moving) {
-        const progress = document.createElement('div')
-        progress.className = 'tm-route-progress'
-        progress.setAttribute('aria-label', '行程进度')
-        const bar = document.createElement('div')
-        bar.className = 'tm-route-bar'
-        bar.style.width = `${Math.round(this.moveProgress * 100)}%`
-        progress.append(bar)
-        card.append(progress)
-      }
-    } else {
-      head.append(this.miniButton('新建行程', () => this.editRealRoute()))
+      if (this.routeRedo.length) tools.append(button('重做上一站', () => this.redoRealStop()))
     }
-    if (draft || itinerary) card.append(this.routePoiControls())
-    if (plan) {
-      const stops = document.createElement('ol')
-      stops.className = 'tm-real-route-stops'
-      plan.stops.forEach((stop, index) => {
-        const row = document.createElement('li')
-        row.append(this.miniButton(stop.name, () => this.map?.easeTo({ center: stopPoint(stop), duration: 250 })))
-        const leg = plan.legs[index]
-        if (leg) row.append(this.realLegRow(plan, index, Boolean(draft)))
-        stops.append(row)
-      })
-      card.append(stops)
-    } else if (itinerary) {
+    if (plan.legs.length) tools.append(this.routePoiControls())
+    const body = document.createElement('div')
+    body.className = 'tml-route-body'
+    if (tools.childElementCount) body.append(tools)
+    const stops = document.createElement('ol')
+    stops.className = 'tml-route-list'
+    plan.stops.forEach((stop, index) => {
+      const row = document.createElement('li')
+      row.className = 'tml-route-stop-row'
+      const badge = document.createElement('span')
+      badge.className = 'tml-route-badge'
+      badge.textContent = String(index + 1)
+      const label = index === 0 ? '起点' : index === plan.stops.length - 1 ? '终点' : '经停点'
+      row.append(badge, button(`${stop.name} · ${label} ›`, () => this.viewRealStop(stop)))
+      stops.append(row)
+      if (plan.legs[index]) stops.append(this.realLegRow(plan, index, Boolean(draft)))
+    })
+    body.append(stops)
+    if (!draft && itinerary && !itinerary.plan) {
       const steps = document.createElement('ol')
       steps.className = 'tm-route-steps'
       this.fillRouteSteps(steps, itinerary)
-      card.append(steps)
+      body.append(steps)
     }
-    this.listEl.append(card)
+    if (!draft && itinerary) {
+      const footer = document.createElement('div')
+      footer.className = 'tml-route-foot'
+      footer.append(this.realCheck('把本次行程发给 AI', itinerary.showToAI, (on) => {
+        itinerary.showToAI = on
+        this.commit()
+      }), button('复制行程', () => this.copyItinerary()))
+      if (itinerary.fallback || !itinerary.plan) footer.append(button('重新规划', () => this.replanItinerary()))
+      body.append(footer)
+    }
+    shelf.append(body)
+    body.scrollTop = savedBodyScroll
   }
 
   private realLegRow(plan: RealRouteDraft, index: number, editing: boolean): HTMLElement {
     const leg = plan.legs[index]
-    const row = document.createElement('div')
+    const row = document.createElement('li')
     row.className = 'tm-real-leg'
-    row.classList.toggle('active', this.routeSelection === index)
-    const label = this.miniButton(`${LEG_MODES[leg.mode]} · ${formatDistance(leg.distance ?? pathLength(legPath(plan, index)))}`, () => this.selectRealLeg(index))
+    const expanded = this.expandedRouteLeg === index
+    row.classList.toggle('active', expanded)
+    const itinerary = this.state.itinerary
+    const showPois = this.settings.showRoutePois && (editing || !this.settings.realRouteCurrentOnly ||
+      (itinerary && currentRouteLeg(itinerary) === index))
+    const pois = showPois ? this.legPois(leg, !editing && this.settings.realRouteCurrentOnly) : []
+    const modeName = leg.mode === 'manual' && !leg.guide.length ? '直线' : LEG_MODES[leg.mode]
+    const label = this.miniButton(`${expanded ? '⌄' : '›'} ${modeName} · ${formatDistance(leg.distance ?? pathLength(legPath(plan, index)))}${showPois ? ` · 沿途 ${pois.length} 个地点` : ''}`, () => this.selectRealLeg(index))
+    label.setAttribute('aria-expanded', String(expanded))
     row.append(label)
-    if (editing) {
-      const mode = document.createElement('select')
-      mode.setAttribute('aria-label', `第 ${index + 1} 段方式`)
-      for (const [value, name] of Object.entries(LEG_MODES)) mode.add(new Option(name, value))
-      mode.value = leg.mode
-      mode.addEventListener('change', () => this.changeRealLeg(index, mode.value as LegMode))
-      row.append(mode)
-      if (this.routeSelection === index && (leg.mode === 'manual' || leg.mode === 'snap')) {
-        row.append(this.miniButton('重画本段', () => {
-          plan.legs[index] = { mode: leg.mode, guide: [] }
-          this.setMapTool('draw')
+    if (editing && !this.routeRunning) {
+      row.append(this.routeModePicker(leg.mode, (mode) => {
+        this.setMapTool('stop')
+        this.changeRealLeg(index, mode)
+        if (mode !== 'manual') void this.previewRealLeg()
+      }, leg.guide.length > 0))
+      if (expanded && (leg.mode === 'manual' || leg.mode === 'snap')) {
+        const drawing = this.mapTool === 'draw' && this.routeSelection === index
+        row.append(this.miniButton(drawing ? '结束画线' : '重画本段', () => {
+          this.routeSelection = index
+          this.routeStatus = ''
+          if (!drawing) plan.legs[index] = { mode: leg.mode, guide: [] }
+          this.setMapTool(drawing ? 'stop' : 'draw')
           this.updateRouteDraft()
         }))
       }
-      if (this.routeSelection === index) row.append(this.miniButton('插入经停点', () => {
-        this.insertStopAt = index
+      if (expanded) row.append(this.miniButton('插入经停点', () => {
         this.setMapTool('stop')
+        this.insertStopAt = index
       }))
-      if (this.routeSelection === index && leg.mode !== 'manual') {
-        row.append(this.miniButton('预览本段', () => void this.previewRealLeg()))
+      if (expanded && leg.mode !== 'manual') {
+        row.append(this.miniButton(leg.fallback ? '重试本段' : '计算本段', () => {
+          this.routeSelection = index
+          void this.previewRealLeg()
+        }))
       }
     }
-    if (leg.fallback) row.append(this.empty(this.legFallback(leg)))
+    if (leg.fallback) {
+      row.append(this.empty(this.legFallback(leg)))
+      if (!editing && expanded) row.append(this.miniButton('重试本段', () => {
+        this.editRealRoute()
+        this.routeSelection = index
+        this.expandedRouteLeg = index
+        void this.previewRealLeg()
+      }))
+    }
     if (leg.mode === 'transit' && leg.line && leg.departure === undefined && index > 0) {
       row.append(this.empty('前段耗时未定，本段班次以查询时间为准'))
     }
-    if (this.routeSelection !== index) return row
+    if (!expanded) return row
     if (leg.steps?.length) {
       const list = document.createElement('ol')
       list.className = 'tm-route-steps'
@@ -3422,12 +3531,10 @@ export class MapUI {
       }
       row.append(list)
     }
-    const itinerary = this.state.itinerary
-    if (this.settings.showRoutePois && (editing || !this.settings.realRouteCurrentOnly ||
-        (itinerary && currentRouteLeg(itinerary) === index)) && this.legPois(leg, !editing && this.settings.realRouteCurrentOnly).length) {
+    if (pois.length) {
       const list = document.createElement('div')
       list.className = 'tm-route-step-pois'
-      for (const poi of this.legPois(leg, !editing && this.settings.realRouteCurrentOnly)) {
+      for (const poi of pois) {
         const button = this.miniButton(`${poi.name} · 距路线 ${formatDistance(poi.distanceM)}`, () => this.openPlace(poi))
         list.append(button)
         if (this.settings.realRouteSource) this.appendRealPart(list, realSource(poi))
@@ -3436,74 +3543,6 @@ export class MapUI {
       row.append(list)
     }
     return row
-  }
-
-  private startMovement(targetProgress = 1): void {
-    const route = this.currentRoute
-    const itinerary = this.state.itinerary
-    if (!route || !itinerary || this.moving || this.state.routeDraft) return
-    const coordinates = route.coordinates
-    const fromProgress = itinerary.progress ?? 0
-    if (coordinates.length < 2 || targetProgress <= fromProgress) return
-    this.moving = true
-    this.setMapTool('browse')
-    this.state.positionCleared = false
-    if (this.marker) this.marker.getElement().hidden = false
-    this.moveProgress = fromProgress
-    this.placeStartEl.hidden = true
-    this.placeStopEl.hidden = false
-    this.placeProgressEl.hidden = false
-    this.updateRouteBars(fromProgress)
-    const cumulative: number[] = [0]
-    for (let index = 1; index < coordinates.length; index += 1) {
-      const [lng1, lat1] = coordinates[index - 1]
-      const [lng2, lat2] = coordinates[index]
-      cumulative.push(cumulative[index - 1] + haversine(lat1, lng1, lat2, lng2))
-    }
-    const total = cumulative.at(-1) || route.distance || 1
-    const duration = Math.min(10000, Math.max(1400, total * (targetProgress - fromProgress) * 8))
-    const started = performance.now()
-    let previousLeg = currentRouteLeg(itinerary)
-    let distanceAtStop = 0
-    const stopThresholds = itinerary.plan
-      ? itinerary.plan.legs.map((_, index) => {
-          distanceAtStop += pathLength(legPath(itinerary.plan!, index))
-          return distanceAtStop / total
-        })
-      : []
-    const tick = (now: number): void => {
-      if (!this.moving) return
-      const fraction = Math.min(1, (now - started) / duration)
-      const progress = fromProgress + (targetProgress - fromProgress) * fraction
-      this.moveProgress = itinerary.progress = progress
-      const point = this.interpolateRoute(coordinates, cumulative, total * progress)
-      this.marker?.setLngLat(point)
-      this.updateRouteBars(progress)
-      this.setStatus(`移动中… ${formatDistance(total * progress)} / ${formatDistance(total)}`)
-      if (fraction >= 1) {
-        this.stopMovement(targetProgress >= 1 ? itinerary.to : this.nextStopAt(targetProgress))
-        return
-      }
-      const activeLeg = stopThresholds.findIndex((threshold) => progress < threshold)
-      if (activeLeg !== previousLeg) {
-        previousLeg = activeLeg
-        this.routeSelection = Math.max(0, activeLeg)
-        this.state.center = { lng: point[0], lat: point[1] }
-        this.state.place = undefined
-        this.state.nearby = []
-        this.pois = []
-        this.poisById.clear()
-        this.updatePoiSource()
-        this.drawRadius()
-        this.sync()
-        this.drawActiveRoute()
-        if (this.tab === 'route') this.renderList()
-      }
-      this.moveFrame = window.requestAnimationFrame(tick)
-    }
-    this.moveFrame = window.requestAnimationFrame(tick)
-    if (this.tab === 'route') this.renderList()
-    else this.renderPlace()
   }
 
   private nextStopAt(progress: number): RealStop | undefined {
@@ -3518,54 +3557,43 @@ export class MapUI {
     return undefined
   }
 
+  private realRouteNextIndex(itinerary: RouteItinerary): number | undefined {
+    const plan = itinerary.plan ?? editableRoute(itinerary)
+    if (this.state.positionCleared) return 0
+    const { lat, lng } = this.state.center
+    const progress = itinerary.progress ?? 0
+    const known = progress ? (progress >= 1 ? itinerary.to : this.nextStopAt(progress)) : itinerary.from
+    if (known && haversine(lat, lng, known.lat, known.lng) <= 8) {
+      const index = currentRouteLeg(itinerary)
+      return index >= 0 && progress < 1 ? Math.min(plan.stops.length - 1, index + 1) : undefined
+    }
+    const coordinates = this.currentRoute?.coordinates
+    if (!coordinates || coordinates.length < 2) return 0
+    const [near] = assignRoutePoisToSteps([{ coordinates }], [{ id: 'me', name: '我', lat, lng }], 25)[0]
+    if (near?.distanceM === undefined || near.distanceM > 8 || near.alongM === undefined) return 0
+    let distance = 0
+    for (const index of plan.legs.keys()) {
+      distance += pathLength(legPath(plan, index))
+      if (near.alongM < distance - 2) return index + 1
+    }
+    return undefined
+  }
+
   private goToNextRealStop(): void {
     const itinerary = this.state.itinerary
-    const plan = itinerary?.plan
-    if (!itinerary || !plan) return
-    const legIndex = currentRouteLeg(itinerary)
-    if (legIndex < 0) return
-    const full = pathLength(planPath(plan))
-    const end = plan.legs.slice(0, legIndex + 1).reduce((length, _, index) => length + pathLength(legPath(plan, index)), 0)
-    if (full > 0) this.startMovement(Math.min(1, end / full))
-  }
-
-  private interpolateRoute(
-    coordinates: Array<[number, number]>,
-    cumulative: number[],
-    target: number,
-  ): [number, number] {
-    for (let index = 1; index < coordinates.length; index += 1) {
-      if (target <= cumulative[index]) {
-        const span = cumulative[index] - cumulative[index - 1] || 1
-        const ratio = (target - cumulative[index - 1]) / span
-        const [lng1, lat1] = coordinates[index - 1]
-        const [lng2, lat2] = coordinates[index]
-        return [lng1 + (lng2 - lng1) * ratio, lat1 + (lat2 - lat1) * ratio]
-      }
-    }
-    return coordinates[coordinates.length - 1]
-  }
-
-  private updateRouteBars(progress: number): void {
-    for (const bar of this.panelEl.querySelectorAll<HTMLElement>('.tm-route-bar')) {
-      bar.style.width = `${Math.round(progress * 100)}%`
-    }
-  }
-
-  private stopMovement(destination?: RealStop): void {
-    if (!this.moving) return
-    this.moving = false
-    if (this.moveFrame !== null) window.cancelAnimationFrame(this.moveFrame)
-    this.moveFrame = null
-    const current = destination ?? this.marker?.getLngLat().wrap()
-    if (current) {
-      const place = destination?.id ? { ...destination, id: destination.id } : undefined
-      void this.moveTo(current.lat, current.lng, false, place)
-    }
+    if (!itinerary) return
+    const plan = itinerary.plan ?? editableRoute(itinerary)
+    const index = this.realRouteNextIndex(itinerary)
+    if (index === undefined) return
+    const stop = plan.stops[index]
+    const distance = pathLength(planPath(plan))
+    const traversed = plan.legs.slice(0, index).reduce((total, _, legIndex) => total + pathLength(legPath(plan, legIndex)), 0)
+    itinerary.progress = index === 0 ? 0 : index === plan.stops.length - 1 ? 1 : traversed / (distance || 1)
+    this.routeSelection = Math.min(index, plan.legs.length - 1)
+    const place = stop.id && (this.poisById.get(stop.id) ?? this.routePoiById.get(stop.id) ??
+      [...this.state.nearby, ...this.state.savedPlaces, this.state.place].find((candidate) => candidate?.id === stop.id))
+    void this.moveTo(stop.lat, stop.lng, true, place || (stop.id ? { ...stop, id: stop.id } : undefined))
     this.drawActiveRoute()
-    this.setStatus(destination ? `已到达 ${destination.name}` : '行程已暂停')
-    this.renderPlace()
-    if (this.tab === 'route') this.renderList()
   }
 
   private recenterOnPerson(): void {
@@ -4090,17 +4118,41 @@ export class MapUI {
     })
   }
 
-  private async openWiki(candidate: WikiCandidate, mode: 'intro' | 'full' = 'intro'): Promise<void> {
+  private closeWiki(restoreFocus = true): void {
+    if (this.wikiEl.hidden) return
+    const previous = this.wikiReturn
+    this.wikiReturn = undefined
+    this.wikiSeq += 1
+    this.fullSeq += 1
+    this.wikiEl.hidden = true
+    this.listEl.hidden = false
+    this.state.wikiOpen = false
+    saveState(this.ctx, this.state)
+    if (!restoreFocus) return
+    if (previous) {
+      this.listEl.scrollTop = previous.scroll
+      if (previous.trigger?.isConnected) previous.trigger.focus({ preventScroll: true })
+    } else {
+      this.renderList()
+      this.panelEl.querySelector<HTMLElement>(`[data-tab=${this.tab}]`)?.focus()
+    }
+  }
+
+  private async openWiki(candidate: WikiCandidate, mode = this.settings.wikiDisplayMode, usePreferredLanguage = true): Promise<void> {
     const seq = ++this.wikiSeq
+    if (this.wikiEl.hidden) {
+      this.wikiReturn = { trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null, scroll: this.listEl.scrollTop }
+    }
+    this.listEl.hidden = true
     this.wikiEl.hidden = false
-    this.placeEl.hidden = true
-    this.currentPlace = null
     this.wikiMode = mode
     this.wikiFullText = null
     this.wikiLangLinks = {}
     this.currentWiki = null
     this.wikiTitleEl.textContent = `[${langLabel(candidate.lang)}] ${candidate.title}`
+    this.wikiTitleEl.focus({ preventScroll: true })
     this.wikiBodyEl.textContent = '加载中…'
+    this.wikiBodyEl.scrollTop = 0
     this.wikiLinkEl.hidden = true
     this.starEl.disabled = true
     this.wikiNoteEl.value = ''
@@ -4108,18 +4160,18 @@ export class MapUI {
     this.wikiNoteStatusEl.textContent = ''
     this.renderWikiToolbar()
     this.renderAiLang()
-    this.render()
-    await this.loadWikiCandidate(candidate, seq, true)
+    await this.loadWikiCandidate(candidate, seq, usePreferredLanguage ? this.settings.wikiDisplayLang : undefined)
   }
 
   private async restoreWiki(ref: WikiRef): Promise<void> {
     await this.openWiki(
       { pageId: ref.pageId, title: ref.title, dist: 0, lang: ref.lang, lat: ref.lat, lng: ref.lng },
-      this.state.lastWikiMode ?? 'intro',
+      this.state.lastWikiMode ?? this.settings.wikiDisplayMode,
+      false,
     )
   }
 
-  private async loadWikiCandidate(candidate: WikiCandidate, seq: number, preserveMode: boolean): Promise<void> {
+  private async loadWikiCandidate(candidate: WikiCandidate, seq: number, preferredLang?: string): Promise<void> {
     const key = wikiCacheKey(candidate.lang, candidate.title)
     let page = await cacheGet<WikiPage>(key)
     const cachedUsable =
@@ -4136,7 +4188,8 @@ export class MapUI {
       } catch (error) {
         if (!page) {
           if (seq === this.wikiSeq) {
-            this.wikiBodyEl.textContent = `加载失败：${errorMessage(error)}`
+            this.wikiBodyEl.replaceChildren(this.empty(`加载失败：${errorMessage(error)}`),
+              this.miniButton('重试', () => void this.openWiki(candidate, this.wikiMode)))
             this.starEl.disabled = true
           }
           return
@@ -4152,22 +4205,24 @@ export class MapUI {
       return
     }
 
-    if (!preserveMode) this.wikiMode = 'intro'
-    this.wikiFullText = null
-    this.currentWiki = page
-    const star = this.reconcileStars(page)
-    if (star) {
-      this.wikiMode = star.contextMode ?? 'intro'
-      if (this.wikiMode === 'full' && star.fullText) this.wikiFullText = star.fullText
-      if (
-        this.wikiMode === 'full' &&
-        star.aiLang &&
-        star.aiLang !== page.lang &&
-        !star.aiFullText
-      ) {
-        void this.ensureAiFullText(star)
+    if (preferredLang && preferredLang !== page.lang) {
+      try {
+        const title = (await wikiLangLinks(page.lang, page.title, [preferredLang]))[preferredLang]
+        if (seq !== this.wikiSeq) return
+        if (title) {
+          const translated = await wikiPage({ ...candidate, pageId: 0, lang: preferredLang, title })
+          if (seq !== this.wikiSeq) return
+          await cachePut(wikiCacheKey(preferredLang, title), translated)
+          page = translated
+        }
+      } catch {
+        if (seq !== this.wikiSeq) return
       }
     }
+    if (seq !== this.wikiSeq) return
+    this.wikiFullText = null
+    this.currentWiki = page
+    this.reconcileStars(page)
     this.state.lastWiki = {
       lang: page.lang,
       pageId: page.pageId,
@@ -4217,6 +4272,8 @@ export class MapUI {
   }
 
   private renderWikiBody(): void {
+    const attach = this.wikiEl.querySelector<HTMLButtonElement>('[data-action=wiki-attach]')!
+    attach.disabled = this.wikiMode === 'full' ? !this.wikiFullText : !this.currentWiki?.extract
     const page = this.currentWiki
     if (!page) return
     if (this.wikiMode === 'intro') {
@@ -4235,18 +4292,6 @@ export class MapUI {
     if (this.wikiMode === mode) return
     this.wikiMode = mode
     this.state.lastWikiMode = mode
-    const current = this.currentWiki
-    if (current) {
-      const star = this.findStar(current)
-      if (star) {
-        star.contextMode = mode
-        if (mode === 'full' && this.wikiFullText) star.fullText = this.wikiFullText
-        if (mode === 'full' && star.aiLang && star.aiLang !== current.lang) {
-          void this.ensureAiFullText(star)
-        }
-        this.sync()
-      }
-    }
     this.saveWikiState()
     this.renderWikiToolbar()
     this.updateStarButton()
@@ -4275,12 +4320,10 @@ export class MapUI {
         this.wikiBodyEl.textContent = '正在加载全文…'
         const cached = await cacheGet<string>(key)
         if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') {
-          this.fallbackFullStar(page)
           return
         }
         if (typeof cached === 'string' && cached.length > 0) {
           this.wikiFullText = cached
-          this.rememberFullText(page)
           this.renderWikiBody()
           return
         }
@@ -4288,17 +4331,13 @@ export class MapUI {
           const text = await wikiPageFull(page.lang, page.title)
           if (!text.trim()) throw new Error('全文为空')
           await cachePut(key, text)
-          if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') {
-            this.fallbackFullStar(page)
-            return
-          }
+          if (seq !== this.fullSeq || this.currentWiki !== page || this.wikiMode !== 'full') return
           this.wikiFullText = text
-          this.rememberFullText(page)
           this.renderWikiBody()
         } catch (error) {
           if (seq === this.fullSeq) {
-            this.wikiBodyEl.textContent = `全文加载失败：${errorMessage(error)}`
-            this.fallbackFullStar(page)
+            this.wikiBodyEl.replaceChildren(this.empty(`全文加载失败：${errorMessage(error)}`),
+              this.miniButton('重试全文', () => void this.loadFullText()))
           }
         }
       } finally {
@@ -4310,29 +4349,6 @@ export class MapUI {
     })()
     this.fullPromise = task
     await task
-  }
-
-  private fallbackFullStar(page: WikiPage): void {
-    const star = this.findStar(page)
-    if (!star || star.contextMode !== 'full' || star.fullText || star.aiFullText) return
-    star.contextMode = 'intro'
-    this.sync()
-    this.saveWikiState()
-    this.renderWikiToolbar()
-    this.updateStarButton()
-    this.toast('全文加载失败，已改为概览注入；可以稍后再切一次全文重试')
-  }
-
-  private rememberFullText(page: WikiPage): void {
-    if (this.wikiMode !== 'full' || this.wikiFullText === null) return
-    const star = this.findStar(page)
-    if (!star) return
-    star.contextMode = 'full'
-    star.fullText = this.wikiFullText
-    this.sync()
-    this.saveWikiState()
-    this.renderWikiToolbar()
-    this.updateStarButton()
   }
 
   private renderWikiToolbar(): void {
@@ -4347,21 +4363,29 @@ export class MapUI {
       const current = page?.lang === lang
       const available = current || Boolean(this.wikiLangLinks[lang])
       button.classList.toggle('active', current)
+      button.setAttribute('aria-pressed', String(current))
       button.disabled = !available
       button.title = available ? `切换到 ${langLabel(lang)}` : '该条目没有此语言版本'
       this.wikiLangsEl.append(button)
     }
     for (const button of this.wikiModesEl.querySelectorAll<HTMLElement>('[data-wiki-mode]')) {
-      button.classList.toggle('active', button.dataset.wikiMode === this.wikiMode)
+      const active = button.dataset.wikiMode === this.wikiMode
+      button.classList.toggle('active', active)
+      button.setAttribute('aria-pressed', String(active))
     }
     const star = page ? this.findStar(page) : undefined
+    const aiMode = this.wikiEl.querySelector<HTMLElement>('#tm-wiki-ai-mode')!
+    aiMode.hidden = !star
+    for (const button of aiMode.querySelectorAll<HTMLElement>('[data-wiki-ai-mode]')) {
+      const active = button.dataset.wikiAiMode === star?.contextMode
+      button.classList.toggle('active', active)
+      button.setAttribute('aria-pressed', String(active))
+    }
+    const attach = this.wikiEl.querySelector<HTMLButtonElement>('[data-action=wiki-attach]')!
+    attach.hidden = !page || !this.currentPlace
     const starFull = star?.contextMode === 'full'
-    this.wikiFullHintEl.hidden = !star && this.wikiMode !== 'full'
-    this.wikiFullHintEl.textContent = this.wikiMode === 'full'
-      ? `全文会完整注入 AI，token 会显著增加。${star ? `当前星标：${starFull ? '全文' : '概览'}。` : ''}`
-      : star
-        ? `当前星标：${starFull ? '全文' : '概览'}。${starFull ? '' : '切到全文会把全文注入 AI。'}`
-        : ''
+    this.wikiFullHintEl.hidden = !starFull
+    this.wikiFullHintEl.textContent = starFull ? '此条目会以全文发送给 AI。' : ''
   }
 
   private async switchWikiLang(lang: string): Promise<void> {
@@ -4377,6 +4401,7 @@ export class MapUI {
     this.currentWiki = null
     this.wikiTitleEl.textContent = `[${langLabel(lang)}] ${title}`
     this.wikiBodyEl.textContent = '加载中…'
+    this.wikiBodyEl.scrollTop = 0
     this.wikiLinkEl.hidden = true
     this.starEl.disabled = true
     this.wikiNoteEl.disabled = true
@@ -4385,7 +4410,6 @@ export class MapUI {
     await this.loadWikiCandidate(
       { pageId: 0, title, dist: 0, lang, lat: page.lat, lng: page.lng },
       seq,
-      true,
     )
   }
 
@@ -4544,6 +4568,36 @@ export class MapUI {
     this.wikiNoteStatusEl.textContent = '已保存'
   }
 
+  private async setWikiAIContent(star: StarredWiki, mode: 'intro' | 'full'): Promise<void> {
+    star.contextMode = mode
+    this.saveWikiLibrary()
+    this.sync()
+    this.renderWikiToolbar()
+    this.updateStarButton()
+    if (mode !== 'full') return
+    try {
+      if (!star.fullText) {
+        const key = wikiFullCacheKey(star.lang, star.title)
+        star.fullText = await cacheGet<string>(key) || await wikiPageFull(star.lang, star.title)
+        if (!star.fullText.trim()) throw new Error('全文为空')
+        await cachePut(key, star.fullText)
+      }
+      if (!this.state.stars.includes(star) || star.contextMode !== 'full') return
+      if (star.aiLang && star.aiLang !== star.lang) await this.ensureAiFullText(star)
+      this.saveWikiLibrary()
+      this.sync()
+    } catch (error) {
+      if (this.state.stars.includes(star) && star.contextMode === 'full') {
+        star.contextMode = 'intro'
+        this.saveWikiLibrary()
+        this.sync()
+        this.renderWikiToolbar()
+        this.updateStarButton()
+        this.toast(`Wiki 全文读取失败，AI 暂用简介：${errorMessage(error)}`)
+      }
+    }
+  }
+
   private async toggleStar(): Promise<void> {
     const current = this.currentWiki
     if (!current) return
@@ -4556,6 +4610,7 @@ export class MapUI {
       this.updateStarButton()
       this.renderWikiNote()
       this.renderAiLang()
+      this.renderWikiToolbar()
       return
     }
 
@@ -4563,13 +4618,14 @@ export class MapUI {
     const contextMode: 'intro' | 'full' = this.wikiMode
     const fullText = contextMode === 'full' ? this.wikiFullText || undefined : undefined
     this.removeStar(current)
-    this.state.stars.push({
+    const star: StarredWiki = {
       ...current,
       note: this.wikiNoteValue(current),
       savedAt: Date.now(),
       contextMode,
       fullText,
-    })
+    }
+    this.state.stars.push(star)
     this.saveWikiLibrary()
     this.toast(
       contextMode === 'full'
@@ -4582,7 +4638,8 @@ export class MapUI {
     this.updateStarButton()
     this.renderWikiNote()
     this.renderAiLang()
-    if (contextMode === 'full' && !fullText) void this.loadFullText()
+    this.renderWikiToolbar()
+    if (contextMode === 'full' && !fullText) void this.setWikiAIContent(star, 'full')
   }
 
   private updateStarButton(): void {
@@ -4689,6 +4746,8 @@ export class MapUI {
       realMapContext: this.realContextEl.checked,
       layerMapContext: this.layerContextEl.checked,
       wikiLangs: selectedLangs.length > 0 ? selectedLangs : ['en'],
+      wikiDisplayLang: document.querySelector<HTMLInputElement>('input[name=tavern-map-wiki-language]:checked')?.value || undefined,
+      wikiDisplayMode: document.querySelector<HTMLInputElement>('input[name=tavern-map-wiki-display]:checked')?.value === 'full' ? 'full' : 'intro',
       radiusM: numberValue(this.radiusEl, this.settings.radiusM, 25, 1000),
       maxNearby: Math.round(numberValue(this.nearbyEl, this.settings.maxNearby, 0, 50)),
       depth: Math.round(numberValue(this.depthEl, this.settings.depth, 0, 10)),
@@ -4730,6 +4789,10 @@ export class MapUI {
     this.realContextEl.checked = this.settings.realMapContext
     this.layerContextEl.checked = this.settings.layerMapContext
     for (const input of this.langEls) input.checked = this.settings.wikiLangs.includes(input.value)
+    for (const input of document.querySelectorAll<HTMLInputElement>('#tm-settings .tm-wiki-setting input')) {
+      input.checked = input.value === (input.name === 'tavern-map-wiki-language'
+        ? this.settings.wikiDisplayLang ?? '' : this.settings.wikiDisplayMode)
+    }
     this.radiusEl.value = String(this.settings.radiusM)
     this.nearbyEl.value = String(this.settings.maxNearby)
     this.depthEl.value = String(this.settings.depth)
@@ -4742,9 +4805,9 @@ export class MapUI {
     this.seq += 1
     this.wikiSeq += 1
     this.fullSeq += 1
-    if (this.moving) this.stopMovement()
     this.clearRouteLine()
     if (this.noteSaveTimer !== undefined) window.clearTimeout(this.noteSaveTimer)
+    delete this.placeInfoEl.dataset.placeKey
     this.loadingNearby = false
     this.loadingWiki = false
     this.state.nearby = []
@@ -4766,10 +4829,10 @@ export class MapUI {
     this.currentWiki = null
     this.currentPlace = null
     this.tab = 'nearby'
-    this.moveProgress = 0
     this.wikiFullText = null
     this.wikiLangLinks = {}
     this.wikiEl.hidden = true
+    this.listEl.hidden = false
     this.placeEl.hidden = true
     this.previewEl.hidden = true
     this.searchInputEl.value = ''
@@ -4786,6 +4849,8 @@ export class MapUI {
     this.routeSeq += 1
     this.positionLookup += 1
     this.routeRunning = false
+    this.routeShelfOpen = false
+    this.wikiReturn = undefined
     this.routeRedo = []
     this.routeSelection = 0
     this.setMapTool('browse')
@@ -4793,9 +4858,9 @@ export class MapUI {
     this.wikiSeq += 1
     this.fullSeq += 1
     if (this.noteSaveTimer !== undefined) window.clearTimeout(this.noteSaveTimer)
+    delete this.placeInfoEl.dataset.placeKey
     this.loadingNearby = false
     this.loadingWiki = false
-    if (this.moving) this.stopMovement()
     this.clearRouteLine()
     this.ctx = this.liveContext()
     this.settings = loadSettings(this.ctx)
@@ -4811,13 +4876,14 @@ export class MapUI {
     this.pois = []
     this.poisById.clear()
     this.poiSeq += 1
-    this.tab = this.state.lastTab ?? 'nearby'
+    this.tab = this.state.lastTab === 'route' ? 'nearby' : this.state.lastTab ?? 'nearby'
     this.currentWiki = null
     this.currentPlace = this.state.viewedPlace ?? null
     this.renderViewedMarker()
     this.wikiFullText = null
     this.wikiLangLinks = {}
     this.wikiEl.hidden = true
+    this.listEl.hidden = false
     this.placeEl.hidden = true
     this.previewEl.hidden = true
     this.searchInputEl.value = ''
@@ -4842,7 +4908,7 @@ export class MapUI {
     if (!this.panelEl.hidden && !this.state.positionCleared) void this.refreshPois(this.state.center.lat, this.state.center.lng)
     if (this.state.wikiOpen && this.state.lastWiki) {
       window.setTimeout(() => {
-        if (!this.panelEl.hidden) void this.restoreWiki(this.state.lastWiki!)
+        if (!this.panelEl.hidden && this.wikiEl.hidden && this.state.wikiOpen && this.state.lastWiki) void this.restoreWiki(this.state.lastWiki)
       }, 120)
     }
     if (!this.panelEl.hidden && !this.state.place && this.state.nearby.length === 0 && this.state.wiki.length === 0) {
@@ -4961,6 +5027,7 @@ export class MapUI {
   }
 
   private cleanup(): void {
+    if (this.routeBandFrame) window.cancelAnimationFrame(this.routeBandFrame)
     clearPrompt(this.ctx)
     this.offs.forEach((remove) => remove())
     this.offs.length = 0
@@ -4969,9 +5036,6 @@ export class MapUI {
     if (this.noteSaveTimer !== undefined) window.clearTimeout(this.noteSaveTimer)
     if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer)
     if (this.draftPoiTimer !== undefined) window.clearTimeout(this.draftPoiTimer)
-    if (this.moveFrame !== null) window.cancelAnimationFrame(this.moveFrame)
-    this.moveFrame = null
-    this.moving = false
     this.clearRouteLine()
     this.resizeObserver?.disconnect()
     this.windowController.dispose()

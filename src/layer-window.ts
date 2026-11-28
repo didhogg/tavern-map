@@ -17,6 +17,8 @@ type LayerWindowOptions = {
 
 export const MAP_WINDOW_STORAGE_KEY = 'tavern-map:layer-window:v1'
 
+const COMPACT_WINDOW_SIZE_VERSION = 1
+
 const MOBILE_QUERY = '(max-width: 640px)'
 
 function clamp(value: number, min: number, max: number): number {
@@ -111,12 +113,12 @@ export class LayerWindowController {
     this.header = header
     this.options = {
       storageKey: options.storageKey,
-      defaultWidth: options.defaultWidth ?? 1280,
-      defaultHeight: options.defaultHeight ?? 860,
-      minWidth: options.minWidth ?? 560,
+      defaultWidth: options.defaultWidth ?? 430,
+      defaultHeight: options.defaultHeight ?? Number.POSITIVE_INFINITY,
+      minWidth: options.minWidth ?? 430,
       minHeight: options.minHeight ?? 380,
       compactWidth: options.compactWidth ?? 820,
-      margin: options.margin ?? 12,
+      margin: options.margin ?? 14,
     }
     this.resizeObserver = new ResizeObserver(() => this.updateCompact())
     this.header.addEventListener('pointerdown', this.onHeaderPointerDown)
@@ -140,6 +142,7 @@ export class LayerWindowController {
       this.rect = this.clampRect(this.rect)
       this.applyRect(this.rect)
       this.saved = true
+      this.save()
     }
     this.updateCompact()
   }
@@ -238,8 +241,8 @@ export class LayerWindowController {
       Math.min(this.options.defaultHeight, viewportHeight - margin * 2),
     )
     return {
-      left: Math.max(margin, (viewportWidth - width) / 2),
-      top: Math.max(margin, (viewportHeight - height) / 2),
+      left: viewportWidth - width - margin,
+      top: margin,
       width,
       height,
     }
@@ -280,7 +283,7 @@ export class LayerWindowController {
     try {
       const raw = localStorage.getItem(this.options.storageKey)
       if (!raw) return null
-      const value = JSON.parse(raw) as Partial<LayerWindowRect>
+      const value = JSON.parse(raw) as Partial<LayerWindowRect> & { compactSizing?: number }
       if (
         typeof value.left !== 'number' ||
         typeof value.top !== 'number' ||
@@ -292,6 +295,9 @@ export class LayerWindowController {
         !Number.isFinite(value.height)
       ) {
         return null
+      }
+      if (value.width < this.options.compactWidth && value.compactSizing !== COMPACT_WINDOW_SIZE_VERSION) {
+        return this.defaultRect()
       }
       return {
         left: value.left,
@@ -307,7 +313,7 @@ export class LayerWindowController {
   private save(): void {
     if (this.mobileQuery.matches || !this.rect || !this.saved) return
     try {
-      localStorage.setItem(this.options.storageKey, JSON.stringify(this.rect))
+      localStorage.setItem(this.options.storageKey, JSON.stringify({ ...this.rect, compactSizing: COMPACT_WINDOW_SIZE_VERSION }))
     } catch {
       // Window geometry is a convenience; storage failures are non-fatal.
     }

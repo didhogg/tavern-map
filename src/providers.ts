@@ -25,9 +25,10 @@ type OsmElementResponse = {
   elements?: Array<{ tags?: Record<string, string> }>
 }
 
-async function osmNameZh(type: string | undefined, id: number | undefined): Promise<string | undefined> {
+export async function osmPlaceTags(type: string | undefined, id: number | undefined): Promise<Record<string, string> | undefined> {
   if (!type || id == null) return undefined
-  const kind = type === 'N' ? 'node' : type === 'W' ? 'way' : type === 'R' ? 'relation' : undefined
+  const kind = type === 'N' || type === 'node' ? 'node' : type === 'W' || type === 'way' ? 'way' :
+    type === 'R' || type === 'relation' ? 'relation' : undefined
   if (!kind) return undefined
   try {
     const data = await fetchJson<OsmElementResponse>(
@@ -35,10 +36,9 @@ async function osmNameZh(type: string | undefined, id: number | undefined): Prom
       undefined,
       3000,
     )
-    const tags = data.elements?.[0]?.tags
-    return tags?.['name:zh'] || tags?.['name:zh-Hans'] || tags?.['name:zh-Hant']
+    return data.elements?.[0]?.tags
   } catch (error) {
-    console.warn('[tavern-map] OSM name:zh lookup failed', error)
+    console.warn('[tavern-map] OSM place tags lookup failed', error)
     return undefined
   }
 }
@@ -86,12 +86,14 @@ export async function reverseGeocode(lat: number, lng: number): Promise<Place> {
         .filter(Boolean)
         .join(', ')
       const name = p.name || p.street || p.city || 'Unknown place'
-      const nameZh = await osmNameZh(p.osm_type, p.osm_id)
+      const tags = await osmPlaceTags(p.osm_type, p.osm_id)
+      const nameZh = tags?.['name:zh'] || tags?.['name:zh-Hans'] || tags?.['name:zh-Hant']
       return {
         id: `osm:${p.osm_type ?? '?'}/${p.osm_id ?? '?'}`,
         name,
         nameZh: nameZh && nameZh !== name ? nameZh : undefined,
         category: p.type,
+        tags,
         address: address || undefined,
         lat,
         lng,

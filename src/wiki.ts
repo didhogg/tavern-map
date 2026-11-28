@@ -138,6 +138,43 @@ export async function wikiLangLinks(
   return result
 }
 
+export function wikiArticleLink(url: string): WikiCandidate | undefined {
+  try {
+    const address = new URL(url)
+    const language = /^([a-z][a-z0-9-]*)\.(?:m\.)?wikipedia\.org$/i.exec(address.hostname)?.[1]
+    if (!language || !['http:', 'https:'].includes(address.protocol)) return undefined
+    const pageId = Number(address.searchParams.get('curid'))
+    const pathTitle = address.pathname.startsWith('/wiki/') ? address.pathname.slice(6) : undefined
+    const title = pathTitle ? decodeURIComponent(pathTitle) : address.searchParams.get('title')
+    if (title?.trim()) return { title: title.replaceAll('_', ' '), lang: language, pageId: 0, dist: 0 }
+    if (Number.isSafeInteger(pageId) && pageId > 0) {
+      return { title: `Wikipedia #${pageId}`, lang: language, pageId, dist: 0 }
+    }
+  } catch {
+    // Malformed or non-Wikipedia URLs are not article links.
+  }
+  return undefined
+}
+
+export async function wikiRelated(article: WikiCandidate): Promise<WikiCandidate[]> {
+  const url = new URL(api(article.lang))
+  const query = new URLSearchParams({
+    action: 'query', format: 'json', formatversion: '2', origin: '*',
+    generator: 'links', gplnamespace: '0', gpllimit: '30', redirects: '1',
+    prop: 'pageprops', ppprop: 'disambiguation',
+  })
+  if (article.pageId) query.set('pageids', String(article.pageId))
+  else query.set('titles', article.title)
+  url.search = query.toString()
+  const data = await fetchJson<{ query?: { pages?: Array<{
+    pageid?: number; title?: string; pageprops?: { disambiguation?: string }
+  }> } }>(url)
+  return (data.query?.pages ?? []).flatMap((page) =>
+    page.pageid && page.title && page.pageprops?.disambiguation === undefined
+      ? [{ pageId: page.pageid, title: page.title, lang: article.lang, dist: 0 }] : [],
+  )
+}
+
 export async function wikiPage(candidate: WikiCandidate): Promise<WikiPage> {
   const lang = candidate.lang
   const url = new URL(api(lang))
@@ -149,7 +186,7 @@ export async function wikiPage(candidate: WikiCandidate): Promise<WikiPage> {
     explaintext: '1',
     exintro: '1',
     redirects: '1',
-    titles: candidate.title,
+    ...(candidate.pageId > 0 ? { pageids: String(candidate.pageId) } : { titles: candidate.title }),
     rvprop: 'ids',
   }).toString()
   const data = await fetchJson<WikiPageResponse>(url)

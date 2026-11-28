@@ -60,6 +60,10 @@ export function realLinks(place: Place): string[] {
   const defaults = [place.website, place.tags?.website]
   const wikipedia = place.tags?.wikipedia?.match(/^([a-z-]+):(.+)$/i)
   if (wikipedia) defaults.push(`https://${wikipedia[1]}.wikipedia.org/wiki/${encodeURIComponent(wikipedia[2].replaceAll(' ', '_'))}`)
+  for (const [key, title] of Object.entries(place.tags ?? {})) {
+    const lang = /^wikipedia:([a-z][a-z0-9-]*)$/i.exec(key)?.[1]
+    if (lang && title.trim()) defaults.push(`https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(' ', '_'))}`)
+  }
   const osm = placeKey(place).match(/^(node|way|relation)\/(\d+)$/)
   if (osm) defaults.push(`https://www.openstreetmap.org/${osm[1]}/${osm[2]}`)
   const added = globalNote(`real-links:${placeKey(place)}`)?.split(/\n+/) ?? []

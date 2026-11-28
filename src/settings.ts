@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
   provider: 'osm',
   wikiLangs: ['en'],
+  wikiDisplayMode: 'intro',
   radiusM: 250,
   maxNearby: 6,
   depth: 2,
@@ -114,6 +115,9 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     enabled: typeof value.enabled === 'boolean' ? value.enabled : DEFAULT_SETTINGS.enabled,
     provider: 'osm',
     wikiLangs: wikiLangs.length > 0 ? wikiLangs : [...DEFAULT_SETTINGS.wikiLangs],
+    wikiDisplayLang: typeof value.wikiDisplayLang === 'string' && (WIKI_LANGS as readonly string[]).includes(value.wikiDisplayLang)
+      ? value.wikiDisplayLang : undefined,
+    wikiDisplayMode: value.wikiDisplayMode === 'full' ? 'full' : 'intro',
     radiusM: number(value.radiusM, DEFAULT_SETTINGS.radiusM, 25, 1000),
     maxNearby: Math.round(number(value.maxNearby, DEFAULT_SETTINGS.maxNearby, 0, 50)),
     depth: Math.round(number(value.depth, DEFAULT_SETTINGS.depth, 0, 10)),

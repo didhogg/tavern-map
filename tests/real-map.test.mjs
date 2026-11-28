@@ -11,7 +11,7 @@ register(
 )
 const { assignRoutePoisToSteps } = await import('../src/poi.ts')
 const { buildContext } = await import('../src/context.ts')
-const { currentRouteLeg, editableRoute, planPath } = await import('../src/real-itinerary.ts')
+const { currentRouteLeg, editableRoute, planPath, validRealRoute } = await import('../src/real-itinerary.ts')
 const { DEFAULT_SETTINGS } = await import('../src/settings.ts')
 
 const start = { id: 'node/1', name: 'Start', lat: 0, lng: 0 }
@@ -89,4 +89,22 @@ test('a global content change clears the matching manual choices on every packag
     if (previousStorage === undefined) delete globalThis.localStorage
     else globalThis.localStorage = previousStorage
   }
+})
+
+
+test('real route drafts can reopen before the first stop or while drawing the next leg', () => {
+  assert.deepEqual(validRealRoute({ stops: [], legs: [] }), { stops: [], legs: [] })
+  const drawing = { stops: [start], legs: [], pendingGuide: [[0.01, 0.005]] }
+  assert.deepEqual(validRealRoute(drawing), drawing)
+  assert.equal(validRealRoute({ ...drawing, pendingGuide: [[NaN, 0.005]] }), undefined)
+})
+
+test('place Wiki links resolve Wikipedia titles and IDs without accepting lookalike hosts', async () => {
+  const { wikiArticleLink } = await import('../src/wiki.ts')
+  assert.deepEqual(wikiArticleLink('https://ja.m.wikipedia.org/wiki/%E6%B8%8B%E8%B0%B7%E9%A7%85'), {
+    title: '渋谷駅', lang: 'ja', pageId: 0, dist: 0,
+  })
+  assert.equal(wikiArticleLink('https://en.wikipedia.org/?curid=434')?.pageId, 434)
+  assert.equal(wikiArticleLink('https://en.wikipedia.org/wiki/Grand_Central_Terminal#History')?.title, 'Grand Central Terminal')
+  assert.equal(wikiArticleLink('https://en.wikipedia.org.example.com/wiki/Test'), undefined)
 })

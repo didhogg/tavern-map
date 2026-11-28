@@ -59,9 +59,10 @@ export function editableRoute(itinerary: RouteItinerary): RealRouteDraft {
 export function validRealRoute(raw: unknown): RealRouteDraft | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const plan = raw as RealRouteDraft
-  if (!Array.isArray(plan.stops) || !Array.isArray(plan.legs) || plan.stops.length !== plan.legs.length + 1) return undefined
+  if (!Array.isArray(plan.stops) || !Array.isArray(plan.legs) || plan.legs.length !== Math.max(0, plan.stops.length - 1)) return undefined
   const validPoint = (point: unknown): point is RoutePoint =>
     Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)
+  if (plan.pendingGuide !== undefined && (!Array.isArray(plan.pendingGuide) || !plan.pendingGuide.every(validPoint))) return undefined
   if (!plan.stops.every((stop) => stop && typeof stop.name === 'string' && validPoint([stop.lng, stop.lat]))) return undefined
   if (!plan.legs.every((leg) => leg && Object.hasOwn(LEG_MODES, leg.mode) &&
     Array.isArray(leg.guide) && leg.guide.every(validPoint) &&
