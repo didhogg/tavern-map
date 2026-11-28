@@ -2298,8 +2298,8 @@ export class LayerMapUI {
     this.pinDrag.moved = true
     this.updatePinCoordinate(
       this.pinDrag.id,
-      Math.min(1, Math.max(0, this.pinDrag.originX + point.x - this.pinDrag.pressX)),
-      Math.min(1, Math.max(0, this.pinDrag.originY + point.y - this.pinDrag.pressY)),
+      this.pinDrag.originX + (point.x - this.pinDrag.pressX),
+      this.pinDrag.originY + (point.y - this.pinDrag.pressY),
       false,
     )
   }
@@ -3917,8 +3917,8 @@ export class LayerMapUI {
       )
       this.updatePinCoordinate(
         this.pinDrag.id,
-        Math.min(1, Math.max(0, this.pinDrag.originX + currentX - startX)),
-        Math.min(1, Math.max(0, this.pinDrag.originY + currentY - startY)),
+        this.pinDrag.originX + (currentX - startX),
+        this.pinDrag.originY + (currentY - startY),
         false,
       )
       return
@@ -7724,13 +7724,19 @@ export class LayerMapUI {
     const session = this.pinMove
     if (!session) return
     this.pinMove = null
-    if (this.pinDrag?.id === session.id) {
+    const drag = this.pinDrag
+    if (drag?.id === session.id) {
       this.pinDrag = null
-      this.maplibreMap?.dragPan.enable()
+      if (drag.pointerId === -1) {
+        this.maplibreMap?.dragPan.enable()
+      } else {
+        if (this.canvasEl.hasPointerCapture(drag.pointerId)) this.canvasEl.releasePointerCapture(drag.pointerId)
+        this.canvasEl.style.cursor = 'grab'
+      }
     }
     const origin = session.points[0]
-    const final = session.points[session.cursor]
-    const moved = Math.abs(origin.x - final.x) > 0.000001 || Math.abs(origin.y - final.y) > 0.000001
+    const final = this.markerById(session.id) ?? session.points[session.cursor]
+    const moved = !samePinPosition(origin, final)
     if (confirm) {
       this.placingPin = null
       this.hidePlaceBarIfIdle()
@@ -7773,7 +7779,8 @@ export class LayerMapUI {
       pin.updatedAt = Date.now()
     } else {
       const base = this.pkg?.markers.find((marker) => marker.id === id)
-      if (base && Math.abs(base.x - nx) < 0.000001 && Math.abs(base.y - ny) < 0.000001) {
+      // In a tile map, a tiny world-coordinate difference can be many pixels.
+      if (base && samePinPosition(base, pinpoint)) {
         delete this.pinEdits.overrides[id]
       } else {
         this.pinEdits.overrides[id] = pinpoint
@@ -7789,9 +7796,7 @@ export class LayerMapUI {
   }
 
   private recordPinMove(id: string, before: LayerPinPoint, after: LayerPinPoint): void {
-    if (Math.abs(before.x - after.x) < 0.000001 && Math.abs(before.y - after.y) < 0.000001) {
-      return
-    }
+    if (samePinPosition(before, after)) return
     const history = this.pinEdits.history[id] ?? (this.pinEdits.history[id] = {
       past: [],
       future: [],
@@ -7802,9 +7807,7 @@ export class LayerMapUI {
   }
 
   private afterPinMove(id: string, before: LayerPinPoint, after: LayerPinPoint): void {
-    if (Math.abs(before.x - after.x) < 0.000001 && Math.abs(before.y - after.y) < 0.000001) {
-      return
-    }
+    if (samePinPosition(before, after)) return
     const marker = this.markerById(id)
     if (!marker) return
     if (this.state.atPlaceId === id) {
@@ -9404,6 +9407,10 @@ export class LayerMapUI {
     this.lightboxEl?.remove()
     this.contextModalEl?.remove()
   }
+}
+
+function samePinPosition(a: LayerPinPoint, b: LayerPinPoint): boolean {
+  return a.x === b.x && a.y === b.y
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(
