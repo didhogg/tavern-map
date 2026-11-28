@@ -90,20 +90,34 @@ export type NearestRoad = {
   y: number
 }
 
-/** The road closest to (x, y) within `maxDistance`, or undefined. */
-export function nearestRoad(
+/** A point on one road segment: street, segment (index of its end vertex) and position. */
+export type RoadHit = {
+  streetIndex: number
+  /** Index of the segment's end vertex in `street.points` (start is segment - 1). */
+  segment: number
+  /** 0..1 along the segment. */
+  t: number
+  /** Distance in normalized X units (Y scaled by yScale). */
+  distance: number
+  /** Closest point, normalized (unscaled) coordinates. */
+  x: number
+  y: number
+}
+
+/** Visit every segment hit within `maxDistance` of (x, y) (a segment may be visited twice). */
+function scanSegments(
   index: RoadIndex,
   x: number,
   y: number,
   maxDistance: number,
-): NearestRoad | undefined {
-  if (!index.streets.length || !(maxDistance > 0)) return undefined
+  visit: (hit: RoadHit) => void,
+): void {
+  if (!index.streets.length || !(maxDistance > 0)) return
   const py = y * index.yScale
   const c1 = Math.max(0, Math.floor((x - maxDistance - index.origin.x) / index.cell))
   const c2 = Math.min(index.columns - 1, Math.floor((x + maxDistance - index.origin.x) / index.cell))
   const r1 = Math.max(0, Math.floor((py - maxDistance - index.origin.y) / index.cell))
   const r2 = Math.min(index.rows - 1, Math.floor((py + maxDistance - index.origin.y) / index.cell))
-  let best: NearestRoad | undefined
   for (let column = c1; column <= c2; column += 1) {
     for (let row = r1; row <= r2; row += 1) {
       for (const [streetIndex, segment] of index.buckets.get(row * index.columns + column) ?? []) {
@@ -119,13 +133,56 @@ export function nearestRoad(
         const cx = ax + dx * t
         const cy = sy1 + dy * t
         const distance = Math.hypot(x - cx, py - cy)
-        if (distance <= maxDistance && (!best || distance < best.distance)) {
-          best = { street, distance, x: cx, y: cy / index.yScale }
+        if (distance <= maxDistance) {
+          visit({ streetIndex, segment, t, distance, x: cx, y: cy / index.yScale })
         }
       }
     }
   }
+}
+
+/** The closest road segment to (x, y) within `maxDistance`; `skip` excludes a street. */
+export function nearestSegment(
+  index: RoadIndex,
+  x: number,
+  y: number,
+  maxDistance: number,
+  skip?: (streetIndex: number) => boolean,
+): RoadHit | undefined {
+  let best: RoadHit | undefined
+  scanSegments(index, x, y, maxDistance, (hit) => {
+    if (skip?.(hit.streetIndex)) return
+    if (!best || hit.distance < best.distance) best = hit
+  })
   return best
+}
+
+/** The road closest to (x, y) within `maxDistance`, or undefined. */
+export function nearestRoad(
+  index: RoadIndex,
+  x: number,
+  y: number,
+  maxDistance: number,
+): NearestRoad | undefined {
+  const hit = nearestSegment(index, x, y, maxDistance)
+  return hit
+    ? { street: index.streets[hit.streetIndex], distance: hit.distance, x: hit.x, y: hit.y }
+    : undefined
+}
+
+/** Every street within `maxDistance` of the point, with its own closest point, nearest first. */
+export function roadsNearPoint(
+  index: RoadIndex,
+  x: number,
+  y: number,
+  maxDistance: number,
+): RoadHit[] {
+  const best = new Map<number, RoadHit>()
+  scanSegments(index, x, y, maxDistance, (hit) => {
+    const current = best.get(hit.streetIndex)
+    if (!current || hit.distance < current.distance) best.set(hit.streetIndex, hit)
+  })
+  return [...best.values()].sort((a, b) => a.distance - b.distance)
 }
 
 /** Indices of streets whose bounds overlap the given (scaled) rectangle. */

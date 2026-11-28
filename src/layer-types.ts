@@ -334,11 +334,32 @@ export type LayerItineraryContextPoi = {
   offset?: string
 }
 
+/** One stretch of a leg: along a named road, or straight where no road is followed. */
+export type LayerItineraryContextPiece = {
+  kind: 'road' | 'straight'
+  name?: string
+  type?: string
+  distance: string
+}
+
+/** A road inside the leg's range that the leg does not travel on. */
+export type LayerItineraryContextRoad = {
+  name: string
+  type?: string
+  distance: string
+}
+
 export type LayerItineraryContextLeg = {
   from: string
   to: string
   distance: string
   current?: boolean
+  /** 'road' when the leg was planned to follow roads. */
+  mode?: 'road' | 'straight'
+  /** Stretches of a road-following leg in travel order. */
+  route?: LayerItineraryContextPiece[]
+  /** Roads in range of this leg; omitted when the leg's extras are hidden. */
+  roads?: LayerItineraryContextRoad[]
   pois: LayerItineraryContextPoi[]
 }
 
@@ -354,6 +375,8 @@ export type LayerItineraryContext = {
     from: string
     to: string
     remaining: string
+    /** Road the current position travels on, for a road-following leg. */
+    road?: string
   }
   nextStop?: string
   legs: LayerItineraryContextLeg[]
@@ -397,6 +420,8 @@ export type LayerContextSnapshot = {
   /** Fetched wiki/source text explicitly checked for AI context. */
   wikiTexts?: Array<{ title: string; text: string }>
   nearby?: LayerNearbyPlace[]
+  /** Roads inside the nearby radius, nearest first. */
+  nearbyRoads?: LayerContextRoad[]
   nearbyAnchor?: 'my position' | 'at place' | 'view center'
   /** Completed itinerary and its current segment. Never a draft. */
   itinerary?: LayerItineraryContext
@@ -416,6 +441,8 @@ export type LayerItineraryStop = {
   name: string
   x: number
   y: number
+  /** The leg arriving at this stop follows the map's roads (chosen while planning). */
+  snapRoad?: boolean
 }
 
 export type LayerItinerary = {
@@ -677,6 +704,7 @@ function validItinerary(raw: unknown): LayerItinerary | undefined {
       name: stop.name.trim(),
       x: Math.min(1, Math.max(0, stop.x)),
       y: Math.min(1, Math.max(0, stop.y)),
+      snapRoad: stop.snapRoad === true ? true : undefined,
     }))
   if (stops.length < 2) return undefined
   return {
@@ -734,6 +762,34 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
       to: leg.to,
       distance: leg.distance,
       current: leg.current === true ? true : undefined,
+      mode: leg.mode === 'road' || leg.mode === 'straight' ? leg.mode : undefined,
+      route: Array.isArray(leg.route)
+        ? leg.route
+            .filter(
+              (piece): piece is LayerItineraryContextPiece =>
+                Boolean(piece) &&
+                (piece.kind === 'road' || piece.kind === 'straight') &&
+                typeof piece.distance === 'string',
+            )
+            .map((piece) => ({
+              kind: piece.kind,
+              name: typeof piece.name === 'string' ? piece.name : undefined,
+              type: typeof piece.type === 'string' && piece.type ? piece.type : undefined,
+              distance: piece.distance,
+            }))
+        : undefined,
+      roads: Array.isArray(leg.roads)
+        ? leg.roads
+            .filter(
+              (road): road is LayerItineraryContextRoad =>
+                Boolean(road) && typeof road.name === 'string' && typeof road.distance === 'string',
+            )
+            .map((road) => ({
+              name: road.name,
+              type: typeof road.type === 'string' && road.type ? road.type : undefined,
+              distance: road.distance,
+            }))
+        : undefined,
       pois: Array.isArray(leg.pois)
         ? leg.pois
             .filter((poi): poi is LayerItineraryContextPoi => {
@@ -762,6 +818,7 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
           from: value.current.from,
           to: value.current.to,
           remaining: value.current.remaining,
+          road: typeof value.current.road === 'string' ? value.current.road : undefined,
         }
       : undefined
   return {
@@ -893,6 +950,11 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
         )
       : undefined,
     nearby: nearby && nearby.length > 0 ? nearby : undefined,
+    nearbyRoads: Array.isArray(value.nearbyRoads)
+      ? value.nearbyRoads
+          .map(validContextRoad)
+          .filter((road): road is LayerContextRoad => Boolean(road))
+      : undefined,
     itinerary: validItineraryContext(value.itinerary),
     nearbyAnchor:
       value.nearbyAnchor === 'my position' ||

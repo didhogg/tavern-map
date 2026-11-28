@@ -5,6 +5,10 @@ export const MODULE_NAME = 'tavern-map'
 export const WIKI_LANGS = ['en', 'ja', 'zh'] as const
 export type WikiLang = (typeof WIKI_LANGS)[number]
 
+/** Itinerary range (places and roads along the route), as a fraction of the map width. */
+export const ITINERARY_RANGE_MIN = 0.001
+export const ITINERARY_RANGE_MAX = 0.4
+
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
   provider: 'osm',
@@ -38,6 +42,8 @@ export const DEFAULT_SETTINGS: Settings = {
   layerNearbyMax: 8,
   layerItineraryPoiRadius: 0.08,
   layerItineraryPoiMax: 8,
+  layerItineraryPoisShow: true,
+  layerItineraryPoisCurrentOnly: false,
   layerFavoritesAI: false,
   layerFavoriteType: true,
   layerFavoriteCoords: true,
@@ -119,12 +125,14 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     layerItineraryPoiRadius: number(
       value.layerItineraryPoiRadius,
       DEFAULT_SETTINGS.layerItineraryPoiRadius,
-      0.01,
-      0.4,
+      ITINERARY_RANGE_MIN,
+      ITINERARY_RANGE_MAX,
     ),
     layerItineraryPoiMax: Math.round(
       number(value.layerItineraryPoiMax, DEFAULT_SETTINGS.layerItineraryPoiMax, 1, 30),
     ),
+    layerItineraryPoisShow: value.layerItineraryPoisShow !== false,
+    layerItineraryPoisCurrentOnly: value.layerItineraryPoisCurrentOnly === true,
     layerFavoritesAI: value.layerFavoritesAI === true,
     layerFavoriteType: value.layerFavoriteType !== false,
     layerFavoriteCoords: value.layerFavoriteCoords !== false,

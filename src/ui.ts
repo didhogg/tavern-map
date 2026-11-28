@@ -27,7 +27,7 @@ import { routeBetween, type Route, type RouteStep } from './route'
 import { searchPlaces, type SearchResult } from './search'
 import { loadState, saveState } from './state'
 import { storedRealPosition } from './layer-positions'
-import { loadSettings, saveSettings, WIKI_LANGS } from './settings'
+import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, loadSettings, saveSettings, WIKI_LANGS } from './settings'
 import type {
   MapState,
   Place,
@@ -344,15 +344,17 @@ const SETTINGS_HTML = `
 
       <div class="tm-settings-group">
         <div class="tm-settings-group-title">图层地图 · 行程</div>
-        <label class="tm-row">每段沿途地点范围
-          <input id="tm-set-itinerary-poi-radius" type="number" data-layer-setting="layerItineraryPoiRadius" min="1" max="40" step="1">
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoisShow"> 显示沿途地点和道路（列表、地图金圈、AI 一起）</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerItineraryPoisCurrentOnly"> 只显示当前所在段的沿途地点和道路</label>
+        <label class="tm-row">沿途范围
+          <input id="tm-set-itinerary-poi-radius" type="number" data-layer-setting="layerItineraryPoiRadius" min="0.1" max="40" step="0.1">
           <span>% 地图宽</span>
         </label>
         <label class="tm-row">每段最多显示
           <input id="tm-set-itinerary-poi-max" type="number" data-layer-setting="layerItineraryPoiMax" min="1" max="30" step="1">
-          <span>个</span>
+          <span>个地点 / 条道路</span>
         </label>
-        <div class="tm-hint">行程面板里可以单独关闭本次行程的 AI 发送。</div>
+        <div class="tm-hint">沿途范围也可以在规划行程时用面板滑条或地图上的范围拉手调整，三处是同一个数。行程面板里可以单独关闭本次行程的 AI 发送。</div>
       </div>
 
       <div class="tm-settings-group">
@@ -3594,8 +3596,8 @@ export class MapUI {
       Math.max(1, Math.round(this.settings.layerNearbyMax || 8)),
     )
     this.settings.layerItineraryPoiRadius = Math.min(
-      0.4,
-      Math.max(0.01, this.settings.layerItineraryPoiRadius || 0.08),
+      ITINERARY_RANGE_MAX,
+      Math.max(ITINERARY_RANGE_MIN, this.settings.layerItineraryPoiRadius || 0.08),
     )
     this.settings.layerItineraryPoiMax = Math.min(
       30,

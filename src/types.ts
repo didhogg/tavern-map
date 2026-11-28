@@ -202,6 +202,10 @@ export type Settings = {
   layerItineraryPoiRadius: number
   /** Maximum number of corridor places shown per itinerary leg. */
   layerItineraryPoiMax: number
+  /** Show places and roads along the itinerary (list, map rings and AI). */
+  layerItineraryPoisShow: boolean
+  /** Only the leg I am on (or the first leg before setting off). */
+  layerItineraryPoisCurrentOnly: boolean
   layerFavoritesAI: boolean
   layerFavoriteType: boolean
   layerFavoriteCoords: boolean

@@ -1,7 +1,22 @@
 import { addProtocol, Map as MapLibreMap } from 'maplibre-gl'
 import { buildLayerContext } from './layer-context'
 import { pointInRing, regionChain, regionsAtPoint } from './layer-regions'
-import { buildRoadIndex, nearestRoad, roadRank, roadsInRect, type NearestRoad, type RoadIndex } from './layer-roads'
+import {
+  pointAlong,
+  pointDistance,
+  polylineCumulative,
+  polylineSlice,
+  projectOnPolyline,
+  type Pt,
+} from './layer-polyline'
+import {
+  buildRoadGraph,
+  roadRoute,
+  roadsNearPolyline,
+  type RoadGraph,
+  type RoadRoutePiece,
+} from './layer-road-route'
+import { buildRoadIndex, nearestRoad, roadRank, roadsInRect, roadsNearPoint, type NearestRoad, type RoadIndex } from './layer-roads'
 import { estimateTokens } from './context'
 import { errorMessage } from './http'
 import {
@@ -40,6 +55,7 @@ import {
   type LayerCategory,
   type LayerCategoryGroup,
   type LayerChatState,
+  type LayerContextRoad,
   type LayerContextSnapshot,
   type LayerCustomPin,
   type LayerImageFit,
@@ -70,7 +86,7 @@ import {
   globalNotesSnapshot,
   setGlobalNote,
 } from './notes-store'
-import { loadSettings, saveSettings } from './settings'
+import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, loadSettings, saveSettings } from './settings'
 import {
   layerFavoriteKey,
   listFavorites,
@@ -142,12 +158,26 @@ const CUSTOM_PIN_GROUP: LayerCategoryGroup = {
   order: 9998,
 }
 
+/** One stretch of a leg: along one named road, or a straight line. */
+type ItineraryPieceView = {
+  kind: 'road' | 'straight'
+  name?: string
+  type?: string
+  points: Pt[]
+}
+
 type ItineraryLegView = {
   fromStop: LayerItineraryStop
   toStop: LayerItineraryStop
-  from: { x: number; y: number }
-  to: { x: number; y: number }
+  from: Pt
+  to: Pt
+  /** The travelled line: straight, or along roads with straight bits where no road goes. */
+  points: Pt[]
+  cumulative: number[]
   length: number
+  /** Planned to follow roads (and the map has roads). */
+  snap: boolean
+  pieces: ItineraryPieceView[]
 }
 
 type ItineraryPoiView = {
@@ -634,6 +664,24 @@ export class LayerMapUI {
   private readonly regionLabelCache = new Map<string, { x: number; y: number; area: number }>()
   private readonly streetLabelCache = new Map<string, { x: number; y: number; angle: number }>()
   private roadIndexCache: { streets: LayerStreet[]; yScale: number; index: RoadIndex } | undefined
+  private roadGraphCache:
+    | {
+        streets: LayerStreet[]
+        yScale: number
+        graph: RoadGraph
+        routes: Map<string, RoadRoutePiece[] | undefined>
+      }
+    | undefined
+  private itineraryPoiCache:
+    | { key: string; markers: LayerMarker[]; result: Map<number, ItineraryPoiView[]> }
+    | undefined
+  /** Range while the slider or map handle is being dragged; saved to settings on release. */
+  private itineraryRangeOverride: number | undefined
+  /** Planning: the next leg added follows roads. Stays on until switched off. */
+  private routeSnapNext = false
+  private routeRangeHandleEl: HTMLButtonElement | undefined
+  private rangeBandCanvas: HTMLCanvasElement | undefined
+  private rangeHandleDrag: number | undefined
   private currentRoadCache: { key: string; road: NearestRoad | undefined } | undefined
   private tileMoving = false
   private readonly markerIndex = new Map<string, LayerMarker[]>()
@@ -3141,7 +3189,7 @@ export class LayerMapUI {
     height: number,
   ): void {
     const route = this.activeItinerary()
-    if (!route || route.stops.length < 2) return
+    if (!route || route.stops.length < 1) return
     const legs = this.itineraryLegs(route)
     const position =
       this.itineraryEdit || this.itinerary !== route
@@ -3149,51 +3197,80 @@ export class LayerMapUI {
         : this.itineraryPosition(route)
     const activeLeg =
       position?.onRoute && !position.atFinal ? position.legIndex : undefined
-    const drawLeg = (leg: ItineraryLegView, current: boolean): void => {
-      const [x1, y1] = this.project(leg.from.x, leg.from.y, width, height)
-      const [x2, y2] = this.project(leg.to.x, leg.to.y, width, height)
+    const trace = (points: Pt[]): void => {
       context.beginPath()
-      context.moveTo(x1, y1)
-      context.lineTo(x2, y2)
-      if (current) {
-        context.strokeStyle = 'rgba(8, 13, 18, 0.9)'
-        context.lineWidth = 8
-        context.setLineDash([])
-        context.stroke()
-        context.strokeStyle = '#f3c87f'
-        context.lineWidth = 4
-        context.stroke()
-        return
-      }
-      context.strokeStyle = 'rgba(8, 13, 18, 0.72)'
-      context.lineWidth = this.itineraryEdit ? 5 : 5.5
-      context.setLineDash(this.itineraryEdit ? [8, 6] : [])
-      context.stroke()
-      context.strokeStyle = this.itineraryEdit
-        ? 'rgba(243, 200, 127, 0.82)'
-        : 'rgba(230, 181, 106, 0.68)'
-      context.lineWidth = this.itineraryEdit ? 2.5 : 3
-      context.setLineDash(this.itineraryEdit ? [8, 6] : [])
-      context.stroke()
+      points.forEach((point, index) => {
+        const [x, y] = this.project(point.x, point.y, width, height)
+        if (index === 0) context.moveTo(x, y)
+        else context.lineTo(x, y)
+      })
     }
     context.save()
     context.lineCap = 'round'
     context.lineJoin = 'round'
+    if (this.itineraryRangeVisible() && legs.length > 0) this.drawItineraryRangeBand(context, legs, width, height)
+    const drawPiece = (piece: ItineraryPieceView, current: boolean, snapped: boolean): void => {
+      trace(piece.points)
+      const offRoad = snapped && piece.kind === 'straight'
+      if (current) {
+        context.setLineDash(offRoad ? [5, 5] : [])
+        context.strokeStyle = 'rgba(8, 13, 18, 0.9)'
+        context.lineWidth = offRoad ? 6 : 8
+        context.stroke()
+        context.strokeStyle = '#f3c87f'
+        context.lineWidth = offRoad ? 2.5 : 4
+        context.stroke()
+        return
+      }
+      const dash = this.itineraryEdit || offRoad ? (offRoad ? [4, 5] : [8, 6]) : []
+      context.setLineDash(dash)
+      context.strokeStyle = 'rgba(8, 13, 18, 0.72)'
+      context.lineWidth = offRoad ? 4 : this.itineraryEdit ? 5 : 5.5
+      context.stroke()
+      context.strokeStyle = this.itineraryEdit
+        ? 'rgba(243, 200, 127, 0.82)'
+        : 'rgba(230, 181, 106, 0.68)'
+      context.lineWidth = offRoad ? 2 : this.itineraryEdit ? 2.5 : 3
+      context.stroke()
+    }
+    const drawLeg = (leg: ItineraryLegView, current: boolean): void => {
+      for (const piece of leg.pieces) drawPiece(piece, current, leg.snap)
+    }
     for (const [index, leg] of legs.entries()) {
       if (index === activeLeg) continue
       drawLeg(leg, false)
     }
     if (activeLeg !== undefined) drawLeg(legs[activeLeg], true)
     context.setLineDash([])
+    // Where a road-following leg changes road or leaves the road.
+    for (const leg of legs) {
+      if (!leg.snap) continue
+      for (let index = 1; index < leg.pieces.length; index += 1) {
+        const point = leg.pieces[index].points[0]
+        const [x, y] = this.project(point.x, point.y, width, height)
+        context.beginPath()
+        context.moveTo(x, y - 5)
+        context.lineTo(x + 5, y)
+        context.lineTo(x, y + 5)
+        context.lineTo(x - 5, y)
+        context.closePath()
+        context.fillStyle = 'rgba(8, 13, 18, 0.92)'
+        context.fill()
+        context.strokeStyle = '#f3c87f'
+        context.lineWidth = 1.5
+        context.stroke()
+      }
+    }
     if (activeLeg !== undefined) {
       const leg = legs[activeLeg]
-      const [x1, y1] = this.project(leg.from.x, leg.from.y, width, height)
-      const [x2, y2] = this.project(leg.to.x, leg.to.y, width, height)
-      const mx = x1 + (x2 - x1) * 0.56
-      const my = y1 + (y2 - y1) * 0.56
+      const at = leg.length * 0.56
+      const here = pointAlong(leg.points, leg.cumulative, at)
+      const ahead = pointAlong(leg.points, leg.cumulative, Math.min(leg.length, at + leg.length * 0.02))
+      const [x1, y1] = this.project(here.x, here.y, width, height)
+      const [x2, y2] = this.project(ahead.x, ahead.y, width, height)
       const angle = Math.atan2(y2 - y1, x2 - x1)
       context.save()
-      context.translate(mx, my)
+      context.translate(x1, y1)
       context.rotate(angle)
       context.beginPath()
       context.moveTo(7, 0)
@@ -3206,18 +3283,18 @@ export class LayerMapUI {
     }
     if (this.itineraryEdit && this.routeHover && route.stops.length > 0) {
       const last = this.itineraryStopPoint(route.stops[route.stops.length - 1])
-      const [x1, y1] = this.project(last.x, last.y, width, height)
-      const [x2, y2] = this.project(this.routeHover.x, this.routeHover.y, width, height)
+      const pieces = this.legPieces(last, this.routeHover, this.routeSnapNext && this.canSnapRoads())
+      const line: Pt[] = [pieces[0].points[0]]
+      for (const piece of pieces) line.push(...piece.points.slice(1))
+      trace(line)
       context.strokeStyle = 'rgba(243, 200, 127, 0.8)'
       context.lineWidth = 1.5
       context.setLineDash([4, 4])
-      context.beginPath()
-      context.moveTo(x1, y1)
-      context.lineTo(x2, y2)
       context.stroke()
       context.setLineDash([])
-      const distance = this.itineraryDistanceLabel(last, this.routeHover)
-      const label = distance.startsWith('≈') ? distance : `≈ ${distance}`
+      const [x2, y2] = this.project(this.routeHover.x, this.routeHover.y, width, height)
+      const distance = this.itineraryPathLabel(line)
+      const label = `${distance.startsWith('≈') ? distance : `≈ ${distance}`}${this.routeSnapNext && this.canSnapRoads() ? ' · 沿路' : ''}`
       context.font = '600 10px "PingFang SC", "Microsoft YaHei", sans-serif'
       const textWidth = context.measureText(label).width
       const left = Math.min(width - textWidth - 14, Math.max(8, x2 + 10))
@@ -3228,6 +3305,73 @@ export class LayerMapUI {
       context.fillText(label, left, top)
     }
     context.restore()
+  }
+
+  /**
+   * The range band: a soft fill with a clear edge. Drawn on a scratch canvas
+   * so overlapping legs form one shape (no darker overlaps, no inner edges).
+   */
+  private drawItineraryRangeBand(
+    context: CanvasRenderingContext2D,
+    legs: ItineraryLegView[],
+    width: number,
+    height: number,
+  ): void {
+    const radius = this.itineraryRangePixels(width, height)
+    if (!(radius > 0.5)) return
+    const path = new Path2D()
+    for (const leg of legs) {
+      leg.points.forEach((point, index) => {
+        const [x, y] = this.project(point.x, point.y, width, height)
+        if (index === 0) path.moveTo(x, y)
+        else path.lineTo(x, y)
+      })
+    }
+    const target = context.canvas
+    const scratch = this.rangeBandCanvas ?? (this.rangeBandCanvas = document.createElement('canvas'))
+    if (scratch.width !== target.width || scratch.height !== target.height) {
+      scratch.width = target.width
+      scratch.height = target.height
+    }
+    const band = scratch.getContext('2d')
+    if (!band) return
+    band.setTransform(1, 0, 0, 1, 0, 0)
+    band.clearRect(0, 0, scratch.width, scratch.height)
+    band.setTransform(context.getTransform())
+    band.lineCap = 'round'
+    band.lineJoin = 'round'
+    band.strokeStyle = 'rgba(243, 200, 127, 0.7)'
+    band.lineWidth = radius * 2 + 3
+    band.stroke(path)
+    band.globalCompositeOperation = 'destination-out'
+    band.strokeStyle = '#000'
+    band.lineWidth = Math.max(0.5, radius * 2 - 1)
+    band.stroke(path)
+    band.globalCompositeOperation = 'source-over'
+    band.strokeStyle = 'rgba(243, 200, 127, 0.13)'
+    band.stroke(path)
+    context.save()
+    context.setTransform(1, 0, 0, 1, 0, 0)
+    context.drawImage(scratch, 0, 0)
+    context.restore()
+  }
+
+  private canSnapRoads(): boolean {
+    return Boolean(this.pkg?.streets?.length)
+  }
+
+  /** The range band and its handle show while planning or while the route list is open. */
+  private itineraryRangeVisible(): boolean {
+    const route = this.activeItinerary()
+    return Boolean(route && route.stops.length >= 2 && (this.itineraryEdit || this.routeShelfOpen))
+  }
+
+  /** The range on screen, in pixels, measured along the X axis at the view centre. */
+  private itineraryRangePixels(width: number, height: number): number {
+    const [cx, cy] = this.unproject(width / 2, height / 2, width, height)
+    const [x1] = this.project(cx, cy, width, height)
+    const [x2] = this.project(cx + this.itineraryRangeUnits(), cy, width, height)
+    return Math.abs(x2 - x1)
   }
 
   private drawItineraryPoiRings(
@@ -3246,6 +3390,7 @@ export class LayerMapUI {
           ? this.routeExpandedLeg
           : undefined
     if (legIndex === undefined) return
+    if (!this.itineraryExtrasLegs(route, route.stops.length - 1, position).has(legIndex)) return
     const items = pois.get(legIndex) ?? []
     if (items.length === 0) return
     context.save()
@@ -4995,6 +5140,36 @@ export class LayerMapUI {
     return this.nearbyRadiusFraction() * this.mapSpan().w
   }
 
+  /** Roads inside the nearby radius, one per road name, nearest first. */
+  private buildNearbyRoads(anchor: Pt, settings: Settings): LayerContextRoad[] {
+    const index = this.roadIndex()
+    if (!index || !settings.layerNearbyAI) return []
+    const span = this.mapSpan()
+    const grid = this.gridConfig()
+    const seen = new Set<string>()
+    const result: LayerContextRoad[] = []
+    for (const hit of roadsNearPoint(index, anchor.x, anchor.y, this.nearbyRadiusMapUnits())) {
+      const street = index.streets[hit.streetIndex]
+      const key = `${this.roadDisplayName(street)}\u0000${street.type ?? ''}`
+      if (seen.has(key)) continue
+      if (result.length >= settings.layerNearbyMax) break
+      seen.add(key)
+      const on = hit.distance <= span.w * ON_ROAD_SPAN_FRACTION
+      result.push({
+        name: street.name,
+        type: settings.layerNearbyType ? street.type || undefined : undefined,
+        on,
+        distancePercent: (hit.distance / span.w) * 100,
+        distanceCells: grid ? gridCellDistance(anchor, hit, grid) : undefined,
+        direction:
+          on || !settings.layerNearbyDirection
+            ? undefined
+            : this.directionFor(hit.x - anchor.x, (hit.y - anchor.y) * index.yScale),
+      })
+    }
+    return result
+  }
+
   private buildNearby(
     anchor: { x: number; y: number },
     settings: Settings,
@@ -5150,21 +5325,82 @@ export class LayerMapUI {
     return marker?.name ?? stop.name
   }
 
+  private itineraryYScale(): number {
+    const pkg = this.pkg
+    return pkg?.kind === 'image' ? pkg.height / pkg.width : 1
+  }
+
+  /** Road network of the package for road-following legs, rebuilt only when the roads change. */
+  private roadGraph(): { graph: RoadGraph; routes: Map<string, RoadRoutePiece[] | undefined> } | undefined {
+    const pkg = this.pkg
+    if (!pkg?.streets?.length) return undefined
+    const yScale = this.itineraryYScale()
+    const cached = this.roadGraphCache
+    if (cached && cached.streets === pkg.streets && cached.yScale === yScale) return cached
+    this.roadGraphCache = {
+      streets: pkg.streets,
+      yScale,
+      graph: buildRoadGraph(pkg.streets, yScale),
+      routes: new Map(),
+    }
+    return this.roadGraphCache
+  }
+
+  /** Stretches of one leg: along roads (merged by road name) or one straight line. */
+  private legPieces(from: Pt, to: Pt, snap: boolean): ItineraryPieceView[] {
+    const straight: ItineraryPieceView[] = [{ kind: 'straight', points: [from, to] }]
+    if (!snap) return straight
+    const network = this.roadGraph()
+    if (!network) return straight
+    const key = `${from.x}:${from.y}:${to.x}:${to.y}`
+    if (!network.routes.has(key)) {
+      if (network.routes.size > 200) network.routes.clear()
+      network.routes.set(key, roadRoute(network.graph, from, to))
+    }
+    const raw = network.routes.get(key)
+    if (!raw) return straight
+    const streets = network.graph.index.streets
+    const pieces: ItineraryPieceView[] = []
+    for (const piece of raw) {
+      const street = piece.kind === 'road' ? streets[piece.street] : undefined
+      const name = street ? this.roadDisplayName(street) : undefined
+      const type = street?.type || undefined
+      const last = pieces[pieces.length - 1]
+      if (last && last.kind === piece.kind && last.name === name && last.type === type) {
+        last.points.push(...piece.points.slice(1))
+      } else {
+        pieces.push({ kind: piece.kind, name, type, points: piece.points.slice() })
+      }
+    }
+    return pieces
+  }
+
   private itineraryLegs(route: LayerItinerary): ItineraryLegView[] {
     const points = route.stops.map((stop) => ({
       stop,
       point: this.itineraryStopPoint(stop),
     }))
+    const yScale = this.itineraryYScale()
+    const hasRoads = Boolean(this.pkg?.streets?.length)
     const legs: ItineraryLegView[] = []
     for (let index = 1; index < points.length; index += 1) {
       const from = points[index - 1]
       const to = points[index]
+      const snap = hasRoads && to.stop.snapRoad === true
+      const pieces = this.legPieces(from.point, to.point, snap)
+      const line: Pt[] = [pieces[0].points[0]]
+      for (const piece of pieces) line.push(...piece.points.slice(1))
+      const cumulative = polylineCumulative(line, yScale)
       legs.push({
         fromStop: from.stop,
         toStop: to.stop,
         from: from.point,
         to: to.point,
-        length: Math.hypot(to.point.x - from.point.x, to.point.y - from.point.y),
+        points: line,
+        cumulative,
+        length: cumulative[cumulative.length - 1],
+        snap,
+        pieces,
       })
     }
     return legs
@@ -5174,77 +5410,56 @@ export class LayerMapUI {
     return formatCellDistance(cells, grid)
   }
 
-  private itineraryDistanceLabel(
-    from: { x: number; y: number },
-    to: { x: number; y: number },
-  ): string {
+  /** Distance in the unit shown to the user: grid cells when calibrated, else % of the map. */
+  private itineraryMeasure(from: Pt, to: Pt): number {
     const grid = this.gridConfig()
-    if (grid) {
-      const cells = Math.hypot(
-        (to.x - from.x) / grid.cellW,
-        (to.y - from.y) / grid.cellH,
-      )
-      return this.itineraryFormatCellDistance(cells, grid)
-    }
+    if (grid) return Math.hypot((to.x - from.x) / grid.cellW, (to.y - from.y) / grid.cellH)
+    // % of the map width, Y in the same unit as X (matches "nearby" and the range).
     const span = this.mapSpan()
-    const percent = Math.hypot(
-      (to.x - from.x) / Math.max(1e-8, span.w),
-      (to.y - from.y) / Math.max(1e-8, span.h),
-    ) * 100
-    return `${percent < 0.1 ? percent.toFixed(3) : percent.toFixed(1)}% 地图`
+    return (pointDistance(from, to, this.itineraryYScale()) / Math.max(1e-8, span.w)) * 100
+  }
+
+  private itineraryMeasureLabel(value: number): string {
+    const grid = this.gridConfig()
+    if (grid) return this.itineraryFormatCellDistance(value, grid)
+    return `${value < 0.1 ? value.toFixed(3) : value.toFixed(1)}% 地图`
+  }
+
+  private itineraryPathMeasure(points: Pt[]): number {
+    let total = 0
+    for (let index = 1; index < points.length; index += 1) {
+      total += this.itineraryMeasure(points[index - 1], points[index])
+    }
+    return total
+  }
+
+  private itineraryDistanceLabel(from: Pt, to: Pt): string {
+    return this.itineraryMeasureLabel(this.itineraryMeasure(from, to))
+  }
+
+  private itineraryPathLabel(points: Pt[]): string {
+    return this.itineraryMeasureLabel(this.itineraryPathMeasure(points))
+  }
+
+  /** Distance along a leg between two lengths along it. */
+  private itineraryAlongLabel(leg: ItineraryLegView, from: number, to: number): string {
+    return this.itineraryPathLabel(polylineSlice(leg.points, leg.cumulative, from, to))
   }
 
   private itineraryTotalLabel(route: LayerItinerary, legs = this.itineraryLegs(route)): string {
-    const grid = this.gridConfig()
-    if (grid) {
-      let cells = 0
-      for (const leg of legs) {
-        cells += Math.hypot(
-          (leg.to.x - leg.from.x) / grid.cellW,
-          (leg.to.y - leg.from.y) / grid.cellH,
-        )
-      }
-      return this.itineraryFormatCellDistance(cells, grid)
-    }
-    const span = this.mapSpan()
-    let percent = 0
-    for (const leg of legs) {
-      percent += Math.hypot(
-        (leg.to.x - leg.from.x) / Math.max(1e-8, span.w),
-        (leg.to.y - leg.from.y) / Math.max(1e-8, span.h),
-      ) * 100
-    }
-    return `${percent < 0.1 ? percent.toFixed(3) : percent.toFixed(1)}% 地图`
-  }
-
-  private projectOnSegment(
-    point: { x: number; y: number },
-    from: { x: number; y: number },
-    to: { x: number; y: number },
-  ): { point: { x: number; y: number }; t: number; distance: number } {
-    const dx = to.x - from.x
-    const dy = to.y - from.y
-    const lengthSquared = dx * dx + dy * dy
-    const t =
-      lengthSquared <= 1e-12
-        ? 0
-        : Math.min(1, Math.max(0, ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared))
-    const projected = { x: from.x + dx * t, y: from.y + dy * t }
-    return {
-      point: projected,
-      t,
-      distance: Math.hypot(point.x - projected.x, point.y - projected.y),
-    }
+    return this.itineraryMeasureLabel(
+      legs.reduce((total, leg) => total + this.itineraryPathMeasure(leg.points), 0),
+    )
   }
 
   private itineraryProjection(
     route: LayerItinerary,
-    point: { x: number; y: number },
+    point: Pt,
   ):
     | {
         legIndex: number
         t: number
-        point: { x: number; y: number }
+        point: Pt
         distance: number
         along: number
         leg: ItineraryLegView
@@ -5254,21 +5469,22 @@ export class LayerMapUI {
       | {
           legIndex: number
           t: number
-          point: { x: number; y: number }
+          point: Pt
           distance: number
           along: number
           leg: ItineraryLegView
         }
       | undefined
+    const yScale = this.itineraryYScale()
     for (const [legIndex, leg] of this.itineraryLegs(route).entries()) {
-      const projected = this.projectOnSegment(point, leg.from, leg.to)
+      const projected = projectOnPolyline(point, leg.points, leg.cumulative, yScale)
       if (!best || projected.distance < best.distance) {
         best = {
           legIndex,
-          t: projected.t,
+          t: leg.length > 0 ? projected.along / leg.length : 0,
           point: projected.point,
           distance: projected.distance,
-          along: projected.t * leg.length,
+          along: projected.along,
           leg,
         }
       }
@@ -5282,7 +5498,9 @@ export class LayerMapUI {
         atFinal: boolean
         legIndex?: number
         progress: number
-        point: { x: number; y: number }
+        point: Pt
+        /** Length along the current leg. */
+        along?: number
         nextStopIndex?: number
       }
     | undefined {
@@ -5313,6 +5531,7 @@ export class LayerMapUI {
         legIndex: index,
         progress: 0,
         point,
+        along: 0,
         nextStopIndex: index + 1,
       }
     }
@@ -5336,81 +5555,171 @@ export class LayerMapUI {
       legIndex: projection.legIndex,
       progress: projection.t,
       point: projection.point,
+      along: projection.along,
       nextStopIndex:
         projection.legIndex + 1 < route.stops.length ? projection.legIndex + 1 : undefined,
     }
   }
 
-  private itineraryPois(route: LayerItinerary): Map<number, ItineraryPoiView[]> {
-    const result = new Map<number, ItineraryPoiView[]>()
-    const legs = this.itineraryLegs(route)
-    if (legs.length === 0) return result
+  /** Range around the route, as a fraction of the map width (global setting, live while dragging). */
+  private itineraryRange(): number {
+    const value = this.itineraryRangeOverride ?? loadSettings(this.liveContext()).layerItineraryPoiRadius
+    return Math.min(ITINERARY_RANGE_MAX, Math.max(ITINERARY_RANGE_MIN, value || 0.08))
+  }
+
+  /** The range in road-index units (map X units, Y scaled like the roads). */
+  private itineraryRangeUnits(): number {
+    return this.itineraryRange() * this.mapSpan().w
+  }
+
+  /**
+   * Legs whose places and roads are shown (list, map rings and AI), following
+   * the two global switches. Planning shows every leg.
+   */
+  private itineraryExtrasLegs(
+    route: LayerItinerary,
+    legCount: number,
+    position = this.itineraryEdit ? undefined : this.itineraryPosition(route),
+  ): Set<number> {
     const settings = loadSettings(this.liveContext())
-    const radius = Math.min(0.4, Math.max(0.01, settings.layerItineraryPoiRadius || 0.08))
+    const all = new Set(Array.from({ length: legCount }, (_, index) => index))
+    if (!settings.layerItineraryPoisShow) return new Set()
+    if (this.itineraryEdit || !settings.layerItineraryPoisCurrentOnly) return all
+    if (!position || position.atFinal) return new Set()
+    return new Set([position.onRoute ? position.legIndex ?? 0 : 0])
+  }
+
+  private itineraryPois(route: LayerItinerary): Map<number, ItineraryPoiView[]> {
+    const legs = this.itineraryLegs(route)
+    const settings = loadSettings(this.liveContext())
+    const radius = this.itineraryRange()
     const max = Math.min(30, Math.max(1, settings.layerItineraryPoiMax || 8))
-    const hidden = new Set(this.state.hiddenCategories ?? [])
+    const hidden = [...(this.state.hiddenCategories ?? [])].sort().join(',')
+    const key = [
+      legs.map((leg) => `${leg.points.length}:${leg.from.x},${leg.from.y}>${leg.to.x},${leg.to.y}:${leg.snap}`).join('|'),
+      route.stops.map((stop) => stop.markerId ?? '').join(','),
+      radius,
+      max,
+      hidden,
+    ].join('#')
+    const cached = this.itineraryPoiCache
+    if (cached && cached.key === key && cached.markers === this.effectiveMarkerList) return cached.result
+    const result = new Map<number, ItineraryPoiView[]>()
+    if (legs.length === 0) return result
+    const hiddenSet = new Set(this.state.hiddenCategories ?? [])
     const span = this.mapSpan()
+    const yScale = this.itineraryYScale()
+    const units = radius * span.w
     const stopMarkerIds = new Set(
       route.stops.map((stop) => stop.markerId).filter((id): id is string => Boolean(id)),
     )
     const stopPoints = legs.flatMap((leg) => [leg.from, leg.to])
-    const candidates: Array<{ marker: LayerMarker; legIndex: number; along: number; offset: number; projected: { x: number; y: number } }> = []
+    const boxes = legs.map((leg) => {
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const point of leg.points) {
+        minX = Math.min(minX, point.x)
+        maxX = Math.max(maxX, point.x)
+        minY = Math.min(minY, point.y)
+        maxY = Math.max(maxY, point.y)
+      }
+      const dy = units / Math.max(1e-8, yScale)
+      return { minX: minX - units, maxX: maxX + units, minY: minY - dy, maxY: maxY + dy }
+    })
     for (const marker of this.effectiveMarkerList) {
-      if (hidden.has(marker.categoryId) || stopMarkerIds.has(marker.id)) continue
+      if (hiddenSet.has(marker.categoryId) || stopMarkerIds.has(marker.id)) continue
       if (
         stopPoints.some(
-          (point) =>
-            Math.hypot(
-              (point.x - marker.x) / Math.max(1e-8, span.w),
-              (point.y - marker.y) / Math.max(1e-8, span.h),
-            ) <= 0.01,
+          (point) => pointDistance(point, marker, yScale) / Math.max(1e-8, span.w) <= 0.01 * Math.min(1, radius / 0.08),
         )
       ) {
         continue
       }
-      let best:
-        | { legIndex: number; along: number; offset: number; projected: { x: number; y: number } }
-        | undefined
+      let best: { legIndex: number; along: number; offset: number; projected: Pt } | undefined
       for (const [legIndex, leg] of legs.entries()) {
-        const projected = this.projectOnSegment(marker, leg.from, leg.to)
+        const box = boxes[legIndex]
+        if (marker.x < box.minX || marker.x > box.maxX || marker.y < box.minY || marker.y > box.maxY) continue
+        const projected = projectOnPolyline(marker, leg.points, leg.cumulative, yScale)
         if (!best || projected.distance < best.offset) {
-          best = {
-            legIndex,
-            along: projected.t * leg.length,
-            offset: projected.distance,
-            projected: projected.point,
-          }
+          best = { legIndex, along: projected.along, offset: projected.distance, projected: projected.point }
         }
       }
-      if (best) {
-        const offsetMap = Math.hypot(
-          (marker.x - best.projected.x) / Math.max(1e-8, span.w),
-          (marker.y - best.projected.y) / Math.max(1e-8, span.h),
-        )
-        if (offsetMap <= radius) {
-          candidates.push({ marker, ...best, offset: offsetMap })
-        }
+      if (best && best.offset <= units) {
+        const bucket = result.get(best.legIndex) ?? []
+        bucket.push({
+          marker,
+          along: best.along,
+          offset: best.offset / Math.max(1e-8, span.w),
+          projected: best.projected,
+        })
+        result.set(best.legIndex, bucket)
       }
-    }
-    for (const item of candidates) {
-      const bucket = result.get(item.legIndex) ?? []
-      bucket.push({
-        marker: item.marker,
-        along: item.along,
-        offset: item.offset,
-        projected: item.projected,
-      })
-      result.set(item.legIndex, bucket)
     }
     for (const [legIndex, bucket] of result) {
       result.set(
         legIndex,
-        bucket
-          .sort((a, b) => a.along - b.along || a.offset - b.offset)
-          .slice(0, max),
+        bucket.sort((a, b) => a.along - b.along || a.offset - b.offset).slice(0, max),
       )
     }
+    this.itineraryPoiCache = { key, markers: this.effectiveMarkerList, result }
     return result
+  }
+
+  /**
+   * Roads inside the range of each leg that the leg does not travel on, one
+   * entry per road name, nearest first.
+   */
+  private itineraryLegRoads(legs: ItineraryLegView[]): Map<number, Array<{ street: LayerStreet; distance: number }>> {
+    const result = new Map<number, Array<{ street: LayerStreet; distance: number }>>()
+    const network = this.roadGraph()
+    if (!network) return result
+    const index = network.graph.index
+    const units = this.itineraryRangeUnits()
+    const max = Math.min(30, Math.max(1, loadSettings(this.liveContext()).layerItineraryPoiMax || 8))
+    for (const [legIndex, leg] of legs.entries()) {
+      const used = new Set(
+        leg.pieces.filter((piece) => piece.kind === 'road').map((piece) => `${piece.name}\u0000${piece.type ?? ''}`),
+      )
+      const seen = new Set<string>()
+      const list: Array<{ street: LayerStreet; distance: number }> = []
+      for (const hit of roadsNearPolyline(index, leg.points, units)) {
+        const street = index.streets[hit.streetIndex]
+        const key = `${this.roadDisplayName(street)}\u0000${street.type ?? ''}`
+        if (used.has(key) || seen.has(key)) continue
+        seen.add(key)
+        list.push({ street, distance: hit.distance })
+        if (list.length >= max) break
+      }
+      if (list.length > 0) result.set(legIndex, list)
+    }
+    return result
+  }
+
+  /** Road touching or crossing the route (same tolerance as "on road"). */
+  private roadTouches(distance: number): boolean {
+    return distance <= this.mapSpan().w * ON_ROAD_SPAN_FRACTION
+  }
+
+  /** Distance label for a length in road-index units (map X units). */
+  private roadUnitsLabel(distance: number): string {
+    const grid = this.gridConfig()
+    if (grid) return this.itineraryFormatCellDistance(distance / grid.cellW, grid)
+    const percent = (distance / Math.max(1e-8, this.mapSpan().w)) * 100
+    return `${percent < 0.1 ? percent.toFixed(3) : percent.toFixed(1)}% 地图`
+  }
+
+  /** The road stretch of a road-following leg at a length along it. */
+  private legPieceAt(leg: ItineraryLegView, along: number): ItineraryPieceView | undefined {
+    let travelled = 0
+    const yScale = this.itineraryYScale()
+    for (const piece of leg.pieces) {
+      const length = polylineCumulative(piece.points, yScale).pop() ?? 0
+      if (along <= travelled + length + 1e-12) return piece
+      travelled += length
+    }
+    return leg.pieces[leg.pieces.length - 1]
   }
 
   private itineraryContext(route: LayerItinerary): LayerItineraryContext | undefined {
@@ -5418,18 +5727,23 @@ export class LayerMapUI {
     const legs = this.itineraryLegs(route)
     const position = this.itineraryPosition(route)
     const pois = this.itineraryPois(route)
+    const legRoads = this.itineraryLegRoads(legs)
+    const extras = this.itineraryExtrasLegs(route, legs.length, position)
     const names = route.stops.map((stop) => this.itineraryStopName(stop))
     const currentLeg = position?.onRoute && !position.atFinal ? position.legIndex : undefined
     const current =
       currentLeg !== undefined
         ? (() => {
             const leg = legs[currentLeg]
+            const along = position?.along ?? 0
+            const piece = leg.snap ? this.legPieceAt(leg, along) : undefined
             return {
               legIndex: currentLeg,
               progress: (position?.progress ?? 0) * 100,
               from: this.itineraryStopName(leg.fromStop),
               to: this.itineraryStopName(leg.toStop),
-              remaining: this.itineraryDistanceLabel(position?.point ?? leg.from, leg.to),
+              remaining: this.itineraryAlongLabel(leg, along, leg.length),
+              road: piece?.kind === 'road' ? piece.name : undefined,
             }
           })()
         : undefined
@@ -5447,14 +5761,32 @@ export class LayerMapUI {
       legs: legs.map((leg, index) => ({
         from: this.itineraryStopName(leg.fromStop),
         to: this.itineraryStopName(leg.toStop),
-        distance: this.itineraryDistanceLabel(leg.from, leg.to),
+        distance: this.itineraryPathLabel(leg.points),
         current: currentLeg === index ? true : undefined,
-        pois: (pois.get(index) ?? []).map((poi) => ({
-          name: poi.marker.name,
-          category: this.categoryById(poi.marker.categoryId)?.name,
-          along: this.itineraryDistanceLabel(leg.from, poi.projected),
-          offset: this.itineraryDistanceLabel(poi.marker, poi.projected),
-        })),
+        mode: leg.snap ? ('road' as const) : ('straight' as const),
+        route: leg.snap
+          ? leg.pieces.map((piece) => ({
+              kind: piece.kind,
+              name: piece.name,
+              type: piece.type,
+              distance: this.itineraryPathLabel(piece.points),
+            }))
+          : undefined,
+        roads: extras.has(index)
+          ? (legRoads.get(index) ?? []).map((road) => ({
+              name: this.roadDisplayName(road.street),
+              type: road.street.type || undefined,
+              distance: this.roadTouches(road.distance) ? 'touches' : this.roadUnitsLabel(road.distance),
+            }))
+          : undefined,
+        pois: extras.has(index)
+          ? (pois.get(index) ?? []).map((poi) => ({
+              name: poi.marker.name,
+              category: this.categoryById(poi.marker.categoryId)?.name,
+              along: this.itineraryAlongLabel(leg, 0, poi.along),
+              offset: this.itineraryDistanceLabel(poi.marker, poi.projected),
+            }))
+          : [],
       })),
     }
   }
@@ -5597,6 +5929,7 @@ export class LayerMapUI {
       name: marker?.name ?? fallbackName,
       x: Math.min(1, Math.max(0, x)),
       y: Math.min(1, Math.max(0, y)),
+      snapRoad: draft.stops.length > 0 && this.routeSnapNext && this.canSnapRoads() ? true : undefined,
     })
     draft.updatedAt = now
     this.routeExpandedLeg = Math.max(0, draft.stops.length - 2)
@@ -5706,6 +6039,10 @@ export class LayerMapUI {
     const legs = route ? this.itineraryLegs(route) : []
     const position = route ? this.itineraryPosition(route) : undefined
     const pois = route ? this.itineraryPois(route) : new Map<number, ItineraryPoiView[]>()
+    const legRoads = route ? this.itineraryLegRoads(legs) : new Map<number, Array<{ street: LayerStreet; distance: number }>>()
+    const extras = route
+      ? this.itineraryExtrasLegs(route, legs.length, this.itineraryEdit ? undefined : position)
+      : new Set<number>()
     const head = document.createElement('header')
     head.className = 'tml-route-head'
     const titleWrap = document.createElement('div')
@@ -5758,6 +6095,9 @@ export class LayerMapUI {
     actions.append(shelfToggle)
     head.append(actions)
     this.routeShelfEl.append(head)
+    if (route && (this.itineraryEdit || (this.routeShelfOpen && route.stops.length >= 2))) {
+      this.routeShelfEl.append(this.itineraryToolsRow())
+    }
     if (!this.routeShelfOpen) {
       this.renderRouteStopHandles()
       return
@@ -5803,7 +6143,10 @@ export class LayerMapUI {
           state.textContent = '尚未在路线上 · 点“前往起点”开始'
         } else {
           const leg = legs[position.legIndex ?? 0]
-          state.textContent = `当前第 ${(position.legIndex ?? 0) + 1}/${legs.length} 段 · ${Math.round(position.progress * 100)}% · 剩余 ${this.itineraryDistanceLabel(position.point, leg.to)}`
+          const along = position.along ?? 0
+          const piece = leg.snap ? this.legPieceAt(leg, along) : undefined
+          const onRoad = piece?.kind === 'road' && piece.name ? ` · 在 ${piece.name} 上` : ''
+          state.textContent = `当前第 ${(position.legIndex ?? 0) + 1}/${legs.length} 段 · ${Math.round(position.progress * 100)}% · 剩余 ${this.itineraryAlongLabel(leg, along, leg.length)}${onRoad}`
         }
         body.append(state)
       }
@@ -5843,8 +6186,16 @@ export class LayerMapUI {
         list.append(row)
         const leg = legs[index]
         if (!leg) continue
+        const shown = extras.has(index)
         const legButton = this.routeActionButton(
-          `${this.itineraryDistanceLabel(leg.from, leg.to)} · 沿途 ${pois.get(index)?.length ?? 0} 个地点`,
+          [
+            this.itineraryPathLabel(leg.points),
+            leg.snap ? '沿路' : '直线',
+            shown ? `沿途 ${pois.get(index)?.length ?? 0} 个地点` : '',
+            shown && legRoads.get(index)?.length ? `${legRoads.get(index)?.length} 条道路` : '',
+          ]
+            .filter(Boolean)
+            .join(' · '),
           'toggle-leg',
         )
         legButton.classList.add('tml-route-leg')
@@ -5857,22 +6208,75 @@ export class LayerMapUI {
           legButton.setAttribute('aria-expanded', 'true')
         }
         legButton.dataset.legIndex = String(index)
-        list.append(legButton)
+        const legRow = document.createElement('div')
+        legRow.className = 'tml-route-leg-row'
+        legRow.append(legButton)
+        if (this.canSnapRoads()) {
+          const snap = this.routeActionButton(leg.snap ? '沿路 ●' : '沿路 ○', 'snap-leg')
+          snap.classList.add('tml-route-snap-leg')
+          snap.classList.toggle('is-on', leg.snap)
+          snap.dataset.legIndex = String(index)
+          snap.setAttribute('aria-pressed', String(leg.snap))
+          snap.title = leg.snap ? '这一段改成直线' : '这一段改成沿道路走'
+          legRow.append(snap)
+        }
+        list.append(legRow)
         if (this.routeExpandedLeg === index) {
           const poiList = document.createElement('div')
           poiList.className = 'tml-route-pois'
-          const legPois = pois.get(index) ?? []
-          if (legPois.length === 0) {
+          if (leg.snap) {
+            leg.pieces.forEach((piece, pieceIndex) => {
+              const line = document.createElement('div')
+              line.className = `tml-route-piece is-${piece.kind}`
+              const distance = this.itineraryPathLabel(piece.points)
+              if (piece.kind === 'straight') {
+                line.textContent =
+                  pieceIndex === 0
+                    ? `┄ 直线 ${distance}，走到路上`
+                    : pieceIndex === leg.pieces.length - 1
+                      ? `┄ 直线 ${distance}，到${this.itineraryStopName(leg.toStop)}`
+                      : `┄ 无路相连，直线 ${distance}`
+              } else {
+                const previousRoad = leg.pieces
+                  .slice(0, pieceIndex)
+                  .some((item) => item.kind === 'road')
+                line.textContent = `${previousRoad ? '◆ 换到' : '═ 在'} ${piece.name}${piece.type ? `（${piece.type}）` : ''}${previousRoad ? '' : ' 上'} · ${distance}`
+              }
+              poiList.append(line)
+            })
+          }
+          if (!shown) {
             poiList.append(
-              textElement('div', 'tml-route-poi-empty', '这段沿线暂无地点。'),
+              textElement(
+                'div',
+                'tml-route-poi-empty',
+                loadSettings(this.liveContext()).layerItineraryPoisShow
+                  ? '设置为只显示当前所在段的沿途地点和道路。'
+                  : '沿途地点和道路已在设置中关闭。',
+              ),
             )
           } else {
+            for (const road of legRoads.get(index) ?? []) {
+              poiList.append(
+                textElement(
+                  'div',
+                  'tml-route-piece is-near',
+                  `━ ${this.roadDisplayName(road.street)}${road.street.type ? `（${road.street.type}）` : ''} · ${this.roadTouches(road.distance) ? '与本段相接' : `距本段 ${this.roadUnitsLabel(road.distance)}`}`,
+                ),
+              )
+            }
+            const legPois = pois.get(index) ?? []
+            if (legPois.length === 0) {
+              poiList.append(
+                textElement('div', 'tml-route-poi-empty', '这段沿线暂无地点。'),
+              )
+            }
             for (const poi of legPois) {
               const poiButton = document.createElement('button')
               poiButton.type = 'button'
               poiButton.className = 'tml-route-poi'
               poiButton.textContent = `${poi.marker.name}${this.categoryById(poi.marker.categoryId) ? ` · ${this.categoryById(poi.marker.categoryId)?.name}` : ''}`
-              poiButton.title = `沿程 ${this.itineraryDistanceLabel(leg.from, poi.projected)}`
+              poiButton.title = `沿程 ${this.itineraryAlongLabel(leg, 0, poi.along)}`
               poiButton.addEventListener('click', () => {
                 const marker = this.markerById(poi.marker.id)
                 if (marker) this.selectMarker(marker, true)
@@ -5910,11 +6314,113 @@ export class LayerMapUI {
     hint.className = 'tml-route-hint'
     hint.textContent = this.itineraryEdit
       ? '完成前是草稿，不会进入 AI；收起列表后可拖站点'
-      : `每段沿线 ±${Math.round((loadSettings(this.liveContext()).layerItineraryPoiRadius || 0.08) * 100)}% · 最多 ${loadSettings(this.liveContext()).layerItineraryPoiMax || 8} 个地点`
+      : `沿途范围 ±${this.roadUnitsLabel(this.itineraryRangeUnits())} · 每段最多 ${loadSettings(this.liveContext()).layerItineraryPoiMax || 8} 个地点`
     footer.append(ai, hint)
     body.append(footer)
     this.routeShelfEl.append(body)
     this.renderRouteStopHandles()
+  }
+
+  /** Planning tools: road-following switch for the next leg and the range slider. */
+  private itineraryToolsRow(): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'tml-route-tools'
+    if (this.itineraryEdit) {
+      const snap = this.routeActionButton(
+        this.routeSnapNext && this.canSnapRoads() ? '贴合道路 ●' : '贴合道路 ○',
+        'snap-next',
+      )
+      snap.classList.add('tml-route-snap-next')
+      snap.classList.toggle('is-on', this.routeSnapNext && this.canSnapRoads())
+      snap.setAttribute('aria-pressed', String(this.routeSnapNext && this.canSnapRoads()))
+      snap.disabled = !this.canSnapRoads()
+      snap.title = !this.canSnapRoads()
+        ? '这张地图没有道路数据'
+        : this.routeSnapNext
+          ? '下一段沿道路走；再点一下改为直线'
+          : '下一段按直线；点一下改为沿道路走'
+      const caption = document.createElement('span')
+      caption.className = 'tml-route-tools-caption'
+      caption.textContent = '下一段：'
+      row.append(caption, snap)
+    }
+    const range = document.createElement('label')
+    range.className = 'tml-route-range'
+    const text = document.createElement('span')
+    text.textContent = '沿途范围'
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.min = '0'
+    input.max = '1000'
+    input.step = '1'
+    input.dataset.routeRange = 'slider'
+    input.setAttribute('aria-label', '沿途范围')
+    input.value = String(this.rangeToSlider(this.itineraryRange()))
+    const value = document.createElement('span')
+    value.className = 'tml-route-range-value'
+    value.textContent = this.itineraryRangeText()
+    input.addEventListener('input', () => {
+      this.previewItineraryRange(this.sliderToRange(Number(input.value)))
+      value.textContent = this.itineraryRangeText()
+    })
+    input.addEventListener('change', () => this.commitItineraryRange())
+    range.append(text, input, value)
+    row.append(range)
+    return row
+  }
+
+  private rangeToSlider(range: number): number {
+    return Math.round(
+      (Math.log(range / ITINERARY_RANGE_MIN) / Math.log(ITINERARY_RANGE_MAX / ITINERARY_RANGE_MIN)) * 1000,
+    )
+  }
+
+  private sliderToRange(value: number): number {
+    return ITINERARY_RANGE_MIN * (ITINERARY_RANGE_MAX / ITINERARY_RANGE_MIN) ** (value / 1000)
+  }
+
+  private itineraryRangeText(): string {
+    const range = this.itineraryRange()
+    const percent = range * 100
+    return `±${this.roadUnitsLabel(this.itineraryRangeUnits())}（${percent < 1 ? percent.toFixed(2) : percent.toFixed(1)}% 地图宽）`
+  }
+
+  /** Live range while dragging; the list and AI update when it is committed. */
+  private previewItineraryRange(range: number): void {
+    this.itineraryRangeOverride = Math.min(ITINERARY_RANGE_MAX, Math.max(ITINERARY_RANGE_MIN, range))
+    const label = this.routeShelfEl?.querySelector<HTMLElement>('.tml-route-range-value')
+    if (label) label.textContent = this.itineraryRangeText()
+    this.positionRouteRangeHandle()
+    this.requestDraw()
+  }
+
+  /** Save the range to the global setting (shared with the settings page). */
+  private commitItineraryRange(): void {
+    const range = this.itineraryRangeOverride
+    if (range === undefined) return
+    const settings = loadSettings(this.ctx)
+    settings.layerItineraryPoiRadius = range
+    saveSettings(this.ctx, settings)
+    this.itineraryRangeOverride = undefined
+    this.callbacks.onSettingsChanged?.()
+    this.renderItineraryShelf()
+    this.refreshContext()
+    this.requestDraw()
+  }
+
+  private toggleLegSnap(index: number): void {
+    const editing = this.itineraryEdit && this.itineraryDraft
+    const route = editing ? this.itineraryDraft : this.itinerary
+    const stop = route?.stops[index + 1]
+    if (!route || !stop || !this.canSnapRoads()) return
+    stop.snapRoad = stop.snapRoad ? undefined : true
+    route.updatedAt = Date.now()
+    if (!editing && this.itinerary) {
+      this.itinerary = { ...this.itinerary, stops: this.itinerary.stops.map((item) => ({ ...item })) }
+      this.saveItineraryToState(this.itinerary)
+    }
+    this.renderItineraryShelf()
+    this.requestDraw()
   }
 
   private routeActionButton(
@@ -5980,6 +6486,17 @@ export class LayerMapUI {
       this.goToNextItineraryStop()
       return
     }
+    if (action === 'snap-next') {
+      this.routeSnapNext = !this.routeSnapNext
+      this.renderItineraryShelf()
+      this.requestDraw()
+      return
+    }
+    if (action === 'snap-leg') {
+      const index = Number(target.closest<HTMLElement>('[data-leg-index]')?.dataset.legIndex)
+      if (Number.isInteger(index)) this.toggleLegSnap(index)
+      return
+    }
     if (action === 'toggle-leg') {
       const index = Number(target.closest<HTMLElement>('[data-leg-index]')?.dataset.legIndex)
       if (Number.isInteger(index)) {
@@ -6025,10 +6542,137 @@ export class LayerMapUI {
       this.routeStopButtons.set(stop.id, button)
       this.routeStopsEl.append(button)
     }
+    const handle = document.createElement('button')
+    handle.type = 'button'
+    handle.className = 'tml-route-range-handle'
+    handle.title = '拖动调整沿途范围（往外变宽，往里变窄）'
+    handle.setAttribute('aria-label', '沿途范围拉手')
+    handle.addEventListener('pointerdown', (event) => this.onRangeHandleDown(event))
+    handle.addEventListener('pointermove', (event) => this.onRangeHandleMove(event))
+    handle.addEventListener('pointerup', (event) => this.onRangeHandleUp(event))
+    handle.addEventListener('pointercancel', (event) => this.onRangeHandleUp(event))
+    handle.addEventListener('click', (event) => event.stopPropagation())
+    this.routeRangeHandleEl = handle
+    this.routeStopsEl.append(handle)
     this.positionRouteStopHandles()
   }
 
+  /** The leg the range handle sits on: the open leg, else my current leg, else the last leg. */
+  private rangeHandleLeg(legs: ItineraryLegView[]): ItineraryLegView | undefined {
+    if (legs.length === 0) return undefined
+    if (this.routeExpandedLeg >= 0 && legs[this.routeExpandedLeg]) return legs[this.routeExpandedLeg]
+    const route = this.activeItinerary()
+    const position = route && !this.itineraryEdit ? this.itineraryPosition(route) : undefined
+    if (position?.onRoute && position.legIndex !== undefined) return legs[position.legIndex]
+    return legs[legs.length - 1]
+  }
+
+  private positionRouteRangeHandle(): void {
+    const handle = this.routeRangeHandleEl
+    if (!handle) return
+    const route = this.activeItinerary()
+    if (!route || !this.itineraryRangeVisible()) {
+      handle.hidden = true
+      return
+    }
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const leg = this.rangeHandleLeg(this.itineraryLegs(route))
+    if (!leg || leg.length <= 0) {
+      handle.hidden = true
+      return
+    }
+    const middle = pointAlong(leg.points, leg.cumulative, leg.length / 2)
+    const before = pointAlong(leg.points, leg.cumulative, Math.max(0, leg.length / 2 - leg.length * 0.01))
+    const after = pointAlong(leg.points, leg.cumulative, Math.min(leg.length, leg.length / 2 + leg.length * 0.01))
+    const [mx, my] = this.project(middle.x, middle.y, width, height)
+    const [bx, by] = this.project(before.x, before.y, width, height)
+    const [ax, ay] = this.project(after.x, after.y, width, height)
+    const dx = ax - bx
+    const dy = ay - by
+    const length = Math.hypot(dx, dy) || 1
+    const radius = this.itineraryRangePixels(width, height)
+    // Perpendicular to the line; prefer the upper side, which the route list never covers.
+    let nx = -dy / length
+    let ny = dx / length
+    if (ny > 0) {
+      nx = -nx
+      ny = -ny
+    }
+    const viewport = this.viewportEl.getBoundingClientRect()
+    const shelf = this.routeShelfEl && !this.routeShelfEl.hidden ? this.routeShelfEl.getBoundingClientRect() : undefined
+    const usable = (px: number, py: number): boolean => {
+      if (px < 10 || py < 10 || px > width - 10 || py > height - 10) return false
+      if (!shelf) return true
+      const sx = px + viewport.left
+      const sy = py + viewport.top
+      return !(sx >= shelf.left && sx <= shelf.right && sy >= shelf.top && sy <= shelf.bottom)
+    }
+    let x = mx + nx * radius
+    let y = my + ny * radius
+    if (!usable(x, y) && usable(mx - nx * radius, my - ny * radius)) {
+      x = mx - nx * radius
+      y = my - ny * radius
+    }
+    handle.style.left = `${x}px`
+    handle.style.top = `${y}px`
+    handle.hidden = !usable(x, y)
+  }
+
+  private onRangeHandleDown(event: PointerEvent): void {
+    event.preventDefault()
+    event.stopPropagation()
+    this.rangeHandleDrag = event.pointerId
+    this.routeRangeHandleEl?.classList.add('dragging')
+    this.routeRangeHandleEl?.setPointerCapture(event.pointerId)
+  }
+
+  private onRangeHandleMove(event: PointerEvent): void {
+    if (this.rangeHandleDrag !== event.pointerId) return
+    event.preventDefault()
+    const route = this.activeItinerary()
+    if (!route) return
+    const rect = this.viewportEl.getBoundingClientRect()
+    const width = this.viewportEl.clientWidth || 1
+    const height = this.viewportEl.clientHeight || 1
+    const px = event.clientX - rect.left
+    const py = event.clientY - rect.top
+    let best = Infinity
+    for (const leg of this.itineraryLegs(route)) {
+      const screen = leg.points.map((point) => this.project(point.x, point.y, width, height))
+      for (let index = 1; index < screen.length; index += 1) {
+        const [x1, y1] = screen[index - 1]
+        const [x2, y2] = screen[index]
+        const dx = x2 - x1
+        const dy = y2 - y1
+        const lengthSquared = dx * dx + dy * dy
+        const t = lengthSquared > 0 ? Math.min(1, Math.max(0, ((px - x1) * dx + (py - y1) * dy) / lengthSquared)) : 0
+        best = Math.min(best, Math.hypot(px - (x1 + dx * t), py - (y1 + dy * t)))
+      }
+    }
+    if (!Number.isFinite(best)) return
+    const [cx, cy] = this.unproject(width / 2, height / 2, width, height)
+    const [x1] = this.project(cx, cy, width, height)
+    const [x2] = this.project(cx + this.mapSpan().w, cy, width, height)
+    const pixelsPerMapWidth = Math.abs(x2 - x1)
+    if (!(pixelsPerMapWidth > 0)) return
+    this.previewItineraryRange(best / pixelsPerMapWidth)
+    const slider = this.routeShelfEl?.querySelector<HTMLInputElement>('[data-route-range="slider"]')
+    if (slider) slider.value = String(this.rangeToSlider(this.itineraryRange()))
+  }
+
+  private onRangeHandleUp(event: PointerEvent): void {
+    if (this.rangeHandleDrag !== event.pointerId) return
+    this.rangeHandleDrag = undefined
+    this.routeRangeHandleEl?.classList.remove('dragging')
+    if (this.routeRangeHandleEl?.hasPointerCapture(event.pointerId)) {
+      this.routeRangeHandleEl.releasePointerCapture(event.pointerId)
+    }
+    this.commitItineraryRange()
+  }
+
   private positionRouteStopHandles(): void {
+    this.positionRouteRangeHandle()
     const route = this.activeItinerary()
     if (!route) return
     const width = this.viewportEl.clientWidth || 1
@@ -6153,6 +6797,7 @@ export class LayerMapUI {
     const road = user ? this.currentRoad() : undefined
     const contextGrid = this.gridConfig()
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
+    const nearbyRoads = user ? this.buildNearbyRoads(user, settings) : []
     const itinerary = this.itinerary ? this.itineraryContext(this.itinerary) : undefined
     const note =
       settings.layerNoteAI && marker && this.placeAIPartAllowed(marker, 'note')
@@ -6204,6 +6849,7 @@ export class LayerMapUI {
       favorites: favorites.length > 0 ? favorites : undefined,
       itinerary,
       nearby: nearby.length > 0 ? nearby : undefined,
+      nearbyRoads: nearbyRoads.length > 0 ? nearbyRoads : undefined,
       nearbyAnchor: user ? 'my position' : undefined,
       nearbyScope: 'radius',
       nearbyCoords: settings.layerNearbyCoords,
@@ -6357,7 +7003,9 @@ export class LayerMapUI {
     if (!this.nearbyEl) return
     this.nearbyEl.replaceChildren()
     const context = this.state.context
-    if (!context?.nearby?.length) {
+    const places = context?.nearby ?? []
+    const roads = context?.nearbyRoads ?? []
+    if (places.length === 0 && roads.length === 0) {
       this.nearbyEl.hidden = true
       return
     }
@@ -6365,14 +7013,32 @@ export class LayerMapUI {
     const head = document.createElement('div')
     head.className = 'tml-nearby-head'
     const title = document.createElement('strong')
-    title.textContent = `附近 ${context.nearby.length}`
+    title.textContent = roads.length > 0 ? `附近 ${places.length} · 道路 ${roads.length}` : `附近 ${places.length}`
     const scope = document.createElement('span')
     scope.textContent = '半径圈内'
     head.append(title, scope)
     this.nearbyEl.append(head)
     const list = document.createElement('div')
     list.className = 'tml-nearby-list'
-    for (const place of context.nearby) {
+    const grid = this.gridConfig()
+    for (const road of roads) {
+      const row = document.createElement('div')
+      row.className = 'tml-nearby-row is-road'
+      const name = document.createElement('span')
+      name.className = 'tml-nearby-name'
+      name.textContent = `━ ${road.name || (road.type ? `无名道路（${road.type}）` : '无名道路')}`
+      const meta = document.createElement('span')
+      meta.className = 'tml-nearby-meta'
+      const distance = road.on
+        ? '就在路上'
+        : grid && road.distanceCells != null
+          ? formatCellDistance(road.distanceCells, grid)
+          : `${road.distancePercent < 0.01 ? '<0.01' : road.distancePercent.toFixed(2)}%`
+      meta.textContent = ['道路', road.type, distance, road.direction].filter(Boolean).join(' · ')
+      row.append(name, meta)
+      list.append(row)
+    }
+    for (const place of places) {
       const button = document.createElement('button')
       button.type = 'button'
       button.className = 'tml-nearby-row'
@@ -6381,7 +7047,6 @@ export class LayerMapUI {
       name.textContent = place.name
       const meta = document.createElement('span')
       meta.className = 'tml-nearby-meta'
-      const grid = this.gridConfig()
       const location = grid
         ? this.gridText(place.x, place.y) ?? ''
         : place.distancePercent < 0.01

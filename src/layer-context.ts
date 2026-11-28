@@ -3,6 +3,7 @@ import type {
   LayerChatState,
   LayerContextRoad,
   LayerGridConfig,
+  LayerItineraryContextPiece,
   LayerNearbyPlace,
 } from './layer-types'
 
@@ -64,6 +65,23 @@ function roadLine(road: LayerContextRoad, grid: LayerGridConfig | undefined): st
   return `Nearest road: ${name}${type} — ${distance}${direction}`
 }
 
+function routeText(route: LayerItineraryContextPiece[]): string {
+  let seenRoad = false
+  return route
+    .map((piece, index) => {
+      if (piece.kind === 'straight') {
+        if (index === 0) return `${clean(piece.distance)} straight to road`
+        if (index === route.length - 1) return `${clean(piece.distance)} straight to stop`
+        return `no road link, ${clean(piece.distance)} straight`
+      }
+      const name = `${clean(piece.name) || 'unnamed road'}${piece.type ? ` (${clean(piece.type)})` : ''}`
+      const text = `${seenRoad ? 'switch to ' : ''}${name} ${clean(piece.distance)}`
+      seenRoad = true
+      return text
+    })
+    .join(' → ')
+}
+
 export function buildLayerContext(state: LayerChatState): string {
   const snapshot = state.context
   if (!snapshot?.mapName) return ''
@@ -82,7 +100,9 @@ export function buildLayerContext(state: LayerChatState): string {
       ? ` · Area: ${areaText(snapshot.position.region, snapshot.position.regionParents)}`
       : ''
     lines.push(`My position: ${coords}${area}`)
-    if (snapshot.position.road) lines.push(roadLine(snapshot.position.road, snapshot.grid))
+    const road = snapshot.position.road
+    // The nearby road list below already gives the nearest road when I am not on one.
+    if (road && (road.on || !snapshot.nearbyRoads?.length)) lines.push(roadLine(road, snapshot.grid))
   }
   if (snapshot.currentPlace) {
     const category = snapshot.category ? ` (${clean(snapshot.category)})` : ''
@@ -123,7 +143,7 @@ export function buildLayerContext(state: LayerChatState): string {
     if (itinerary.current) {
       const current = itinerary.current
       lines.push(
-        `Current: leg ${current.legIndex + 1}/${itinerary.legs.length} · ${Math.round(current.progress)}% traveled`,
+        `Current: leg ${current.legIndex + 1}/${itinerary.legs.length} · ${Math.round(current.progress)}% traveled${current.road ? ` · on ${clean(current.road)}` : ''}`,
       )
       lines.push(
         `Current leg: ${clean(current.from)} → ${clean(current.to)} · ${clean(itinerary.legs[current.legIndex]?.distance ?? '')} · remaining ${clean(current.remaining)}`,
@@ -136,14 +156,41 @@ export function buildLayerContext(state: LayerChatState): string {
     if (itinerary.nextStop) lines.push(`Next stop: ${clean(itinerary.nextStop)}`)
     for (const [index, leg] of itinerary.legs.entries()) {
       lines.push(
-        `${index + 1}. ${clean(leg.from)} → ${clean(leg.to)} · ${clean(leg.distance)}${leg.current ? ' [current]' : ''}`,
+        `${index + 1}. ${clean(leg.from)} → ${clean(leg.to)} · ${clean(leg.distance)}${leg.mode === 'road' ? ' · along roads' : ''}${leg.current ? ' [current]' : ''}`,
       )
+      if (leg.route?.length) lines.push(`   Route: ${routeText(leg.route)}`)
+      if (leg.roads?.length) {
+        lines.push(
+          `   Roads in range: ${leg.roads
+            .map(
+              (road) =>
+                `${clean(road.name) || 'unnamed road'}${road.type ? ` (${clean(road.type)})` : ''} · ${road.distance === 'touches' ? 'touches route' : `${clean(road.distance)} from route`}`,
+            )
+            .join('; ')}`,
+        )
+      }
       for (const poi of leg.pois) {
         const category = poi.category ? ` (${clean(poi.category)})` : ''
         const along = poi.along ? ` · ${clean(poi.along)} from leg start` : ''
         const offset = poi.offset ? ` · ${clean(poi.offset)} from route` : ''
         lines.push(`   - ${clean(poi.name)}${category}${along}${offset}`)
       }
+    }
+  }
+  if (snapshot.nearbyRoads?.length) {
+    lines.push('Nearby roads (within radius):')
+    for (const road of snapshot.nearbyRoads) {
+      const name = clean(road.name) || 'unnamed road'
+      const type = road.type ? ` (${clean(road.type)})` : ''
+      if (road.on) {
+        lines.push(`- ${name}${type} — on it`)
+        continue
+      }
+      const distance =
+        snapshot.grid && road.distanceCells != null
+          ? formatCellDistance(road.distanceCells, snapshot.grid)
+          : `${road.distancePercent < 0.01 ? '<0.01' : road.distancePercent.toFixed(2)}%`
+      lines.push(`- ${name}${type} — ${distance}${road.direction ? ` · ${road.direction}` : ''}`)
     }
   }
   if (snapshot.nearby?.length) {
