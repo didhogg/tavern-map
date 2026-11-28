@@ -78,10 +78,15 @@ test('AI text shows nearby roads, leg route with road changes and roads in range
     context: {
       mapName: 'Skyrim',
       position: { x: 0.5, y: 0.5, road: { name: 'A 大路', type: 'Main', on: true, distancePercent: 0 } },
+      currentPlace: '河木镇贸易商行',
+      note: '店里可补给',
+      areaNotes: [{ name: '河木镇', text: '车马停在村外' }],
       nearbyRoads: [
         { name: 'A 大路', type: 'Main', on: true, distancePercent: 0 },
         { name: 'B 小径', type: 'Path', on: false, distancePercent: 1.2, direction: 'N' },
       ],
+      nearby: [{ id: 'inn', name: '沉睡巨人旅店', x: 0.5, y: 0.51, direction: 'S', distancePercent: 1 }],
+      nearbyScope: 'radius',
       itinerary: {
         start: '河木镇', destination: '白漫城', total: '5.0 格', stops: ['河木镇', '白漫城'],
         current: { legIndex: 0, progress: 40, from: '河木镇', to: '白漫城', remaining: '3.0 格', road: 'A 大路' },
@@ -102,10 +107,30 @@ test('AI text shows nearby roads, leg route with road changes and roads in range
   })
   assert.match(text, /On road: A 大路 \(Main\)/)
   assert.match(text, /Nearby roads \(within radius\):\n- A 大路 \(Main\) — on it\n- B 小径 \(Path\) — 1.20% · N/)
+  assert.match(text, /Current place note: 店里可补给\nArea note \(河木镇\): 车马停在村外\nNearby roads \(within radius\):/)
+  assert.match(text, /Nearby \(nearest 1, within radius\):\n- 沉睡巨人旅店 — 1\.00% · S\n\nItinerary:\n/)
   assert.match(text, /Current: leg 1\/1 · 40% traveled · on A 大路/)
   assert.match(text, /1\. 河木镇 → 白漫城 · 5.0 格 · along roads \[current\]/)
   assert.match(text, /Route: 0.3 格 straight to road → A 大路 \(Main\) 3.1 格 → switch to B 小径 \(Path\) 1.0 格 → 0.6 格 straight to stop/)
   assert.match(text, /Roads in range: C 小径 \(Path\) · 0.8 格 from route/)
+})
+
+test('the itinerary reports arrival only when stored progress confirms the destination', () => {
+  const itinerary = {
+    start: 'Start', destination: 'End', total: '5 格', stops: ['Start', 'End'],
+    legs: [{ from: 'Start', to: 'End', distance: '5 格', pois: [] }],
+  }
+  const render = (progress) => buildLayerContext(loadLayerState({
+    chatMetadata: {
+      [LAYER_STATE_KEY]: {
+        version: 1,
+        context: { mapName: 'Skyrim', itinerary: { ...itinerary, ...progress } },
+      },
+    },
+  }))
+  assert.doesNotMatch(render({}), /at destination|completed/)
+  assert.match(render({ nextStop: 'Start' }), /Current: not started\nNext stop: Start/)
+  assert.match(render({ atDestination: true }), /Current: at destination/)
 })
 
 test('itinerary POI source and note survive reloading chat metadata independently', () => {

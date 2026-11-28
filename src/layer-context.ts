@@ -135,6 +135,40 @@ export function buildLayerContext(state: LayerChatState): string {
       lines.push(`${area.other ? 'Other area note' : 'Area note'} (${clean(area.name)}): ${clean(area.text)}`)
     }
   }
+  if (snapshot.nearbyRoads?.length) {
+    lines.push('Nearby roads (within radius):')
+    for (const road of snapshot.nearbyRoads) {
+      const name = clean(road.name) || 'unnamed road'
+      const type = road.type ? ` (${clean(road.type)})` : ''
+      if (road.on) {
+        lines.push(`- ${name}${type} — on it`)
+        continue
+      }
+      const distance =
+        snapshot.grid && road.distanceCells != null
+          ? formatCellDistance(road.distanceCells, snapshot.grid)
+          : `${road.distancePercent < 0.01 ? '<0.01' : road.distancePercent.toFixed(2)}%`
+      lines.push(`- ${name}${type} — ${distance}${road.direction ? ` · ${road.direction}` : ''}`)
+    }
+  }
+  if (snapshot.nearby?.length) {
+    const scope =
+      snapshot.nearbyScope === 'map'
+        ? 'whole map'
+        : snapshot.nearbyScope === 'radius'
+          ? 'within radius'
+          : 'current view'
+    lines.push(`Nearby (nearest ${snapshot.nearby.length}, ${scope}):`)
+    for (const place of snapshot.nearby) {
+      lines.push(placeLine(place, snapshot.grid, snapshot.nearbyCoords !== false))
+      if (place.sourceMaterial) {
+        lines.push(`  Source material: ${clean(place.sourceMaterial)}`)
+      }
+      for (const wiki of place.wikiTexts ?? []) {
+        lines.push(`  Wiki text (${clean(wiki.title)}): ${clean(wiki.text)}`)
+      }
+    }
+  }
   const roadNotes = (snapshot.roadNotes ?? []).filter((road) => clean(road.text) || clean(road.source))
   if (roadNotes.length > 0) {
     lines.push(roadNotes.some((road) => clean(road.source)) ? 'Road notes and source:' : 'Road notes:')
@@ -148,7 +182,7 @@ export function buildLayerContext(state: LayerChatState): string {
   }
   if (snapshot.itinerary) {
     const itinerary = snapshot.itinerary
-    lines.push('Itinerary (current, completed):')
+    lines.push('', 'Itinerary:')
     lines.push(`Start: ${clean(itinerary.start)}`)
     lines.push(`Destination: ${clean(itinerary.destination)}`)
     lines.push(`Stops: ${itinerary.stops.length}`)
@@ -163,7 +197,7 @@ export function buildLayerContext(state: LayerChatState): string {
       )
     } else if (itinerary.nextStop) {
       lines.push('Current: not started')
-    } else {
+    } else if (itinerary.atDestination) {
       lines.push('Current: at destination')
     }
     if (itinerary.nextStop) lines.push(`Next stop: ${clean(itinerary.nextStop)}`)
@@ -198,40 +232,6 @@ export function buildLayerContext(state: LayerChatState): string {
         const note = clean(poi.note)
         if (source) lines.push(`     Source: ${source}`)
         if (note) lines.push(`     Note: ${note}`)
-      }
-    }
-  }
-  if (snapshot.nearbyRoads?.length) {
-    lines.push('Nearby roads (within radius):')
-    for (const road of snapshot.nearbyRoads) {
-      const name = clean(road.name) || 'unnamed road'
-      const type = road.type ? ` (${clean(road.type)})` : ''
-      if (road.on) {
-        lines.push(`- ${name}${type} — on it`)
-        continue
-      }
-      const distance =
-        snapshot.grid && road.distanceCells != null
-          ? formatCellDistance(road.distanceCells, snapshot.grid)
-          : `${road.distancePercent < 0.01 ? '<0.01' : road.distancePercent.toFixed(2)}%`
-      lines.push(`- ${name}${type} — ${distance}${road.direction ? ` · ${road.direction}` : ''}`)
-    }
-  }
-  if (snapshot.nearby?.length) {
-    const scope =
-      snapshot.nearbyScope === 'map'
-        ? 'whole map'
-        : snapshot.nearbyScope === 'radius'
-          ? 'within radius'
-          : 'current view'
-    lines.push(`Nearby (nearest ${snapshot.nearby.length}, ${scope}):`)
-    for (const place of snapshot.nearby) {
-      lines.push(placeLine(place, snapshot.grid, snapshot.nearbyCoords !== false))
-      if (place.sourceMaterial) {
-        lines.push(`  Source material: ${clean(place.sourceMaterial)}`)
-      }
-      for (const wiki of place.wikiTexts ?? []) {
-        lines.push(`  Wiki text (${clean(wiki.title)}): ${clean(wiki.text)}`)
       }
     }
   }

@@ -36456,37 +36456,6 @@ function UI(e) {
 		if (n.push(`Current place: ${Z(t.currentPlace)}${e}${r}${i}`), t.note && n.push(`Current place note: ${Z(t.note)}`), t.sourceMaterial && n.push(`Current place source: ${Z(t.sourceMaterial)}`), t.wikiTexts?.length) for (let e of t.wikiTexts) n.push(`Current place wiki (${Z(e.title)}): ${Z(e.text)}`);
 	} else t.region && !t.position?.region && n.push(`Area: ${BI(t.region, t.regionParents)}`);
 	for (let e of t.areaNotes ?? []) Z(e.text) && n.push(`${e.other ? "Other area note" : "Area note"} (${Z(e.name)}): ${Z(e.text)}`);
-	let r = (t.roadNotes ?? []).filter((e) => Z(e.text) || Z(e.source));
-	if (r.length > 0) {
-		n.push(r.some((e) => Z(e.source)) ? "Road notes and source:" : "Road notes:");
-		for (let e of r) {
-			let t = e.type ? ` (${Z(e.type)})` : "", r = e.tags.length > 0 ? ` [${e.tags.map(Z).join(" · ")}]` : "", i = Z(e.text) ? `: ${Z(e.text)}` : "";
-			n.push(`- ${Z(e.name) || "unnamed road"}${t}${r}${i}`), Z(e.source) && n.push(`  Source: ${Z(e.source)}`);
-		}
-	}
-	if (t.itinerary) {
-		let e = t.itinerary;
-		if (n.push("Itinerary (current, completed):"), n.push(`Start: ${Z(e.start)}`), n.push(`Destination: ${Z(e.destination)}`), n.push(`Stops: ${e.stops.length}`), n.push(`Total: ${Z(e.total)}`), e.current) {
-			let t = e.current;
-			n.push(`Current: leg ${t.legIndex + 1}/${e.legs.length} · ${Math.round(t.progress)}% traveled${t.road ? ` · on ${Z(t.road)}` : ""}`), n.push(`Current leg: ${Z(t.from)} → ${Z(t.to)} · ${Z(e.legs[t.legIndex]?.distance ?? "")} · remaining ${Z(t.remaining)}`);
-		} else e.nextStop ? n.push("Current: not started") : n.push("Current: at destination");
-		e.nextStop && n.push(`Next stop: ${Z(e.nextStop)}`);
-		for (let [t, r] of e.legs.entries()) {
-			if (n.push(`${t + 1}. ${Z(r.from)} → ${Z(r.to)} · ${Z(r.distance)}${r.mode === "road" ? " · along roads" : ""}${r.current ? " [current]" : ""}`), r.route?.length && n.push(`   Route: ${HI(r.route)}`), r.roads?.length && n.push(`   Roads in range: ${r.roads.map((e) => `${Z(e.name) || "unnamed road"}${e.type ? ` (${Z(e.type)})` : ""} · ${e.distance === "touches" ? "touches route" : `${Z(e.distance)} from route`}`).join("; ")}`), r.areas?.length) {
-				n.push("   Areas in range:");
-				for (let e of r.areas) {
-					let t = Z(e.note);
-					n.push(`   - ${Z(e.name)}${t ? ` · note: ${t}` : ""}`);
-				}
-			}
-			for (let e of r.pois) {
-				let t = e.category ? ` (${Z(e.category)})` : "", r = e.along ? ` · ${Z(e.along)} from leg start` : "", i = e.offset ? ` · ${Z(e.offset)} from route` : "";
-				n.push(`   - ${Z(e.name)}${t}${r}${i}`);
-				let a = Z(e.sourceMaterial), o = Z(e.note);
-				a && n.push(`     Source: ${a}`), o && n.push(`     Note: ${o}`);
-			}
-		}
-	}
 	if (t.nearbyRoads?.length) {
 		n.push("Nearby roads (within radius):");
 		for (let e of t.nearbyRoads) {
@@ -36505,6 +36474,37 @@ function UI(e) {
 		for (let e of t.nearby) {
 			n.push(zI(e, t.grid, t.nearbyCoords !== !1)), e.sourceMaterial && n.push(`  Source material: ${Z(e.sourceMaterial)}`);
 			for (let t of e.wikiTexts ?? []) n.push(`  Wiki text (${Z(t.title)}): ${Z(t.text)}`);
+		}
+	}
+	let r = (t.roadNotes ?? []).filter((e) => Z(e.text) || Z(e.source));
+	if (r.length > 0) {
+		n.push(r.some((e) => Z(e.source)) ? "Road notes and source:" : "Road notes:");
+		for (let e of r) {
+			let t = e.type ? ` (${Z(e.type)})` : "", r = e.tags.length > 0 ? ` [${e.tags.map(Z).join(" · ")}]` : "", i = Z(e.text) ? `: ${Z(e.text)}` : "";
+			n.push(`- ${Z(e.name) || "unnamed road"}${t}${r}${i}`), Z(e.source) && n.push(`  Source: ${Z(e.source)}`);
+		}
+	}
+	if (t.itinerary) {
+		let e = t.itinerary;
+		if (n.push("", "Itinerary:"), n.push(`Start: ${Z(e.start)}`), n.push(`Destination: ${Z(e.destination)}`), n.push(`Stops: ${e.stops.length}`), n.push(`Total: ${Z(e.total)}`), e.current) {
+			let t = e.current;
+			n.push(`Current: leg ${t.legIndex + 1}/${e.legs.length} · ${Math.round(t.progress)}% traveled${t.road ? ` · on ${Z(t.road)}` : ""}`), n.push(`Current leg: ${Z(t.from)} → ${Z(t.to)} · ${Z(e.legs[t.legIndex]?.distance ?? "")} · remaining ${Z(t.remaining)}`);
+		} else e.nextStop ? n.push("Current: not started") : e.atDestination && n.push("Current: at destination");
+		e.nextStop && n.push(`Next stop: ${Z(e.nextStop)}`);
+		for (let [t, r] of e.legs.entries()) {
+			if (n.push(`${t + 1}. ${Z(r.from)} → ${Z(r.to)} · ${Z(r.distance)}${r.mode === "road" ? " · along roads" : ""}${r.current ? " [current]" : ""}`), r.route?.length && n.push(`   Route: ${HI(r.route)}`), r.roads?.length && n.push(`   Roads in range: ${r.roads.map((e) => `${Z(e.name) || "unnamed road"}${e.type ? ` (${Z(e.type)})` : ""} · ${e.distance === "touches" ? "touches route" : `${Z(e.distance)} from route`}`).join("; ")}`), r.areas?.length) {
+				n.push("   Areas in range:");
+				for (let e of r.areas) {
+					let t = Z(e.note);
+					n.push(`   - ${Z(e.name)}${t ? ` · note: ${t}` : ""}`);
+				}
+			}
+			for (let e of r.pois) {
+				let t = e.category ? ` (${Z(e.category)})` : "", r = e.along ? ` · ${Z(e.along)} from leg start` : "", i = e.offset ? ` · ${Z(e.offset)} from route` : "";
+				n.push(`   - ${Z(e.name)}${t}${r}${i}`);
+				let a = Z(e.sourceMaterial), o = Z(e.note);
+				a && n.push(`     Source: ${a}`), o && n.push(`     Note: ${o}`);
+			}
 		}
 	}
 	if (t.favorites?.length) {
@@ -40437,6 +40437,7 @@ function iV(e) {
 		stops: n,
 		current: i,
 		nextStop: typeof t.nextStop == "string" ? t.nextStop : void 0,
+		atDestination: t.atDestination === !0 || void 0,
 		legs: r
 	};
 }
@@ -44306,6 +44307,7 @@ var JH = `
 			stops: c,
 			current: u,
 			nextStop: d,
+			atDestination: r?.atFinal ? !0 : void 0,
 			legs: n.map((e, n) => ({
 				from: this.itineraryStopName(e.fromStop),
 				to: this.itineraryStopName(e.toStop),

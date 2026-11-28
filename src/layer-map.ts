@@ -6258,6 +6258,7 @@ export class LayerMapUI {
       stops: names,
       current,
       nextStop,
+      atDestination: position?.atFinal ? true : undefined,
       legs: legs.map((leg, index) => ({
         from: this.itineraryStopName(leg.fromStop),
         to: this.itineraryStopName(leg.toStop),

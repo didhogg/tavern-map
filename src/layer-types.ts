@@ -390,6 +390,8 @@ export type LayerItineraryContext = {
     road?: string
   }
   nextStop?: string
+  /** Explicit arrival; older snapshots may have no progress information. */
+  atDestination?: true
   legs: LayerItineraryContextLeg[]
 }
 
@@ -868,6 +870,7 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
     stops,
     current,
     nextStop: typeof value.nextStop === 'string' ? value.nextStop : undefined,
+    atDestination: value.atDestination === true ? true : undefined,
     legs,
   }
 }
