@@ -27,9 +27,15 @@ import {
   isQuotaError,
   saveImportedPackage,
 } from './layer-store'
+import { applyBackupPersonal, type BackupChatSource, type BackupMergeMode } from './layer-backup'
+import { backupCountsText } from './layer-backup-ui'
 
 export type LayerImportUIOptions = {
-  onImported: (pkg: LayerMapPackage) => void | Promise<void>
+  /** `restore` is set for a backup package: its chat data and the chosen merge rule. */
+  onImported: (
+    pkg: LayerMapPackage,
+    restore?: { chat: BackupChatSource; mode: BackupMergeMode },
+  ) => void | Promise<void>
   onToast: (message: string) => void
 }
 
@@ -180,6 +186,8 @@ export class LayerImportUI {
   private bundle: LayerSourceBundle | null = null
   private manual: ManualSelection = {}
   private preview: LayerImportPreview | null = null
+  /** Backup restore: keep this device's personal data, or let the backup win. */
+  private backupMode: BackupMergeMode = 'keep'
   private abort: AbortController | null = null
   private busy = false
   private closing = false
@@ -315,6 +323,7 @@ export class LayerImportUI {
 
   open(): void {
     this.reset()
+    this.backupMode = 'keep'
     this.el.hidden = false
     document.addEventListener('keydown', this.onKeyDown)
     window.requestAnimationFrame(() => {
@@ -893,12 +902,46 @@ export class LayerImportUI {
       ),
     )
     this.previewEl.append(meta)
+    if (preview.backup) this.previewEl.append(this.renderBackupSection(preview))
     if (pkg.kind === 'image') this.previewEl.append(this.renderImageSection(preview))
     if (pkg.kind === 'tiles') this.previewEl.append(this.renderTileSection(preview))
     this.previewEl.append(this.renderNotices(preview))
     this.previewEl.append(this.renderDataChoices(preview))
     this.previewEl.append(this.renderAdvanced(preview))
     this.renderFooter()
+  }
+
+  private renderBackupSection(preview: LayerImportPreview): HTMLElement {
+    const section = element('section', 'tml-preview-backup')
+    const head = element('div', 'tml-section-heading')
+    head.append(element('h4', undefined, '个人修改'))
+    section.append(head)
+    const counts = preview.backup?.counts
+    const summary = counts ? backupCountsText(counts) : ''
+    if (!summary) {
+      section.append(element('p', 'tml-hint', '这个备份包没有带个人修改，只恢复地图本体。'))
+      return section
+    }
+    section.append(element('p', 'tml-backup-counts', summary))
+    section.append(element('p', 'tml-hint', '本机已有同一张地图时，个人修改怎么处理：'))
+    const options: Array<[BackupMergeMode, string]> = [
+      ['keep', '本机已有的保留，包里的只补本机没有的（不会丢任何东西）'],
+      ['replace', '用包里的覆盖本机（两边都有的以包为准，本机独有的仍保留）'],
+    ]
+    for (const [mode, text] of options) {
+      const label = element('label', 'tml-backup-mode')
+      const radio = document.createElement('input')
+      radio.type = 'radio'
+      radio.name = 'tml-backup-mode'
+      radio.value = mode
+      radio.checked = this.backupMode === mode
+      radio.addEventListener('change', () => {
+        if (radio.checked) this.backupMode = mode
+      })
+      label.append(radio, element('span', undefined, text))
+      section.append(label)
+    }
+    return section
   }
 
   private renderImageSection(preview: LayerImportPreview): HTMLElement {
@@ -1270,7 +1313,7 @@ export class LayerImportUI {
     this.subEl.textContent = '正在写入地图包'
     this.reportProgress({ step: '准备写入 IndexedDB', detail: '检查浏览器存储空间…' })
     try {
-      if (pkg.source === 'mapgenie' && pkg.categories.some((category) => category.icon)) {
+      if (!preview.backup && pkg.source === 'mapgenie' && pkg.categories.some((category) => category.icon)) {
         this.reportProgress({
           step: '下载标记图标',
           detail: '读取 Map Genie 原始分类图标；失败时保留彩色圆点。',
@@ -1297,10 +1340,17 @@ export class LayerImportUI {
         step: '写入 IndexedDB',
         detail: `${formatCount(pkg.markers.length)} 个地点 · ${formatBytes(preview.stats.sizeBytes)}`,
       })
-      const result = await saveImportedPackage(pkg, this.abort.signal)
+      const backup = preview.backup
+      const mode = this.backupMode
+      const result = await saveImportedPackage(pkg, this.abort.signal, {
+        preferIncoming: Boolean(backup) && mode === 'replace',
+      })
       if (this.abort.signal.aborted) {
         throw new DOMException('导入已取消', 'AbortError')
       }
+      const restore = backup
+        ? { chat: await applyBackupPersonal(result.pkg, backup.personal, mode), mode }
+        : undefined
       this.busy = false
       this.el.hidden = true
       document.removeEventListener('keydown', this.onKeyDown)
@@ -1308,7 +1358,7 @@ export class LayerImportUI {
         result.updated ? `已更新地图包：${result.pkg.name}` : `已导入地图包：${result.pkg.name}`,
       )
       try {
-        await this.options.onImported(result.pkg)
+        await this.options.onImported(result.pkg, restore)
       } catch (error) {
         console.warn('[tavern-map] package imported but opening it failed', error)
       }

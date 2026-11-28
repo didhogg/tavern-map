@@ -59,9 +59,9 @@ export function isFavorite(key: string): boolean {
   return Boolean(findFavorite(key))
 }
 
-export function setFavorite(place: FavoritePlace): FavoritePlace[] {
+export function setFavorite(place: FavoritePlace, keepSavedAt = false): FavoritePlace[] {
   const items = load().filter((item) => item.key !== place.key)
-  items.push({ ...place, savedAt: Date.now() })
+  items.push({ ...place, savedAt: keepSavedAt && place.savedAt ? place.savedAt : Date.now() })
   save(items)
   return items
 }

@@ -26,6 +26,8 @@ import {
   updateLayerPackage,
 } from './layer-store'
 import type { MapGenieTileSetInfo } from './layer-import'
+import type { BackupChatSource } from './layer-backup'
+import { LayerExportPanel } from './layer-backup-ui'
 
 export type LayerPackagesUIOptions = {
   onOpen: (id: string) => void | Promise<void>
@@ -33,6 +35,8 @@ export type LayerPackagesUIOptions = {
   onDeleted: (id: string) => void
   onImport: () => void
   onToast: (message: string) => void
+  /** The current chat's data for one package, offered as an export option. */
+  chatData: (packageId: string) => BackupChatSource
 }
 
 const PACKAGES_ID = 'tml-packages'
@@ -108,6 +112,7 @@ export class LayerPackagesUI {
   private targetId: string | undefined
   private loading = false
   private thumbUrls: string[] = []
+  private readonly exportPanel: LayerExportPanel
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (this.el.hidden) return
@@ -157,6 +162,11 @@ export class LayerPackagesUI {
     this.attachInput.accept = '.json,.zip,application/json,application/zip'
     this.attachInput.hidden = true
     this.el.append(this.imageInput, this.tilesInput, this.attachInput)
+    this.exportPanel = new LayerExportPanel({
+      chatData: (packageId) => this.options.chatData(packageId),
+      rerender: () => this.render(),
+      toast: (message) => this.options.onToast(message),
+    })
     this.bind()
   }
 
@@ -171,12 +181,14 @@ export class LayerPackagesUI {
     this.renamingId = undefined
     this.deletingId = undefined
     this.removingImageId = undefined
+    this.exportPanel.close()
     document.addEventListener('keydown', this.onKeyDown)
     await this.reload()
     this.el.querySelector<HTMLElement>('[data-package-action="close"]')?.focus()
   }
 
   close(): void {
+    this.exportPanel.close()
     this.el.hidden = true
     document.removeEventListener('keydown', this.onKeyDown)
     this.revokeThumbUrls()
@@ -274,6 +286,10 @@ export class LayerPackagesUI {
       this.expandedPkg = pkg
       this.removingImageId = undefined
       this.render()
+      return
+    }
+    if (action === 'export') {
+      await this.exportPanel.toggle(id)
       return
     }
     if (action === 'delete') {
@@ -476,6 +492,7 @@ export class LayerPackagesUI {
     add(this.renamingId === meta.id ? '保存名称' : '重命名', this.renamingId === meta.id ? 'rename-save' : 'rename')
     if (this.renamingId === meta.id) add('取消', 'rename-cancel')
     add(meta.kind === 'tiles' ? '瓦片' : '底图', 'expand')
+    add('导出', 'export')
     add('删除', 'delete')
     head.append(thumb, info, actions)
     row.append(head)
@@ -489,6 +506,7 @@ export class LayerPackagesUI {
         ),
       )
     }
+    if (this.exportPanel.isOpenFor(meta.id)) row.append(this.exportPanel.render())
     if (this.deletingId === meta.id) {
       const confirm = element('div', 'tml-package-confirm')
       confirm.append(

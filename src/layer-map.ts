@@ -86,6 +86,9 @@ import {
   flushGlobalNotes,
   globalNote,
   globalNotesSnapshot,
+  LAYER_LINK_TEXT_PREFIX,
+  layerNotePrefix,
+  layerSourcePrefix,
   setGlobalNote,
 } from './notes-store'
 import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, loadSettings, saveSettings } from './settings'
@@ -113,6 +116,7 @@ import {
   savePlaceAIFlags,
 } from './layer-ai-store'
 import { LayerWindowController } from './layer-window'
+import { mergeRecord, type BackupChatSource, type BackupMergeMode } from './layer-backup'
 import {
   removeStoredLayerPackage,
   saveStoredLayerPosition,
@@ -191,7 +195,7 @@ type ItineraryPoiView = {
   projected: { x: number; y: number }
 }
 function linkTextKey(url: string): string {
-  return `layer-linktext:${url}`
+  return `${LAYER_LINK_TEXT_PREFIX}${url}`
 }
 
 const REFERENCE_HEADINGS = new Set([
@@ -902,7 +906,8 @@ export class LayerMapUI {
       { storageKey: 'tavern-map:layer-window:v1' },
     )
     this.importUI = new LayerImportUI({
-      onImported: async (pkg) => {
+      onImported: async (pkg, restore) => {
+        if (restore) this.restoreChatData(pkg.id, restore.chat, restore.mode)
         this.lastRemovedImage = null
         this.panelEl.hidden = false
         this.active = true
@@ -914,6 +919,7 @@ export class LayerMapUI {
       onToast: (message) => this.toast(message),
     })
     this.packagesUI = new LayerPackagesUI({
+      chatData: (id) => this.chatDataFor(id),
       onOpen: async (id) => {
         this.panelEl.hidden = false
         this.active = true
@@ -5174,7 +5180,7 @@ export class LayerMapUI {
   }
 
   private markerSourceKey(marker: LayerMarker): string {
-    return `layer-source:${this.pkg?.id ?? ''}:${marker.id}`
+    return `${layerSourcePrefix(this.pkg?.id ?? '')}${marker.id}`
   }
 
   private markerSourceValue(marker: LayerMarker): string {
@@ -5434,7 +5440,7 @@ export class LayerMapUI {
   }
 
   private notePrefix(): string {
-    return `layer:${this.pkg?.id ?? ''}:`
+    return layerNotePrefix(this.pkg?.id ?? '')
   }
 
   private markerNoteKey(marker: LayerMarker): string {
@@ -8189,6 +8195,53 @@ export class LayerMapUI {
     this.state.view = this.view
     this.persist()
     this.requestDraw()
+  }
+
+  /** This chat's data for one package, as offered by the export dialog. */
+  private chatDataFor(pkgId: string): BackupChatSource {
+    if (this.state.packageId === pkgId) this.rememberUserPosition()
+    return {
+      links: this.state.links,
+      sourceLinkText: this.state.sourceLinkText,
+      position: this.state.positionsByPackage?.[pkgId] ?? storedLayerPosition(this.ctx, pkgId),
+      view: this.state.viewsByPackage?.[pkgId] ?? storedLayerView(this.ctx, pkgId),
+      itinerary: this.state.itinerariesByPackage?.[pkgId],
+    }
+  }
+
+  /**
+   * Write a restored backup's chat data into this chat, with the same keep /
+   * replace rule as the map-level data. Runs before the package is (re)loaded,
+   * which then reads position, view and itinerary from the state.
+   */
+  private restoreChatData(pkgId: string, data: BackupChatSource, mode: BackupMergeMode): void {
+    const byId = (list: LayerLink[] | undefined) => Object.fromEntries((list ?? []).map((link) => [link.id, link]))
+    if (data.links) {
+      const links = { ...(this.state.links ?? {}) }
+      for (const [owner, list] of Object.entries(data.links)) {
+        links[owner] = Object.values(mergeRecord(byId(links[owner]), byId(list), mode))
+      }
+      this.state.links = links
+    }
+    if (data.sourceLinkText) {
+      this.state.sourceLinkText = mergeRecord(this.state.sourceLinkText, data.sourceLinkText, mode, (value) => !value?.text)
+    }
+    const replace = mode === 'replace'
+    const isCurrent = this.state.packageId === pkgId
+    if (data.position && (replace || !(this.state.positionsByPackage?.[pkgId] ?? storedLayerPosition(this.ctx, pkgId)))) {
+      ;(this.state.positionsByPackage ??= {})[pkgId] = data.position
+      saveStoredLayerPosition(this.ctx, pkgId, data.position)
+      if (isCurrent) this.state.userPosition = undefined
+    }
+    if (data.view && (replace || !(this.state.viewsByPackage?.[pkgId] ?? storedLayerView(this.ctx, pkgId)))) {
+      ;(this.state.viewsByPackage ??= {})[pkgId] = data.view
+      saveStoredLayerView(this.ctx, pkgId, data.view)
+      if (isCurrent) this.state.userPosition = undefined
+    }
+    if (data.itinerary && (replace || !this.state.itinerariesByPackage?.[pkgId])) {
+      ;(this.state.itinerariesByPackage ??= {})[pkgId] = data.itinerary
+    }
+    this.persist(true)
   }
 
   private rememberUserPosition(): void {

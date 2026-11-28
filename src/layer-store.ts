@@ -420,14 +420,19 @@ export type SaveImportedResult = {
 /**
  * Save an imported package. Existing local customizations win over the source:
  * a renamed package keeps its name, and a manually replaced/removed image stays
- * put even when the same source is imported again.
+ * put even when the same source is imported again. `preferIncoming` (restoring
+ * a backup with "replace") lets the incoming name, grid and image win instead.
  */
 export async function saveImportedPackage(
   pkg: LayerMapPackage,
   signal?: AbortSignal,
+  options: { preferIncoming?: boolean } = {},
 ): Promise<SaveImportedResult> {
   const existing = await findExistingPackage(pkg)
-  if (existing) {
+  if (existing && options.preferIncoming) {
+    pkg.id = existing.id
+    pkg.createdAt = existing.createdAt
+  } else if (existing) {
     pkg.id = existing.id
     pkg.createdAt = existing.createdAt
     if (existing.nameLocked) {

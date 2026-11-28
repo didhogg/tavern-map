@@ -91,6 +91,19 @@ export async function initGlobalNotes(): Promise<void> {
 }
 
 /** Returns undefined when no record exists, and '' for an explicit empty note. */
+/** Notes for one layer package: places, custom pins, `region:<id>`, `road:<key>`. */
+export function layerNotePrefix(packageId: string): string {
+  return `layer:${packageId}:`
+}
+
+/** User-edited source text for one layer package, keyed by marker id. */
+export function layerSourcePrefix(packageId: string): string {
+  return `layer-source:${packageId}:`
+}
+
+/** Fetched or pasted link text, shared by every map that links the same URL. */
+export const LAYER_LINK_TEXT_PREFIX = 'layer-linktext:'
+
 export function globalNote(key: string): string | undefined {
   return cache?.get(key)
 }

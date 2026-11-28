@@ -309,3 +309,147 @@ export async function readZip(file: Blob, options: ZipReadOptions = {}): Promise
   }
   return result
 }
+
+export type ZipWriteEntry = {
+  /** Path inside the archive, forward slashes, no leading slash. */
+  path: string
+  blob: Blob
+}
+
+export type ZipWriteOptions = {
+  signal?: AbortSignal
+  onProgress?: (done: number, total: number, path: string) => void
+  /** Timestamp written into every entry; defaults to now. */
+  date?: Date
+}
+
+const ZIP32_MAX = 0xffffffff
+const ZIP16_MAX = 0xffff
+let crcTable: Uint32Array | undefined
+
+function crc32Of(bytes: Uint8Array): number {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256)
+    for (let n = 0; n < 256; n += 1) {
+      let c = n
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      crcTable[n] = c >>> 0
+    }
+  }
+  let crc = 0xffffffff
+  for (let i = 0; i < bytes.length; i += 1) crc = crcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function dosDateTime(date: Date): { time: number; day: number } {
+  const year = Math.max(1980, date.getFullYear())
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    day: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  }
+}
+
+/**
+ * Minimal ZIP writer matching `readZip`: stored (uncompressed) entries, UTF-8
+ * names and ZIP64 records when sizes, offsets or the entry count need them.
+ * Entry data stays as the caller's Blobs, so a large tile package is not
+ * copied into one buffer; only each entry is read once for its checksum.
+ */
+export async function writeZip(entries: ZipWriteEntry[], options: ZipWriteOptions = {}): Promise<Blob> {
+  const encoder = new TextEncoder()
+  const { time, day } = dosDateTime(options.date ?? new Date())
+  const parts: BlobPart[] = []
+  const central: Array<Uint8Array<ArrayBuffer>> = []
+  let offset = 0
+  let done = 0
+  for (const entry of entries) {
+    abortIfNeeded(options.signal)
+    const name = encoder.encode(entry.path)
+    const crc = crc32Of(new Uint8Array(await entry.blob.arrayBuffer()))
+    const size = entry.blob.size
+    const bigSize = size >= ZIP32_MAX
+    const bigOffset = offset >= ZIP32_MAX
+
+    const localExtra = bigSize ? new DataView(new ArrayBuffer(20)) : undefined
+    if (localExtra) {
+      localExtra.setUint16(0, 0x0001, true)
+      localExtra.setUint16(2, 16, true)
+      localExtra.setBigUint64(4, BigInt(size), true)
+      localExtra.setBigUint64(12, BigInt(size), true)
+    }
+    const local = new DataView(new ArrayBuffer(30))
+    local.setUint32(0, LOCAL_SIGNATURE, true)
+    local.setUint16(4, bigSize ? 45 : 20, true)
+    local.setUint16(6, 0x0800, true)
+    local.setUint16(8, 0, true)
+    local.setUint16(10, time, true)
+    local.setUint16(12, day, true)
+    local.setUint32(14, crc, true)
+    local.setUint32(18, bigSize ? ZIP32_MAX : size, true)
+    local.setUint32(22, bigSize ? ZIP32_MAX : size, true)
+    local.setUint16(26, name.length, true)
+    local.setUint16(28, localExtra?.byteLength ?? 0, true)
+    parts.push(local.buffer, name)
+    if (localExtra) parts.push(localExtra.buffer)
+    parts.push(entry.blob)
+
+    const extraFields: bigint[] = []
+    if (bigSize) extraFields.push(BigInt(size), BigInt(size))
+    if (bigOffset) extraFields.push(BigInt(offset))
+    const centralExtra = extraFields.length ? new DataView(new ArrayBuffer(4 + extraFields.length * 8)) : undefined
+    if (centralExtra) {
+      centralExtra.setUint16(0, 0x0001, true)
+      centralExtra.setUint16(2, extraFields.length * 8, true)
+      extraFields.forEach((value, index) => centralExtra.setBigUint64(4 + index * 8, value, true))
+    }
+    const head = new DataView(new ArrayBuffer(46))
+    head.setUint32(0, CENTRAL_SIGNATURE, true)
+    head.setUint16(4, centralExtra ? 45 : 20, true)
+    head.setUint16(6, centralExtra ? 45 : 20, true)
+    head.setUint16(8, 0x0800, true)
+    head.setUint16(10, 0, true)
+    head.setUint16(12, time, true)
+    head.setUint16(14, day, true)
+    head.setUint32(16, crc, true)
+    head.setUint32(20, bigSize ? ZIP32_MAX : size, true)
+    head.setUint32(24, bigSize ? ZIP32_MAX : size, true)
+    head.setUint16(28, name.length, true)
+    head.setUint16(30, centralExtra?.byteLength ?? 0, true)
+    head.setUint32(42, bigOffset ? ZIP32_MAX : offset, true)
+    central.push(new Uint8Array(head.buffer), name)
+    if (centralExtra) central.push(new Uint8Array(centralExtra.buffer))
+
+    offset += 30 + name.length + (localExtra?.byteLength ?? 0) + size
+    done += 1
+    options.onProgress?.(done, entries.length, entry.path)
+  }
+  const centralOffset = offset
+  const centralSize = central.reduce((total, part) => total + part.length, 0)
+  // One Blob, not a spread: a big tile package has more parts than the call stack allows.
+  parts.push(new Blob(central))
+  const needs64 = entries.length >= ZIP16_MAX || centralOffset >= ZIP32_MAX || centralSize >= ZIP32_MAX
+  if (needs64) {
+    const record = new DataView(new ArrayBuffer(56))
+    record.setUint32(0, EOCD64_SIGNATURE, true)
+    record.setBigUint64(4, 44n, true)
+    record.setUint16(12, 45, true)
+    record.setUint16(14, 45, true)
+    record.setBigUint64(24, BigInt(entries.length), true)
+    record.setBigUint64(32, BigInt(entries.length), true)
+    record.setBigUint64(40, BigInt(centralSize), true)
+    record.setBigUint64(48, BigInt(centralOffset), true)
+    const locator = new DataView(new ArrayBuffer(20))
+    locator.setUint32(0, EOCD64_LOCATOR_SIGNATURE, true)
+    locator.setBigUint64(8, BigInt(centralOffset + centralSize), true)
+    locator.setUint32(16, 1, true)
+    parts.push(record.buffer, locator.buffer)
+  }
+  const end = new DataView(new ArrayBuffer(22))
+  end.setUint32(0, EOCD_SIGNATURE, true)
+  end.setUint16(8, needs64 ? ZIP16_MAX : entries.length, true)
+  end.setUint16(10, needs64 ? ZIP16_MAX : entries.length, true)
+  end.setUint32(12, needs64 ? ZIP32_MAX : centralSize, true)
+  end.setUint32(16, needs64 ? ZIP32_MAX : centralOffset, true)
+  parts.push(end.buffer)
+  return new Blob(parts, { type: 'application/zip' })
+}

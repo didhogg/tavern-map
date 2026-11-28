@@ -50,3 +50,24 @@ for (const [label, method] of [['stored', 0], ['deflated', 8]]) {
     assert.equal(slices.has(entries[0].blob), false)
   })
 }
+
+test('ZIP writer round-trips through the reader, including ZIP64 entry counts', async () => {
+  const { writeZip } = await import('../src/layer-zip.ts')
+  const small = await writeZip([
+    { path: '中文/名字.json', blob: new Blob(['{"a":1}'], { type: 'application/json' }) },
+    { path: 'tiles/9/0/0.png', blob: new Blob([new Uint8Array([1, 2, 3])]) },
+  ])
+  const read = await readZip(small)
+  assert.deepEqual(read.map((entry) => entry.path), ['中文/名字.json', 'tiles/9/0/0.png'])
+  assert.equal(await read[0].blob.text(), '{"a":1}')
+  const bytes = Buffer.from(await small.arrayBuffer())
+  assert.equal(bytes.readUInt32LE(14), crc32(Buffer.from('{"a":1}')))
+
+  const count = 0x10000 + 2
+  const many = []
+  for (let i = 0; i < count; i += 1) many.push({ path: `t/${i}.png`, blob: new Blob([String(i)]) })
+  const big = await writeZip(many)
+  const last = await readZip(big, { shouldRead: (path) => path === `t/${count - 1}.png` })
+  assert.equal(last.length, 1)
+  assert.equal(await last[0].blob.text(), String(count - 1))
+})

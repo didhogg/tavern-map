@@ -27,6 +27,13 @@ import type {
   LayerTileOrder,
 } from './layer-types'
 import { isZipCandidate, readZip } from './layer-zip'
+import {
+  countBackupParts,
+  isBackupFilePath,
+  readBackupBundle,
+  type BackupContents,
+  type BackupPart,
+} from './layer-backup'
 
 export type LayerSourceFile = {
   path: string
@@ -135,6 +142,8 @@ export type LayerImportPreview = {
   dataCandidates: LayerDataCandidate[]
   bundle: LayerSourceBundle | null
   canAttachData: boolean
+  /** Set when the bundle is a Tavern Map backup package. */
+  backup?: BackupContents & { counts: Record<BackupPart, number> }
 }
 
 export type AnalyzeOptions = {
@@ -237,7 +246,7 @@ export async function zipToBundle(
 ): Promise<LayerSourceBundle> {
   const entries = await readZip(file, {
     signal: options.signal,
-    shouldRead: isZipCandidate,
+    shouldRead: (path) => isZipCandidate(path) || isBackupFilePath(path),
     onProgress: (done, total, path) => {
       options.onProgress?.({
         step: '读取压缩包',
@@ -803,6 +812,52 @@ function buildStats(
   }
 }
 
+function backupTileStats(pkg: LayerMapPackage): LayerTileStats | undefined {
+  const keys = Object.keys(pkg.tileFiles ?? {})
+  if (pkg.kind !== 'tiles' || keys.length === 0) return undefined
+  const zooms = keys.map((key) => Number(key.split('/')[0])).filter(Number.isFinite)
+  return {
+    count: keys.length,
+    expected: pkg.tile?.expectedCount ?? keys.length,
+    missing: pkg.tile?.missingCount ?? 0,
+    minZoom: zooms.length ? Math.min(...zooms) : undefined,
+    maxZoom: zooms.length ? Math.max(...zooms) : undefined,
+    order: pkg.tile?.order ?? 'zyx',
+    hasBounds: Boolean(pkg.tile?.boundsByZoom),
+    setName: pkg.tile?.setName ?? '',
+    setCount: pkg.tile?.setCount ?? 1,
+  }
+}
+
+/** A backup is the stored package itself: no re-parsing, no image matching. */
+function backupPreview(
+  bundle: LayerSourceBundle,
+  backup: BackupContents,
+  options: AnalyzeOptions,
+): LayerImportPreview {
+  const pkg = backup.pkg
+  if (options.name?.trim()) pkg.name = options.name.trim()
+  const exported = new Date(backup.manifest.exportedAt)
+  return {
+    pkg,
+    stats: buildStats(pkg, backupTileStats(pkg), undefined),
+    notices: [
+      {
+        tone: 'info',
+        text: `Tavern Map 备份包${Number.isNaN(exported.getTime()) ? '' : `，${exported.toLocaleString('zh-CN')} 导出`}。地图内容按导出时原样恢复。`,
+      },
+    ],
+    sourceLabel: 'Tavern Map 备份包',
+    sourceUrl: pkg.sourceUrl,
+    imageChoices: [],
+    dataPath: backup.manifest.data,
+    dataCandidates: [],
+    bundle,
+    canAttachData: false,
+    backup: { ...backup, counts: countBackupParts(backup.personal) },
+  }
+}
+
 async function applyChoice(
   preview: LayerImportPreview,
   choice: LayerImageChoice,
@@ -1145,6 +1200,8 @@ export async function analyzeBundle(
   options: AnalyzeOptions = {},
 ): Promise<LayerImportPreview> {
   abortIfNeeded(options.signal)
+  const backup = await readBackupBundle(bundle.files)
+  if (backup) return backupPreview(bundle, backup, options)
   const manifestResult = await parseManifest(bundle)
   const manifest = manifestResult.manifest
   const jsonFiles = bundle.files
