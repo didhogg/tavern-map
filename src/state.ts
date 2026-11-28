@@ -1,3 +1,4 @@
+import { validRealRoute } from './real-itinerary'
 import { flushGlobalNotes } from './notes-store'
 import {
   layerPositionChatKey,
@@ -87,6 +88,10 @@ function validItinerary(raw: unknown): RouteItinerary | undefined {
         : 'foot',
     steps,
     fallback: Boolean(value.fallback),
+    plan: validRealRoute(value.plan),
+    progress: typeof value.progress === 'number' && Number.isFinite(value.progress)
+      ? Math.max(0, Math.min(1, value.progress))
+      : undefined,
     showToAI: Boolean(value.showToAI),
     updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
   }
@@ -304,6 +309,12 @@ export function loadState(ctx: StContext): MapState {
       value.lastWikiMode === 'intro' || value.lastWikiMode === 'full' ? value.lastWikiMode : undefined,
     wikiOpen: typeof value.wikiOpen === 'boolean' ? value.wikiOpen : undefined,
     itinerary: validItinerary(value.itinerary),
+    routeDraft: validRealRoute(value.routeDraft),
+    positionCleared: value.positionCleared === true,
+    viewedPlace: value.viewedPlace && typeof value.viewedPlace.name === 'string' &&
+      Number.isFinite(value.viewedPlace.lat) && Number.isFinite(value.viewedPlace.lng)
+      ? value.viewedPlace
+      : undefined,
   }
 }
 
@@ -322,8 +333,10 @@ export function saveState(ctx: StContext, state: MapState): void {
   ctx.chatMetadata['tavern-map'] = {
     ...state,
     placeNotes: {},
-    savedPlaces: state.savedPlaces.map((place) => ({ ...place, note: '' })),
-    stars: state.stars.map((star) => ({ ...star, note: '' })),
+    savedPlaces: [],
+    poiBriefs: [],
+    poiAllToAI: false,
+    stars: [],
   }
   void flushGlobalNotes()
   if (ctx.saveMetadata) {

@@ -1,6 +1,24 @@
 export type LatLng = { lat: number; lng: number }
 
 export type RouteProfile = 'foot' | 'driving' | 'transit'
+export type LegMode = 'manual' | 'snap' | RouteProfile
+export type RoutePoint = [number, number]
+export type RealStop = { id?: string; name: string; lat: number; lng: number }
+export type RealLeg = {
+  mode: LegMode
+  guide: RoutePoint[]
+  line?: RoutePoint[]
+  steps?: ItineraryStep[]
+  distance?: number
+  duration?: number
+  fallback?: boolean
+  departure?: number
+  arrival?: number
+  pois?: RoutePoi[]
+  poisInRange?: RoutePoi[]
+}
+export type RealRouteDraft = { stops: RealStop[]; legs: RealLeg[]; departure?: number; pendingGuide?: RoutePoint[] }
+export type RealPlacePart = 'source' | 'wiki' | 'note'
 
 export type Place = {
   id: string
@@ -129,6 +147,8 @@ export type RouteItinerary = {
   profile: RouteProfile
   steps: ItineraryStep[]
   fallback?: boolean
+  plan?: RealRouteDraft
+  progress?: number
   showToAI: boolean
   updatedAt: number
 }
@@ -158,6 +178,9 @@ export type MapState = {
   lastWikiMode?: 'intro' | 'full'
   wikiOpen?: boolean
   itinerary?: RouteItinerary
+  routeDraft?: RealRouteDraft
+  viewedPlace?: Place
+  positionCleared?: boolean
   updatedAt: number
 }
 
@@ -173,6 +196,20 @@ export type Settings = {
   showRoutePois: boolean
   /** Corridor width for route POIs, in metres. */
   routePoiRadiusM: number
+  realRouteMax: number
+  realRouteCurrentOnly: boolean
+  realRouteSource: boolean
+  realRouteNote: boolean
+  realSourceAI: boolean
+  realWikiAI: boolean
+  realNearbyCoords: boolean
+  realNearbyNotes: boolean
+  realNearbySource: boolean
+  realNearbyWiki: boolean
+  realFavoriteType: boolean
+  realFavoriteCoords: boolean
+  realFavoriteSource: boolean
+  realFavoriteWiki: boolean
   /** Include the real-world OSM map scene block in AI context. */
   realMapContext: boolean
   /** Include the imported layer-map scene block in AI context. */

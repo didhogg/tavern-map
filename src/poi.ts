@@ -332,18 +332,23 @@ function sampleRoute(
   return points.slice(0, maxPoints)
 }
 
-/** Named POIs within a ~120m corridor of a planned route. */
+/** Ask Overpass for a continuous corridor, including the interior of long, straight legs. */
 export async function fetchRoutePois(
   coordinates: Array<[number, number]>,
   radiusM = 100,
 ): Promise<RoutePoi[]> {
   const corridor = Math.max(25, Math.min(500, radiusM))
-  const points = sampleRoute(coordinates)
-  if (points.length === 0) return []
-  const clauses = points
-    .map((point) => `nwr(around:${corridor},${point.lat.toFixed(6)},${point.lng.toFixed(6)})[name];`)
-    .join('\n')
-  const query = `[out:json][timeout:20];\n(\n${clauses}\n);\nout center 300;`
+  if (coordinates.length < 2) return []
+  const origin = coordinates[0]
+  // Bound the request size on long, densely sampled routes. The returned
+  // POIs are checked against the original line, not this query approximation.
+  const stride = Math.ceil(coordinates.length / 240)
+  const path = coordinates.filter((_, index) => index % stride === 0 || index === coordinates.length - 1)
+  const pairs = path.map(([lng, lat]) => `${lat.toFixed(6)},${lng.toFixed(6)}`).join(',')
+  const around = `around:${corridor},${pairs}`
+  const selectors = ['tourism', 'historic', 'amenity', 'shop', 'leisure', 'office', 'place', 'railway', 'public_transport']
+  const clauses = selectors.map((key) => `nwr(${around})[name][${key}];`).join('\n')
+  const query = `[out:json][timeout:20];(\n${clauses}\n);out center 600;`
   const request = (endpoint: string) =>
     fetchJson<OverpassResponse>(
       endpoint,
@@ -358,14 +363,13 @@ export async function fetchRoutePois(
   const overpass = Promise.any(
     ENDPOINTS.map(async (endpoint) => {
       const data = await request(endpoint)
-      const origin = points[0]
       const pois = dedupe(
         (data.elements ?? [])
-          .map((element) => makePoi(element, origin.lat, origin.lng))
+          .map((element) => makePoi(element, origin[1], origin[0]))
           .filter((poi): poi is Poi => Boolean(poi)),
       )
       if (pois.length === 0) throw new Error('route Overpass 返回空结果')
-      return pois.slice(0, 50).map((poi) => ({
+      return pois.map((poi) => ({
         id: poi.id,
         name: poi.name,
         nameZh: poi.nameZh,
@@ -410,37 +414,7 @@ export function filterPoisAlongRoute(
   candidates: Poi[],
   radiusM = 100,
 ): RoutePoi[] {
-  if (coordinates.length === 0 || candidates.length === 0) return []
-  const start = coordinates[0]
-  const results: Array<{ poi: Poi; order: number }> = []
-  for (const poi of candidates) {
-    let nearest = Number.POSITIVE_INFINITY
-    let order = 0
-    for (let index = 0; index < coordinates.length; index += 1) {
-      const [lng, lat] = coordinates[index]
-      const distance = haversine(poi.lat, poi.lng, lat, lng)
-      if (distance < nearest) {
-        nearest = distance
-        order = index
-      }
-    }
-    if (nearest <= Math.max(25, Math.min(500, radiusM))) results.push({ poi, order })
-  }
-  return results
-    .sort((a, b) => a.order - b.order)
-    .slice(0, 50)
-    .map(({ poi }) => ({
-      id: poi.id,
-      name: poi.name,
-      nameZh: poi.nameZh,
-      category: poi.category,
-      address: poi.address,
-      lat: poi.lat,
-      lng: poi.lng,
-      distanceM: haversine(start[1], start[0], poi.lat, poi.lng),
-      cuisine: poi.cuisine,
-      openingHours: poi.openingHours,
-    }))
+  return assignRoutePoisToSteps([{ coordinates }], candidates, radiusM)[0]
 }
 
 async function routeOsmFallback(
@@ -467,6 +441,7 @@ export function assignRoutePoisToSteps(
   steps: Array<{ coordinates?: Array<[number, number]> }>,
   pois: RoutePoi[],
   radiusM: number,
+  byDistance?: RoutePoi[][],
 ): RoutePoi[][] {
   const result: RoutePoi[][] = steps.map(() => [])
   const corridor = Math.max(25, Math.min(500, radiusM))
@@ -478,19 +453,33 @@ export function assignRoutePoisToSteps(
       const coordinates = steps[stepIndex].coordinates
       if (!coordinates || coordinates.length < 2) continue
       let along = 0
-      for (let index = 0; index < coordinates.length; index += 1) {
-        if (index > 0) {
-          const previous = coordinates[index - 1]
-          const current = coordinates[index]
-          along += haversine(previous[1], previous[0], current[1], current[0])
+      let nearest = Number.POSITIVE_INFINITY
+      let nearestAlong = 0
+      const longitudeOffset = (lng: number) => ((lng - poi.lng + 540) % 360 - 180)
+      const scaleX = Math.cos(poi.lat * Math.PI / 180)
+      for (let index = 1; index < coordinates.length; index += 1) {
+        const [a, b] = [coordinates[index - 1], coordinates[index]]
+        const x = longitudeOffset(a[0]) * scaleX
+        const y = a[1] - poi.lat
+        const dLng = ((b[0] - a[0] + 540) % 360) - 180
+        const dx = dLng * scaleX
+        const dy = b[1] - a[1]
+        const length = haversine(a[1], a[0], b[1], b[0])
+        const ratio = Math.max(0, Math.min(1, -(x * dx + y * dy) / (dx * dx + dy * dy || 1)))
+        const distance = haversine(poi.lat, poi.lng, a[1] + ratio * dy, a[0] + ratio * dLng)
+        if (distance < nearest) {
+          nearest = distance
+          nearestAlong = along + ratio * length
         }
-        const [lng, lat] = coordinates[index]
-        const distance = haversine(poi.lat, poi.lng, lat, lng)
         if (distance < bestDistance) {
           bestDistance = distance
           bestStep = stepIndex
-          bestAlong = along
+          bestAlong = along + ratio * length
         }
+        along += length
+      }
+      if (byDistance && nearest <= corridor) {
+        byDistance[stepIndex].push({ ...poi, distanceM: nearest, alongM: nearestAlong })
       }
     }
     if (bestStep >= 0 && bestDistance <= corridor) {
@@ -501,5 +490,8 @@ export function assignRoutePoisToSteps(
       })
     }
   }
-  return result.map((items) => items.sort((a, b) => (a.alongM ?? 0) - (b.alongM ?? 0)))
+  const order = (a: RoutePoi, b: RoutePoi) => (a.alongM ?? 0) - (b.alongM ?? 0) ||
+    (a.distanceM ?? 0) - (b.distanceM ?? 0)
+  byDistance?.forEach((items) => items.sort(order))
+  return result.map((items) => items.sort(order))
 }

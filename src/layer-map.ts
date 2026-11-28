@@ -115,7 +115,7 @@ import {
   removePlaceAIFlags,
   savePlaceAIFlags,
 } from './layer-ai-store'
-import { LayerWindowController } from './layer-window'
+import { LayerWindowController, MAP_WINDOW_STORAGE_KEY } from './layer-window'
 import { mergeRecord, type BackupChatSource, type BackupMergeMode } from './layer-backup'
 import {
   removeStoredLayerPackage,
@@ -903,7 +903,7 @@ export class LayerMapUI {
     this.windowController = new LayerWindowController(
       this.panelEl,
       this.panelEl.querySelector('.tml-head') as HTMLElement,
-      { storageKey: 'tavern-map:layer-window:v1' },
+      { storageKey: MAP_WINDOW_STORAGE_KEY },
     )
     this.importUI = new LayerImportUI({
       onImported: async (pkg, restore) => {
@@ -998,12 +998,20 @@ export class LayerMapUI {
   }
 
   async open(): Promise<void> {
+    const reuse = !this.active && this.pkg && this.state.packageId === this.pkg.id
     this.panelEl.hidden = false
     this.active = true
     this.closeImagePanel()
     this.closeLightbox()
     this.windowController.open()
     this.ctx = this.liveContext()
+    if (reuse) {
+      this.observeViewport()
+      this.setTileMapVisible(this.pkg?.kind === 'tiles')
+      this.resizeCanvas()
+      this.requestDraw()
+      return
+    }
     this.state = loadLayerState(this.ctx)
     this.panelEl.style.zIndex = '10000'
     await this.refreshPackages()

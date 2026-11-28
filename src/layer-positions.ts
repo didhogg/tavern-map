@@ -155,14 +155,7 @@ function loadRealStore(): RealPositionStore {
 export function storedRealPosition(ctx: StContext): StoredRealPosition | undefined {
   const chatKey = layerPositionChatKey(ctx)
   const store = loadRealStore()
-  const specific = store[chatKey]
-  const fallback = store['*']
-  const value =
-    specific && fallback
-      ? (fallback.updatedAt ?? 0) > (specific.updatedAt ?? 0)
-        ? fallback
-        : specific
-      : specific ?? fallback
+  const value = store[chatKey] ?? (chatKey === 'default' ? store['*'] : undefined)
   if (
     !value ||
     !Number.isFinite(value.lat) ||

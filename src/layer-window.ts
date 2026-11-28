@@ -15,6 +15,8 @@ type LayerWindowOptions = {
   margin?: number
 }
 
+export const MAP_WINDOW_STORAGE_KEY = 'tavern-map:layer-window:v1'
+
 const MOBILE_QUERY = '(max-width: 640px)'
 
 function clamp(value: number, min: number, max: number): number {

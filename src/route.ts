@@ -1,6 +1,6 @@
 import { haversine } from './geo'
 import { fetchJson } from './http'
-import type { LatLng, RouteProfile } from './types'
+import type { LatLng, RoutePoint, RouteProfile } from './types'
 
 export type RouteStep = {
   instruction: string
@@ -21,6 +21,7 @@ export type Route = {
   steps: RouteStep[]
   profile: RouteProfile
   fallback?: boolean
+  arrival?: number
 }
 
 type OsrmStep = {
@@ -303,11 +304,11 @@ function appendPoint(
   coordinates.push([lng!, lat!])
 }
 
-async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
+async function transitRoute(from: LatLng, to: LatLng, departure?: number): Promise<Route> {
   const params = new URLSearchParams({
     fromPlace: `${from.lat},${from.lng}`,
     toPlace: `${to.lat},${to.lng}`,
-    time: new Date().toISOString(),
+    time: new Date(departure ?? Date.now()).toISOString(),
     numItineraries: '3',
   })
   const data = await fetchJson<MotisResponse>(
@@ -414,6 +415,7 @@ async function transitRoute(from: LatLng, to: LatLng): Promise<Route> {
     coordinates,
     steps,
     profile: 'transit',
+    arrival: Number.isFinite(Date.parse(itinerary.endTime ?? '')) ? Date.parse(itinerary.endTime!) : undefined,
   }
 }
 
@@ -443,14 +445,39 @@ export async function routeBetween(
   from: LatLng,
   to: LatLng,
   profile: RouteProfile = 'foot',
+  departure?: number,
 ): Promise<Route> {
   if (profile === 'transit') {
     try {
-      return await transitRoute(from, to)
+      return await transitRoute(from, to, departure)
     } catch (error) {
       console.warn('[tavern-map] public transit route failed', error)
       return transitFallback(from, to)
     }
   }
   return roadRoute(from, to, profile)
+}
+
+/** Match a drawn trace to mapped streets. A partial or ambiguous result leaves the sketch intact. */
+export async function matchDrawnRoute(points: RoutePoint[]): Promise<RoutePoint[] | undefined> {
+  if (points.length < 3) return undefined
+  const sample = points.filter((_, index) => index === points.length - 1 || index % Math.ceil(points.length / 85) === 0)
+  const coordinates = sample.map((point) => point.map((value) => value.toFixed(6)).join(',')).join(';')
+  const endpoint = 'https://routing.openstreetmap.de/routed-foot/match/v1/foot'
+  const params = new URLSearchParams({
+    overview: 'full', geometries: 'geojson',
+    radiuses: sample.map(() => '15').join(';'),
+  })
+  const result = await fetchJson<{
+    code?: string
+    tracepoints?: Array<{ location: RoutePoint } | null>
+    matchings?: Array<{ confidence: number; geometry: { coordinates: RoutePoint[] } }>
+  }>(`${endpoint}/${coordinates}?${params}`, undefined, 12000)
+  const match = result.matchings?.[0]
+  if (result.code !== 'Ok' || result.matchings?.length !== 1 || !match ||
+      match.confidence < 0.5 || result.tracepoints?.length !== sample.length) return undefined
+  const line = match.geometry.coordinates
+  if (line.length < 2 || !result.tracepoints.every((point, index) => point &&
+      haversine(point.location[1], point.location[0], sample[index][1], sample[index][0]) <= 25)) return undefined
+  return [points[0], ...line, points[points.length - 1]]
 }
