@@ -95,6 +95,9 @@ export type LayerRegion = {
   id: string
   name: string
   parentId?: string
+  description?: string
+  sourceLinks?: LayerLink[]
+  properties?: Array<[string, string]>
   /** Optional label anchor; otherwise the polygon centroid is used. */
   labelX?: number
   labelY?: number

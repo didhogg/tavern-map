@@ -30,7 +30,7 @@ import {
   readLayerImage,
   sanitizeRect,
 } from './layer-image'
-import type { MapGenieTileSetInfo } from './layer-import'
+import { sourceFieldLinks, sourceHttpUrl, type MapGenieTileSetInfo } from './layer-import'
 import { LayerImportUI } from './layer-import-ui'
 import { LayerPackagesUI } from './layer-packages-ui'
 import {
@@ -336,6 +336,8 @@ function registerTileProtocol(): void {
 type TavernWindow = Window & {
   SillyTavern?: { getContext?: () => StContext }
 }
+
+type LinkOwner = Pick<LayerMarker, 'id' | 'custom' | 'links'>
 
 type LayerMapCallbacks = {
   onChange: () => void
@@ -727,7 +729,7 @@ export class LayerMapUI {
   private dragX = 0
   private dragY = 0
   private suppressClick = false
-  private linkDraftVisible = false
+  private linkDraftFor: string | undefined
   private linkDraftTitle = ''
   private linkDraftUrl = ''
   private linkDraftKind: LayerLinkKind = 'custom'
@@ -1616,9 +1618,22 @@ export class LayerMapUI {
     return this.pinEdits.customPins.find((pin) => pin.id === id)
   }
 
-  private userLinksFor(marker: LayerMarker): LayerLink[] {
-    if (marker.custom) return this.customPinRecord(marker.id)?.links ?? marker.links ?? []
-    return this.state.links?.[marker.id] ?? []
+  private userLinksFor(owner: LinkOwner): LayerLink[] {
+    if (owner.custom) return this.customPinRecord(owner.id)?.links ?? owner.links ?? []
+    return this.state.links?.[owner.id] ?? []
+  }
+
+  private setUserLinks(owner: LinkOwner, links: LayerLink[]): void {
+    if (owner.custom) {
+      const pin = this.customPinRecord(owner.id)
+      if (!pin) return
+      pin.links = links
+      this.savePinEditsForMap()
+    } else {
+      const saved = this.state.links ?? (this.state.links = {})
+      saved[owner.id] = links
+      this.persist()
+    }
   }
 
   private async loadPackage(id: string): Promise<void> {
@@ -1664,7 +1679,7 @@ export class LayerMapUI {
       this.state.currentRegionId = undefined
       this.state.view = undefined
       this.state.hiddenCategories = []
-      this.linkDraftVisible = false
+      this.linkDraftFor = undefined
       this.lastRemovedImage = null
       this.packageLoadToken += 1
     }
@@ -4505,7 +4520,7 @@ export class LayerMapUI {
     wrap.append(head, meta, actions)
     if (nameSection) wrap.append(nameSection)
     wrap.append(this.sourceSection(marker))
-    wrap.append(this.linksSection(marker))
+    wrap.append(this.linksSection(marker, this.markerImportedLinks(marker), this.aiContentToggle(marker, 'wiki')))
     wrap.append(this.noteSection(marker))
     const ai = document.createElement('div')
     ai.className = 'tml-ai-row'
@@ -4692,7 +4707,8 @@ export class LayerMapUI {
       // Lines of one road often share their fields; show each distinct set once.
       const groups = new Map<string, { fields: Array<[string, string]>; count: number }>()
       for (const line of withFields) {
-        const fields = line.properties ?? []
+        const fields = (line.properties ?? []).filter(([, value]) => !sourceHttpUrl(value))
+        if (!fields.length) continue
         const signature = JSON.stringify(fields)
         const group = groups.get(signature)
         if (group) group.count += 1
@@ -4709,8 +4725,12 @@ export class LayerMapUI {
         }
         source.append(this.roadFieldList(group.fields))
       }
+      if (groups.size === 0) {
+        source.append(textElement('div', 'tml-road-source-empty', '暂无道路来源正文。'))
+      }
     }
-    wrap.append(source)
+    const owner = { id: this.roadNoteKey(key) }
+    wrap.append(source, this.linksSection(owner, sourceFieldLinks(lines.flatMap((line) => line.properties ?? []), key)))
 
     const noteWrap = document.createElement('div')
     noteWrap.className = 'tml-note-section'
@@ -4788,7 +4808,14 @@ export class LayerMapUI {
     const actions = document.createElement('div')
     actions.className = 'tml-detail-actions'
     actions.append(this.actionButton('居中', () => this.centerOnRegion(region)))
-    wrap.append(head, meta, actions)
+    const source = this.editableSourceSection(
+      '区域',
+      `layer-source:${pkg.id}:region:${region.id}`,
+      region.description ?? '',
+    )
+    const fields = (region.properties ?? []).filter(([, value]) => !sourceHttpUrl(value))
+    if (fields.length) source.append(this.roadFieldList(fields))
+    wrap.append(head, meta, actions, source, this.linksSection({ id: this.regionNoteKey(region) }, region.sourceLinks ?? []))
     const noteWrap = document.createElement('div')
     noteWrap.className = 'tml-note-section'
     const noteHead = document.createElement('div')
@@ -4809,26 +4836,25 @@ export class LayerMapUI {
     return wrap
   }
 
-  private linksSection(marker: LayerMarker): HTMLElement {
+  private markerImportedLinks(marker: LayerMarker): LayerLink[] {
+    if (marker.sourceLinks) return marker.sourceLinks
+    return marker.sourceUrl
+      ? [{ id: `source:${marker.id}:wiki`, kind: 'wikipedia', title: marker.sourceTitle || marker.name, url: marker.sourceUrl }]
+      : []
+  }
+
+  private linksSection(owner: LinkOwner, importedLinks: LayerLink[], aiToggle?: HTMLElement): HTMLElement {
     const section = document.createElement('section')
     section.className = 'tml-links'
     const heading = document.createElement('div')
     heading.className = 'tml-section-label tml-links-head'
     const headingText = document.createElement('span')
     headingText.textContent = '链接来源'
-    heading.append(headingText, this.aiContentToggle(marker, 'wiki'))
+    heading.append(headingText)
+    if (aiToggle) heading.append(aiToggle)
     section.append(heading)
-    const imported = marker.sourceLinks ?? (
-      marker.sourceUrl
-        ? [{
-            id: `source:${marker.id}:wiki`,
-            kind: 'wikipedia' as const,
-            title: marker.sourceTitle || marker.name,
-            url: marker.sourceUrl,
-          }]
-        : []
-    )
-    const userLinks = this.userLinksFor(marker)
+    const imported = importedLinks.filter((link) => sourceHttpUrl(link.url))
+    const userLinks = this.userLinksFor(owner).filter((link) => sourceHttpUrl(link.url))
     if (imported.length === 0) {
       section.append(
         textElement(
@@ -4841,30 +4867,30 @@ export class LayerMapUI {
       )
     }
     for (const link of imported) {
-      const key = `${marker.id}:${link.id}`
+      const key = `${owner.id}:${link.id}`
       const saved = this.state.sourceLinkText?.[key]
       const cached = this.linkTextValue(link)
       if (cached === undefined && saved?.text) {
         setGlobalNote(linkTextKey(link.url), saved.text)
       }
       section.append(
-        this.linkRow(marker, link, true, key, cached ?? saved?.text, saved?.status),
+        this.linkRow(owner, link, true, key, cached ?? saved?.text, saved?.status),
       )
     }
     for (const link of userLinks) {
       const cached = this.linkTextValue(link)
       if (cached === undefined && link.text) setGlobalNote(linkTextKey(link.url), link.text)
       section.append(
-        this.linkRow(marker, link, false, undefined, cached ?? link.text, link.status),
+        this.linkRow(owner, link, false, undefined, cached ?? link.text, link.status),
       )
     }
-    if (!this.linkDraftVisible) {
+    if (this.linkDraftFor !== owner.id) {
       const add = document.createElement('button')
       add.type = 'button'
       add.className = 'tml-mini tml-add-link'
       add.textContent = '+ 添加链接'
       add.addEventListener('click', () => {
-        this.linkDraftVisible = true
+        this.linkDraftFor = owner.id
         this.linkDraftTitle = ''
         this.linkDraftUrl = ''
         this.linkDraftKind = 'custom'
@@ -4872,13 +4898,13 @@ export class LayerMapUI {
       })
       section.append(add)
     } else {
-      section.append(this.linkEditor(marker))
+      section.append(this.linkEditor(owner))
     }
     return section
   }
 
   private linkRow(
-    marker: LayerMarker,
+    owner: LinkOwner,
     link: LayerLink,
     imported: boolean,
     stateKey: string | undefined,
@@ -4938,7 +4964,7 @@ export class LayerMapUI {
       fetch.type = 'button'
       fetch.className = 'tml-mini'
       fetch.textContent = '抓取'
-      fetch.addEventListener('click', () => void this.fetchLink(marker, link, imported, stateKey))
+      fetch.addEventListener('click', () => void this.fetchLink(owner, link, imported, stateKey))
       actions.append(fetch)
     }
     const paste = document.createElement('button')
@@ -4948,9 +4974,9 @@ export class LayerMapUI {
     paste.addEventListener('click', () => {
       const pasted = window.prompt('粘贴正文（会保存在本地全局缓存）', text ?? '')
       if (!pasted?.trim()) return
-      this.storeLinkText(link, imported, stateKey, pasted, `已手动保存 · ${pasted.length} 字`, marker)
+      this.storeLinkText(link, imported, stateKey, pasted, `已手动保存 · ${pasted.length} 字`, owner)
       this.renderDetail()
-      if (this.state.selectedMarkerId === marker.id) this.refreshContext()
+      if (this.state.selectedMarkerId === owner.id) this.refreshContext()
     })
     actions.append(paste)
     if (!imported) {
@@ -4959,15 +4985,7 @@ export class LayerMapUI {
       remove.className = 'tml-mini'
       remove.textContent = '移除'
       remove.addEventListener('click', () => {
-        if (marker.custom) {
-          const pin = this.customPinRecord(marker.id)
-          if (pin) pin.links = pin.links.filter((item) => item.id !== link.id)
-          this.savePinEditsForMap()
-        } else {
-          const linksForMarker = this.state.links?.[marker.id] ?? []
-          this.state.links![marker.id] = linksForMarker.filter((item) => item.id !== link.id)
-          this.persist()
-        }
+        this.setUserLinks(owner, this.userLinksFor(owner).filter((item) => item.id !== link.id))
         this.refreshContext()
         this.renderDetail()
       })
@@ -4984,7 +5002,7 @@ export class LayerMapUI {
     stateKey: string | undefined,
     text: string,
     status: string,
-    customMarker?: LayerMarker,
+    owner: LinkOwner,
   ): void {
     if (text.trim()) setGlobalNote(linkTextKey(link.url), text)
     if (imported && stateKey) {
@@ -4995,11 +5013,11 @@ export class LayerMapUI {
       link.fetchedAt = Date.now()
       link.status = status
     }
-    if (customMarker?.custom) this.savePinEditsForMap()
+    if (owner.custom) this.savePinEditsForMap()
     else this.persist()
   }
 
-  private linkEditor(marker: LayerMarker): HTMLElement {
+  private linkEditor(owner: LinkOwner): HTMLElement {
     const form = document.createElement('div')
     form.className = 'tml-link-editor'
     const kind = document.createElement('select')
@@ -5038,7 +5056,7 @@ export class LayerMapUI {
     save.textContent = '保存'
     save.addEventListener('click', () => {
       const urlValue = url.value.trim()
-      if (!/^https?:\/\//i.test(urlValue)) {
+      if (!sourceHttpUrl(urlValue)) {
         this.toast('链接需要 http(s) 地址')
         return
       }
@@ -5048,18 +5066,8 @@ export class LayerMapUI {
         title: title.value.trim() || urlValue,
         url: urlValue,
       }
-      if (marker.custom) {
-        const pin = this.customPinRecord(marker.id)
-        if (!pin) return
-        pin.links = [...pin.links, link]
-        this.savePinEditsForMap()
-      } else {
-        const links = this.state.links?.[marker.id] ?? []
-        this.state.links = this.state.links ?? {}
-        this.state.links[marker.id] = [...links, link]
-        this.persist()
-      }
-      this.linkDraftVisible = false
+      this.setUserLinks(owner, [...this.userLinksFor(owner), link])
+      this.linkDraftFor = undefined
       this.refreshContext()
       this.renderDetail()
     })
@@ -5068,7 +5076,7 @@ export class LayerMapUI {
     cancel.className = 'tml-mini'
     cancel.textContent = '取消'
     cancel.addEventListener('click', () => {
-      this.linkDraftVisible = false
+      this.linkDraftFor = undefined
       this.renderDetail()
     })
     actions.append(save, cancel)
@@ -5077,7 +5085,7 @@ export class LayerMapUI {
   }
 
   private async fetchLink(
-    marker: LayerMarker,
+    owner: LinkOwner,
     link: LayerLink,
     imported: boolean,
     stateKey: string | undefined,
@@ -5088,13 +5096,13 @@ export class LayerMapUI {
     } else {
       link.status = '正在抓取…'
     }
-    if (marker.custom) this.savePinEditsForMap()
+    if (owner.custom) this.savePinEditsForMap()
     else this.persist()
     this.renderDetail()
     try {
       const text = await this.loadLinkText(link.url)
       if (!text) throw new Error('没有可读取的正文')
-      this.storeLinkText(link, imported, stateKey, text, `已抓取 · ${text.length} 字`, marker)
+      this.storeLinkText(link, imported, stateKey, text, `已抓取 · ${text.length} 字`, owner)
     } catch (error) {
       this.storeLinkText(
         link,
@@ -5102,11 +5110,11 @@ export class LayerMapUI {
         stateKey,
         '',
         `抓取失败：${errorMessage(error)}。可打开原页后手动粘贴。`,
-        marker,
+        owner,
       )
     }
     this.renderDetail()
-    if (this.state.selectedMarkerId === marker.id) this.refreshContext()
+    if (this.state.selectedMarkerId === owner.id) this.refreshContext()
   }
 
   private async loadLinkText(url: string): Promise<string> {
@@ -5175,11 +5183,6 @@ export class LayerMapUI {
     return marker.description ?? ''
   }
 
-
-  private setMarkerSource(marker: LayerMarker, value: string): void {
-    setGlobalNote(this.markerSourceKey(marker), value)
-    if (this.aiPartGloballyEnabled('source')) this.refreshContext(false)
-  }
 
   private savePlaceAIFlagsForMap(): void {
     if (this.pkg) savePlaceAIFlags(this.pkg.id, this.placeAIFlags)
@@ -5364,21 +5367,41 @@ export class LayerMapUI {
   }
 
   private sourceSection(marker: LayerMarker): HTMLElement {
+    return this.editableSourceSection(
+      '地点',
+      this.markerSourceKey(marker),
+      marker.description ?? '',
+      this.aiContentToggle(marker, 'source'),
+      () => {
+        if (this.aiPartGloballyEnabled('source')) this.refreshContext(false)
+        if (this.state.selectedMarkerId === marker.id) this.renderPositionCard()
+      },
+    )
+  }
+
+  private editableSourceSection(
+    scope: '地点' | '区域',
+    key: string,
+    original: string,
+    aiToggle?: HTMLElement,
+    onEdit?: () => void,
+  ): HTMLDetailsElement {
     const details = document.createElement('details')
     details.className = 'tml-source'
     details.open = true
     const summary = document.createElement('summary')
-    summary.textContent = '来源资料（随地点显示）'
+    summary.textContent = `来源资料（随${scope}显示）`
     const textarea = document.createElement('textarea')
     textarea.className = 'tml-source-input'
     textarea.placeholder = '可编辑的来源资料…'
-    textarea.value = this.markerSourceValue(marker)
+    textarea.setAttribute('aria-label', `${scope}来源资料`)
+    textarea.value = globalNote(key) ?? original
     const status = document.createElement('div')
     status.className = 'tml-source-status'
     textarea.addEventListener('input', () => {
-      this.setMarkerSource(marker, textarea.value)
+      setGlobalNote(key, textarea.value)
       status.textContent = '自动保存 · 与笔记一样全局保存'
-      if (this.state.selectedMarkerId === marker.id) this.renderPositionCard()
+      onEdit?.()
     })
     const actions = document.createElement('div')
     actions.className = 'tml-source-actions'
@@ -5387,16 +5410,20 @@ export class LayerMapUI {
     restore.className = 'tml-mini'
     restore.textContent = '恢复导入原文'
     restore.addEventListener('click', () => {
-      clearGlobalNote(this.markerSourceKey(marker))
-      textarea.value = marker.description ?? ''
+      clearGlobalNote(key)
+      textarea.value = original
       status.textContent = '已恢复导入原文'
-      this.refreshContext()
+      if (aiToggle) this.refreshContext()
     })
     actions.append(restore)
-    const aiRow = document.createElement('div')
-    aiRow.className = 'tml-ai-toggle-row'
-    aiRow.append(this.aiContentToggle(marker, 'source'))
-    details.append(summary, aiRow, textarea, status, actions)
+    details.append(summary)
+    if (aiToggle) {
+      const aiRow = document.createElement('div')
+      aiRow.className = 'tml-ai-toggle-row'
+      aiRow.append(aiToggle)
+      details.append(aiRow)
+    }
+    details.append(textarea, status, actions)
     return details
   }
 
@@ -5700,16 +5727,7 @@ export class LayerMapUI {
     includeWiki = settings.layerWikiAI,
   ): Array<{ title: string; text: string }> {
     if (!includeWiki || !this.placeAIPartAllowed(marker, 'wiki')) return []
-    const imported = marker.sourceLinks ?? (
-      marker.sourceUrl
-        ? [{
-            id: `source:${marker.id}:wiki`,
-            kind: 'wikipedia' as const,
-            title: marker.sourceTitle || marker.name,
-            url: marker.sourceUrl,
-          }]
-        : []
-    )
+    const imported = this.markerImportedLinks(marker)
     const userLinks = this.userLinksFor(marker)
     const seen = new Set<string>()
     const result: Array<{ title: string; text: string }> = []

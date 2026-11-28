@@ -237,6 +237,44 @@ function fandomSourceLinks(
   return links.length > 0 ? links : undefined
 }
 
+export function sourceHttpUrl(value: string): string | undefined {
+  const text = value.trim()
+  if (!/^https?:\/\/\S+$/i.test(text)) return undefined
+  try {
+    return new URL(text).href
+  } catch {
+    return undefined
+  }
+}
+
+/** Links stored as plain URL fields or Markdown in source records. */
+export function sourceFieldLinks(fields: Array<[string, string]>, prefix: string): LayerLink[] {
+  const links = new Map<string, LayerLink>()
+  for (const [label, value] of fields) {
+    const url = sourceHttpUrl(value)
+    const entries = url
+      ? [{ title: label, url }]
+      : extractMarkdownLinks(value, prefix)
+    for (const entry of entries) {
+      const address = sourceHttpUrl(entry.url)
+      if (address && !links.has(address)) {
+        links.set(address, { id: `source:${prefix}:url:${address}`, kind: 'source', title: entry.title, url: address })
+      }
+    }
+  }
+  return [...links.values()]
+}
+
+function sourceProperties(properties: RawRecord | undefined): Array<[string, string]> {
+  const result: Array<[string, string]> = []
+  for (const [key, value] of Object.entries(properties ?? {})) {
+    if (value == null) continue
+    const shown = typeof value === 'object' ? JSON.stringify(value) : String(value)
+    if (shown) result.push([key, shown])
+  }
+  return result
+}
+
 function fandomCategories(raw: unknown[]): LayerCategory[] {
   const result: LayerCategory[] = []
   raw.forEach((item, index) => {
@@ -655,10 +693,29 @@ export function parseMapGeniePackage(
     const labelLng = numberValue(value.label_longitude) ?? numberValue(value.labelLongitude)
     const labelLat = numberValue(value.label_latitude) ?? numberValue(value.labelLatitude)
     const label = labelLng != null && labelLat != null ? mercatorPoint(labelLng, labelLat) : undefined
+    const id = `mapgenie-region:${sourceId}`
+    const properties = record(value.properties)
+    const rawDescription = text(value.description) || text(firstProperty(properties, ['description', 'Description']))
+    const fields = sourceProperties(properties)
+    const regionSource = text(value.source)
+    if (regionSource) fields.push(['来源', regionSource])
+    for (const feature of array(value.features)) {
+      for (const field of sourceProperties(record(record(feature)?.properties))) {
+        if (!fields.some(([key, value]) => key === field[0] && value === field[1])) fields.push(field)
+      }
+    }
+    const sourceLinks = sourceFieldLinks([
+      ['来源链接', text(value.sourceUrl) || text(value.url)],
+      ['来源资料', rawDescription],
+      ...fields,
+    ], id)
     regionFeatures.push({
-      id: `mapgenie-region:${sourceId}`,
+      id,
       name: text(value.title) || `区域 ${sourceId}`,
       parentId: idValue(value.parent_region_id) || undefined,
+      description: cleanSourceText(rawDescription) || undefined,
+      sourceLinks: sourceLinks.length ? sourceLinks : undefined,
+      properties: fields.length ? fields : undefined,
       labelX: label?.[0],
       labelY: label?.[1],
       polygons,
@@ -781,12 +838,7 @@ function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
     const sourceId =
       idValue(properties?.fid) || idValue(properties?.id) || idValue(feature.id) || String(featureIndex)
     // Every original property, as written in the map data (shown as the road's source material).
-    const sourceProperties: Array<[string, string]> = []
-    for (const [key, value] of Object.entries(properties ?? {})) {
-      if (value == null) continue
-      const shown = typeof value === 'object' ? JSON.stringify(value) : String(value)
-      if (shown) sourceProperties.push([key, shown])
-    }
+    const fields = sourceProperties(properties)
     lines.forEach((lineRaw, lineIndex) => {
       const points: Array<[number, number]> = []
       for (const pointRaw of array(lineRaw)) {
@@ -801,7 +853,7 @@ function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
         name,
         type,
         points,
-        properties: sourceProperties.length > 0 ? sourceProperties : undefined,
+        properties: fields.length > 0 ? fields : undefined,
       })
     })
   })

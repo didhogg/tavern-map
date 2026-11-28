@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { register } from 'node:module'
 import test from 'node:test'
-import { parseMapGeniePackage } from '../src/layer-import.ts'
+import { parseMapGeniePackage, sourceFieldLinks, sourceHttpUrl } from '../src/layer-import.ts'
 import { buildRoadIndex, nearestRoad, roadRank, roadsInRect } from '../src/layer-roads.ts'
 
 // Source files import siblings without an extension (resolved by Vite); let Node try `.ts`.
@@ -16,6 +16,42 @@ register(
 const { buildLayerContext } = await import('../src/layer-context.ts')
 
 const street = (id, type, points, name = id) => ({ id, name, type, points })
+
+test('road links in existing source fields are clickable sources and deduplicate across segments', () => {
+  const url = 'https://forgottenrealms.fandom.com/wiki/Trollyard'
+  const links = sourceFieldLinks([
+    ['Name', 'The Trollyard'],
+    ['Fandom 条目', url],
+    ['Fandom 条目', url],
+    ['Description', 'See [History](https://example.com/history) for details.'],
+    ['Unsupported link', 'javascript:alert(1)'],
+  ], 'trollyard')
+  assert.deepEqual(links.map(({ title, url }) => ({ title, url })), [
+    { title: 'Fandom 条目', url },
+    { title: 'History', url: 'https://example.com/history' },
+  ])
+  assert.ok(links.every((link) => link.kind === 'source' && link.id.startsWith('source:trollyard:')))
+  assert.equal(sourceHttpUrl('https://example.com/ward notes'), undefined)
+})
+
+test('Map Genie regions keep source descriptions, feature fields and deduplicated links', () => {
+  const url = 'https://example.com/ward'
+  const pkg = parseMapGeniePackage({
+    locations: [{ id: 1, title: 'Start', latitude: 1, longitude: 1 }],
+    regions: [{
+      id: 'ward',
+      title: 'Sea Ward',
+      description: 'Ward history · [Fandom 条目](https://example.com/ward)',
+      features: [{
+        properties: { Era: '1492 DR', Website: url },
+        geometry: { type: 'Polygon', coordinates: [[[0, 0], [2, 0], [2, 2], [0, 0]]] },
+      }],
+    }],
+  }, {})
+  assert.equal(pkg.regions[0].description, 'Ward history · Fandom 条目')
+  assert.deepEqual(pkg.regions[0].properties, [['Era', '1492 DR'], ['Website', url]])
+  assert.deepEqual(pkg.regions[0].sourceLinks.map(({title, url}) => ({title, url})), [{ title: 'Fandom 条目', url }])
+})
 
 test('road rank understands Tych, Skyrim pack and OSM-style types', () => {
   for (const type of ['Main', 'main', 'primary', 'trunk', 'motorway', 'highway']) assert.equal(roadRank(type), 0, type)
