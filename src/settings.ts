@@ -1,4 +1,7 @@
-import type { Settings } from './types'
+import { layerAIFlagsRevision, resetLayerAIFlags, type LayerAIKind } from './layer-ai-store'
+import { resetRealAIFlags } from './real-places'
+import type { LayerAIPart, LayerChatState } from './layer-types'
+import type { RealPlacePart, Settings } from './types'
 
 export const MODULE_NAME = 'tavern-map'
 
@@ -41,10 +44,12 @@ export const DEFAULT_SETTINGS: Settings = {
   realNearbyDistance: true,
   realFavoritesAI: true,
   realFavoriteNote: true,
+  layerAIRevision: 0,
   layerSourceAI: true,
   layerWikiAI: false,
   layerNoteAI: true,
   layerRegionNoteAI: true,
+  layerRegionSourceAI: false,
   layerNearbyAI: true,
   layerNearbyName: true,
   layerNearbyType: true,
@@ -142,10 +147,12 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
     realNearbyDistance: value.realNearbyDistance !== false,
     realFavoritesAI: value.realFavoritesAI !== false,
     realFavoriteNote: value.realFavoriteNote !== false,
+    layerAIRevision: number(value.layerAIRevision, 0, 0, Number.MAX_SAFE_INTEGER),
     layerSourceAI: value.layerSourceAI !== false,
     layerWikiAI: value.layerWikiAI === true,
     layerNoteAI: value.layerNoteAI !== false,
     layerRegionNoteAI: value.layerRegionNoteAI !== false,
+    layerRegionSourceAI: value.layerRegionSourceAI === true,
     layerNearbyAI: value.layerNearbyAI !== false,
     layerNearbyName: value.layerNearbyName !== false,
     layerNearbyType: value.layerNearbyType !== false,
@@ -185,8 +192,61 @@ export function loadSettings(ctx: { extensionSettings?: Record<string, unknown> 
   }
 }
 
+const LAYER_CONTENT_SWITCHES: Record<LayerAIKind, Partial<Record<LayerAIPart, Array<keyof Settings>>>> = {
+  place: {
+    source: ['layerSourceAI', 'layerNearbySource', 'layerFavoriteSource', 'layerItineraryPoiSource'],
+    note: ['layerNoteAI', 'layerNearbyNotes', 'layerFavoriteNote', 'layerItineraryPoiNotes'],
+    wiki: ['layerWikiAI', 'layerNearbyWiki', 'layerFavoriteWiki'],
+  },
+  region: {
+    source: ['layerRegionSourceAI'],
+    note: ['layerRegionNoteAI', 'layerItineraryRegionNotes'],
+  },
+  road: {
+    source: ['layerRoadSourceAI'],
+    note: ['layerRoadNoteNearby', 'layerRoadNoteCurrentLeg', 'layerRoadNoteAllLegs'],
+  },
+}
+
+const REAL_CONTENT_SWITCHES: Record<RealPlacePart, Array<keyof Settings>> = {
+  source: ['realSourceAI', 'realNearbySource', 'realFavoriteSource', 'realRouteSource'],
+  note: ['realNoteAI', 'realNearbyNotes', 'realFavoriteNote', 'realRouteNote'],
+  wiki: ['realWikiAI', 'realNearbyWiki', 'realFavoriteWiki'],
+}
+
+function resetAIOverrides(previous: Settings, current: Settings): void {
+  const layers = new Map<LayerAIKind, Set<LayerAIPart>>()
+  for (const kind of ['place', 'region', 'road'] as const) {
+    const parts = (['source', 'wiki', 'note'] as const).filter((part) =>
+      LAYER_CONTENT_SWITCHES[kind][part]?.some((key) => previous[key] !== current[key]),
+    )
+    if (parts.length) layers.set(kind, new Set(parts))
+  }
+  const policyChanged = layers.size > 0 ||
+    previous.layerNearbyAI !== current.layerNearbyAI ||
+    previous.layerFavoritesAI !== current.layerFavoritesAI ||
+    previous.layerItineraryPoisShow !== current.layerItineraryPoisShow ||
+    previous.layerItineraryPoisCurrentOnly !== current.layerItineraryPoisCurrentOnly
+  current.layerAIRevision = previous.layerAIRevision + (policyChanged ? 1 : 0)
+  resetLayerAIFlags(layers)
+  resetRealAIFlags(new Set(
+    (['source', 'wiki', 'note'] as const).filter((part) =>
+      REAL_CONTENT_SWITCHES[part].some((key) => previous[key] !== current[key]),
+    ),
+  ))
+}
+
+export function layerContextRevision(settings: Settings): string {
+  return `${settings.layerAIRevision}:${layerAIFlagsRevision()}`
+}
+
+export function layerContextNeedsRefresh(state: LayerChatState, settings: Settings): boolean {
+  return Boolean(state.packageId) && (state.context?.aiRevision ?? '0:0') !== layerContextRevision(settings)
+}
+
 export function saveSettings(ctx: { extensionSettings?: Record<string, unknown>; saveSettingsDebounced?: () => void }, settings: Settings): void {
   if (!ctx.extensionSettings) return
+  resetAIOverrides(loadSettings(ctx), settings)
   ctx.extensionSettings[MODULE_NAME] = { ...settings }
   ctx.saveSettingsDebounced?.()
 }

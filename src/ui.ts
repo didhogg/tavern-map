@@ -7,11 +7,11 @@ import {
   NavigationControl,
 } from 'maplibre-gl'
 import { cacheGet, cachePut, wikiCacheKey, wikiFullCacheKey } from './cache'
-import { buildContext, estimateTokens } from './context'
+import { buildContext, estimateTokens, realPartAutomatic } from './context'
 import { buildLayerContext, buildMapContexts } from './layer-context'
 import { LayerMapUI } from './layer-map'
 import { LayerWindowController, MAP_WINDOW_STORAGE_KEY } from './layer-window'
-import { nearbyPlacesInRange, realLinks, realNote, realPartAllowed, realSource, realWiki, setRealPart } from './real-places'
+import { nearbyPlacesInRange, realLinks, realNote, realPartState, realSource, realWiki, setRealPart } from './real-places'
 import { currentRouteLeg, editableRoute, itineraryLegPois, LEG_MODES, legPath, pathLength, planPath, stopPoint } from './real-itinerary'
 import { findFavorite, listFavorites, realFavoriteKey, removeFavorite, setFavorite } from './favorites-store'
 import { LAYER_STATE_KEY, loadLayerState } from './layer-types'
@@ -31,7 +31,7 @@ import { matchDrawnRoute, routeBetween, type Route, type RouteStep } from './rou
 import { searchPlaces, type SearchResult } from './search'
 import { loadState, saveState } from './state'
 import { storedRealPosition } from './layer-positions'
-import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, loadSettings, saveSettings, WIKI_LANGS } from './settings'
+import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, layerContextNeedsRefresh, loadSettings, saveSettings, WIKI_LANGS } from './settings'
 import type {
   LegMode,
   MapState,
@@ -375,8 +375,9 @@ const SETTINGS_HTML = `
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerSourceAI"> 来源资料进入 AI</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerWikiAI"> Wiki 正文进入 AI</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerNoteAI"> 笔记进入 AI</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRegionSourceAI"> 区域来源资料进入 AI（所在区域和它的上级区域）</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRegionNoteAI"> 区域笔记进入 AI（所在区域和它的上级区域）</label>
-        <div class="tm-hint">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选；每个区域的详情里可以单独取消区域笔记。</div>
+        <div class="tm-hint">可在地点、区域和道路详情里单独勾选或取消。调整全局内容开关后，同类内容会恢复按新的设置发送。</div>
       </div>
 
       <div class="tm-settings-group">
@@ -415,7 +416,7 @@ const SETTINGS_HTML = `
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadNoteCurrentLeg"> 行程当前段道路的笔记</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadNoteAllLegs"> 行程所有段道路的笔记</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadSourceAI"> 道路来源资料一起发给 AI（只发上面勾选范围内的道路）</label>
-        <div class="tm-hint">一段行程的道路 = 这一段实际走过的路 + 范围内列出的路。同一条路只发一次；每条路的详情里，笔记和来源资料各有一个“给 AI”可以单独取消。</div>
+        <div class="tm-hint">一段行程的道路 = 这一段实际走过的路 + 范围内列出的路。同一条路只发一次；每条路的详情可以单独勾选或取消笔记、来源资料。</div>
       </div>
 
       <div class="tm-settings-group">
@@ -1074,6 +1075,10 @@ export class MapUI {
     this.ctx = this.liveContext()
     this.state.lastMapMode = 'layer'
     saveState(this.ctx, this.state)
+    void this.ensureLayerUI().open()
+  }
+
+  private ensureLayerUI(): LayerMapUI {
     if (!this.layerUI) {
       this.layerUI = new LayerMapUI(this.liveContext(), {
         onChange: () => this.sync(),
@@ -1090,7 +1095,7 @@ export class MapUI {
         },
       })
     }
-    void this.layerUI.open()
+    return this.layerUI
   }
 
   private closePanel(): void {
@@ -1649,15 +1654,22 @@ export class MapUI {
 
   private activeContextText(): string {
     const real = this.settings.realMapContext ? buildContext(this.state, this.settings, this.nearbyVisible(), this.hiddenPoiCategories) : ''
-    const layer = this.settings.layerMapContext
-      ? this.layerUI?.contextText() ?? buildLayerContext(loadLayerState(this.liveContext()))
-      : ''
+    let layer = ''
+    if (this.settings.layerMapContext) {
+      if (this.layerUI) layer = this.layerUI.contextText()
+      else {
+        const state = loadLayerState(this.liveContext())
+        layer = layerContextNeedsRefresh(state, this.settings)
+          ? this.ensureLayerUI().contextText() : buildLayerContext(state)
+      }
+    }
     return buildMapContexts(real, layer, this.settings)
   }
 
   private sync(): void {
     this.state.enabled = this.settings.enabled
     const text = this.activeContextText()
+    this.syncRealPlaceChecks()
     if (!this.settings.enabled || !text) {
       clearPrompt(this.ctx)
     } else {
@@ -2253,21 +2265,33 @@ export class MapUI {
     return label
   }
 
+  private realPartChecked(place: Place, part: RealPlacePart, nearby: Place[]): boolean {
+    return realPartState(place, part) ??
+      realPartAutomatic(place, part, this.state, this.settings, nearby, this.hiddenPoiCategories)
+  }
+
+  private syncRealPlaceChecks(): void {
+    const checks = this.panelEl?.querySelectorAll<HTMLInputElement>('input[data-real-ai-part]')
+    if (!checks?.length) return
+    const nearby = this.nearbyVisible()
+    const places = new Map(this.state.savedPlaces.map((place) => [placeKey(place), place as Place]))
+    if (this.currentPlace) places.set(placeKey(this.currentPlace), this.currentPlace)
+    for (const input of checks) {
+      const place = places.get(input.dataset.realAiPlace!)
+      const part = input.dataset.realAiPart as RealPlacePart
+      if (place) input.checked = this.realPartChecked(place, part, nearby)
+    }
+  }
+
   private realPlaceCheck(place: Place, part: RealPlacePart): HTMLLabelElement {
-    const s = this.settings
-    const available = part === 'source'
-      ? s.realSourceAI || (s.realNearbyAI && s.realNearbySource) || (s.realFavoritesAI && s.realFavoriteSource) ||
-        (s.showRoutePois && s.realRouteSource)
-      : part === 'wiki'
-        ? s.realWikiAI || (s.realNearbyAI && s.realNearbyWiki) || (s.realFavoritesAI && s.realFavoriteWiki)
-        : s.realNoteAI || (s.realNearbyAI && s.realNearbyNotes) || (s.realFavoritesAI && s.realFavoriteNote) ||
-          (s.showRoutePois && s.realRouteNote)
-    const label = this.realCheck('给 AI', available && realPartAllowed(place, part), (checked) => {
+    const label = this.realCheck('给 AI', this.realPartChecked(place, part, this.nearbyVisible()), (checked) => {
       setRealPart(place, part, checked)
       this.sync()
     })
-    label.querySelector('input')!.disabled = !available
-    if (!available) label.title = '请在扩展设置打开相应的 AI 内容开关'
+    const input = label.querySelector('input')!
+    input.dataset.realAiPlace = placeKey(place)
+    input.dataset.realAiPart = part
+    label.title = '可单独决定是否发送。调整同类全局内容开关后，恢复跟随全局设置。'
     return label
   }
 

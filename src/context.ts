@@ -1,6 +1,6 @@
-import { formatDistance } from './geo'
+import { formatDistance, placeKey } from './geo'
 import { currentRouteLeg, itineraryLegPois, LEG_MODES } from './real-itinerary'
-import { nearbyPlacesInRange, realNote, realPartAllowed, realSource, realWiki } from './real-places'
+import { nearbyPlacesInRange, realNote, realPartAllowed, realPartState, realPinnedParts, realSource, realWiki } from './real-places'
 import type { MapState, Place, RealPlacePart, Settings, StarredWiki } from './types'
 
 /** Conservative estimate: CJK ≈ 1 token/char, other text ≈ 4 chars/token. */
@@ -123,6 +123,38 @@ function addPlaceParts(lines: string[], place: Place, parts: Partial<Record<Real
   }
 }
 
+export function realPartAutomatic(
+  place: Place,
+  part: RealPlacePart,
+  state: MapState,
+  settings: Settings,
+  nearby: Place[],
+  hidden: ReadonlySet<string>,
+): boolean {
+  const key = placeKey(place)
+  const matches = (candidate: Place): boolean => placeKey(candidate) === key
+  const current = { source: settings.realSourceAI, wiki: settings.realWikiAI, note: settings.realNoteAI }
+  const near = { source: settings.realNearbySource, wiki: settings.realNearbyWiki, note: settings.realNearbyNotes }
+  const favorites = { source: settings.realFavoriteSource, wiki: settings.realFavoriteWiki, note: settings.realFavoriteNote }
+  const route = { source: settings.realRouteSource, wiki: false, note: settings.realRouteNote }
+  if (current[part] && !state.positionCleared && state.place && matches(state.place)) return true
+  if (near[part] && settings.realNearbyAI && nearby.slice(0, settings.maxNearby).some(matches)) return true
+  if (favorites[part] && settings.realFavoritesAI && state.savedPlaces.some(matches)) return true
+  const itinerary = state.itinerary
+  if (!route[part] || !settings.showRoutePois || !itinerary?.showToAI) return false
+  if (!itinerary.plan) {
+    return !settings.realRouteCurrentOnly &&
+      itinerary.steps.some((step) => step.pois?.slice(0, settings.realRouteMax).some(matches))
+  }
+  const active = settings.realRouteCurrentOnly ? currentRouteLeg(itinerary) : undefined
+  return itinerary.plan.legs.some((leg, index) =>
+    (active === undefined || index === active) &&
+    itineraryLegPois(leg, settings.realRouteCurrentOnly)
+      .filter((poi) => !hidden.has(poi.category ?? '其他'))
+      .slice(0, settings.realRouteMax).some(matches),
+  )
+}
+
 function addWikiStars(lines: string[], stars: StarredWiki[]): void {
   if (!stars.length) return
   const entries: string[] = []
@@ -194,7 +226,11 @@ export function buildContext(state: MapState, settings: Settings, visibleNearby?
     const address = place.address ? ` — ${clean(place.address)}` : ''
     const category = place.category ? ` (${clean(place.category)})` : ''
     lines.push(`Current place: ${placeTitle(place)}${category}${address}`)
-    addPlaceParts(lines, place, { source: settings.realSourceAI, wiki: settings.realWikiAI, note: settings.realNoteAI })
+    addPlaceParts(lines, place, {
+      source: settings.realSourceAI || realPartState(place, 'source') === true,
+      wiki: settings.realWikiAI || realPartState(place, 'wiki') === true,
+      note: settings.realNoteAI || realPartState(place, 'note') === true,
+    })
   }
   const nearby = settings.realNearbyAI
     ? (visibleNearby ?? nearbyPlacesInRange(state, settings, state.nearby)).slice(0, settings.maxNearby)
@@ -228,6 +264,22 @@ export function buildContext(state: MapState, settings: Settings, visibleNearby?
       }, '  ')
     }
   }
+  const pinned = new Map<string, { place: Place; parts: Partial<Record<RealPlacePart, boolean>> }>()
+  for (const { place: selected, part } of realPinnedParts()) {
+    const key = placeKey(selected)
+    if (place && placeKey(place) === key) continue
+    if (realPartAutomatic(selected, part, state, settings, nearby, hidden)) continue
+    const entry = pinned.get(key) ?? { place: selected, parts: {} }
+    entry.parts[part] = true
+    pinned.set(key, entry)
+  }
+  const details: string[] = []
+  for (const entry of pinned.values()) {
+    const parts: string[] = []
+    addPlaceParts(parts, entry.place, entry.parts, '  ')
+    if (parts.length) details.push(`- ${placeTitle(entry.place)}`, ...parts)
+  }
+  if (details.length) lines.push('Selected place details:', ...details)
   addWikiStars(lines, state.stars)
   return lines.length > 1 ? [...lines, '[/SCENE MAP]'].join('\n') : ''
 }

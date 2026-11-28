@@ -1,5 +1,5 @@
 import { haversine, placeKey } from './geo'
-import { globalNote, setGlobalNote } from './notes-store'
+import { clearGlobalNote, globalNote, globalNoteEntries, setGlobalNote } from './notes-store'
 import type { MapState, Place, RealPlacePart, Settings } from './types'
 
 export function realNote(place: Place): string {
@@ -19,12 +19,41 @@ export function realWiki(place: Place): string {
   return globalNote(`real-wiki:${placeKey(place)}`) ?? ''
 }
 
+const realAIPrefix = (part: RealPlacePart): string => `real-ai:${part}:`
+
+export function realPartState(place: Place, part: RealPlacePart): boolean | undefined {
+  const value = globalNote(realAIPrefix(part) + placeKey(place))
+  return value === 'off' ? false : value ? true : undefined
+}
+
 export function realPartAllowed(place: Place, part: RealPlacePart): boolean {
-  return globalNote(`real-ai:${part}:${placeKey(place)}`) !== 'off'
+  return realPartState(place, part) !== false
 }
 
 export function setRealPart(place: Place, part: RealPlacePart, checked: boolean): void {
-  setGlobalNote(`real-ai:${part}:${placeKey(place)}`, checked ? '' : 'off')
+  setGlobalNote(realAIPrefix(part) + placeKey(place), checked ? JSON.stringify(place) : 'off')
+}
+
+export function resetRealAIFlags(parts: Set<RealPlacePart>): void {
+  for (const part of parts) {
+    for (const [key] of globalNoteEntries(realAIPrefix(part))) clearGlobalNote(key)
+  }
+}
+
+export function* realPinnedParts(): IterableIterator<{ place: Place; part: RealPlacePart }> {
+  for (const part of ['source', 'wiki', 'note'] as const) {
+    for (const [, value] of globalNoteEntries(realAIPrefix(part))) {
+      if (!value || value === 'off') continue
+      try {
+        const place = JSON.parse(value) as Place
+        if (place && typeof place.name === 'string' && Number.isFinite(place.lat) && Number.isFinite(place.lng)) {
+          yield { place, part }
+        }
+      } catch {
+        // Existing opt-outs stored no place, and malformed entries cannot identify a location.
+      }
+    }
+  }
 }
 
 export function realLinks(place: Place): string[] {

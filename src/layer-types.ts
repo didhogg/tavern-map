@@ -161,10 +161,7 @@ export type LayerPinEdits = {
 
 export type LayerAIPart = 'source' | 'wiki' | 'note'
 
-/**
- * Per-place opt-outs for AI content. Missing parts are enabled by default;
- * only an explicit false disables one part for that place.
- */
+/** Explicit per-item AI choices. A missing part follows its automatic scope. */
 export type LayerPlaceAIFlags = Partial<Record<LayerAIPart, boolean>>
 
 export type LayerTileConfig = {
@@ -331,6 +328,7 @@ export type LayerNearbyPlace = {
 }
 
 export type LayerItineraryContextPoi = {
+  id?: string
   name: string
   category?: string
   sourceMaterial?: string
@@ -423,6 +421,7 @@ export type LayerContextRoad = {
 }
 
 export type LayerContextSnapshot = {
+  aiRevision?: string
   mapName: string
   /** Explicit "my position", only when the user placed it. */
   position?: {
@@ -443,6 +442,8 @@ export type LayerContextSnapshot = {
   regionParents?: string[]
   /** Area notes allowed into AI: my area and the areas around it; `other` = ticked area elsewhere. */
   areaNotes?: Array<{ name: string; text: string; other?: boolean }>
+  areaSources?: Array<{ name: string; text: string; other?: boolean }>
+  pinnedPlaces?: LayerFavoritePlace[]
   /** Road notes allowed into AI, each road once, with why it is included. */
   roadNotes?: LayerContextRoadNote[]
   note?: string
@@ -840,6 +841,7 @@ function validItineraryContext(raw: unknown): LayerItineraryContext | undefined 
               return typeof poi.name === 'string'
             })
             .map((poi) => ({
+              id: typeof poi.id === 'string' ? poi.id : undefined,
               name: poi.name,
               category: typeof poi.category === 'string' ? poi.category : undefined,
               sourceMaterial: typeof poi.sourceMaterial === 'string' ? poi.sourceMaterial : undefined,
@@ -897,6 +899,19 @@ function stringList(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const list = raw.filter((item): item is string => typeof item === 'string' && item.length > 0)
   return list.length > 0 ? list : undefined
+}
+
+function validAreaContent(value: LayerContextSnapshot['areaNotes']): LayerContextSnapshot['areaNotes'] {
+  return Array.isArray(value)
+    ? value.filter((item) => item && typeof item.name === 'string' && typeof item.text === 'string')
+      .map((item) => ({ name: item.name, text: item.text, other: item.other === true || undefined }))
+    : undefined
+}
+
+function validPlaceDetails(value: LayerFavoritePlace[] | undefined): LayerFavoritePlace[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((item) => item && typeof item.key === 'string' && typeof item.name === 'string')
+    : undefined
 }
 
 function validContext(raw: unknown): LayerContextSnapshot | undefined {
@@ -994,14 +1009,10 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
             source: typeof item.source === 'string' && item.source ? item.source : undefined,
           }))
       : undefined,
-    areaNotes: Array.isArray(value.areaNotes)
-      ? value.areaNotes
-          .filter(
-            (item): item is { name: string; text: string; other?: boolean } =>
-              Boolean(item) && typeof item.name === 'string' && typeof item.text === 'string',
-          )
-          .map((item) => ({ name: item.name, text: item.text, other: item.other === true ? true : undefined }))
-      : undefined,
+    areaNotes: validAreaContent(value.areaNotes),
+    areaSources: validAreaContent(value.areaSources),
+    pinnedPlaces: validPlaceDetails(value.pinnedPlaces),
+    aiRevision: typeof value.aiRevision === 'string' ? value.aiRevision : undefined,
     note: typeof value.note === 'string' ? value.note : undefined,
     sourceMaterial:
       typeof value.sourceMaterial === 'string' && value.sourceMaterial.trim()
@@ -1035,12 +1046,7 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
         ? value.nearbyScope
         : undefined,
     nearbyCoords: value.nearbyCoords !== false,
-    favorites: Array.isArray(value.favorites)
-      ? value.favorites.filter(
-          (item): item is LayerFavoritePlace =>
-            Boolean(item) && typeof item.key === 'string' && typeof item.name === 'string',
-        )
-      : undefined,
+    favorites: validPlaceDetails(value.favorites),
     grid,
     updatedAt:
       typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)

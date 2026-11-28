@@ -135,6 +135,11 @@ export function buildLayerContext(state: LayerChatState): string {
       lines.push(`${area.other ? 'Other area note' : 'Area note'} (${clean(area.name)}): ${clean(area.text)}`)
     }
   }
+  for (const area of snapshot.areaSources ?? []) {
+    if (clean(area.text)) {
+      lines.push(`${area.other ? 'Other area source' : 'Area source'} (${clean(area.name)}): ${clean(area.text)}`)
+    }
+  }
   if (snapshot.nearbyRoads?.length) {
     lines.push('Nearby roads (within radius):')
     for (const road of snapshot.nearbyRoads) {
@@ -233,6 +238,17 @@ export function buildLayerContext(state: LayerChatState): string {
           const note = clean(area.note)
           lines.push(`   - ${clean(area.name)}${note ? ` · note: ${note}` : ''}`)
         }
+      }
+    }
+  }
+  if (snapshot.pinnedPlaces?.length) {
+    lines.push('Selected place details:')
+    for (const place of snapshot.pinnedPlaces) {
+      lines.push(`- ${clean(place.name)}`)
+      if (place.note) lines.push(`  Note: ${clean(place.note)}`)
+      if (place.sourceMaterial) lines.push(`  Source material: ${clean(place.sourceMaterial)}`)
+      for (const wiki of place.wikiTexts ?? []) {
+        lines.push(`  Wiki text (${clean(wiki.title)}): ${clean(wiki.text)}`)
       }
     }
   }

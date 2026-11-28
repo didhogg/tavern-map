@@ -222,10 +222,12 @@ export type Settings = {
   realFavoritesAI: boolean
   realFavoriteNote: boolean
   /** Layer-map AI content switches. */
+  layerAIRevision: number
   layerSourceAI: boolean
   layerWikiAI: boolean
   layerNoteAI: boolean
   layerRegionNoteAI: boolean
+  layerRegionSourceAI: boolean
   layerNearbyAI: boolean
   layerNearbyName: boolean
   layerNearbyType: boolean

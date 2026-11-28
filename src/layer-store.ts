@@ -235,6 +235,17 @@ function joinStored(stored: StoredPackage): LayerMapPackage {
   return { ...stored.record, ...stored.assets }
 }
 
+export async function getLayerPackageData(id: string): Promise<LayerMapPackage | undefined> {
+  try {
+    const db = await openDatabase()
+    const store = db.transaction(PACKAGE_STORE, 'readonly').objectStore(PACKAGE_STORE)
+    return await requestResult(store.get(id) as IDBRequest<LayerMapPackage | undefined>)
+  } catch (error) {
+    console.warn('[tavern-map] layer package data read failed', error)
+    return undefined
+  }
+}
+
 export async function getLayerPackage(id: string): Promise<LayerMapPackage | undefined> {
   try {
     const db = await openDatabase()

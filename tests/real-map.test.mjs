@@ -64,3 +64,29 @@ test('nearby context stays with the current place and current-leg POIs take thei
   assert.equal(first.split('POIs in range:').length, 1)
   assert.match(second, /POIs in range:\n   - Mid-segment cafe/)
 })
+
+test('a global content change clears the matching manual choices on every package and preserves other parts', async () => {
+  const { saveSettings } = await import('../src/settings.ts')
+  const { loadPlaceAIFlags, savePlaceAIFlags } = await import('../src/layer-ai-store.ts')
+  const storage = new Map()
+  const previousStorage = globalThis.localStorage
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  }
+  try {
+    savePlaceAIFlags('one', { museum: { note: true, source: false }, 'road:street': { note: true } })
+    savePlaceAIFlags('two', { park: { note: false }, 'region:ward': { note: true } })
+    const ctx = { extensionSettings: {} }
+    saveSettings(ctx, { ...DEFAULT_SETTINGS, layerNoteAI: false })
+    assert.deepEqual(loadPlaceAIFlags('one'), { museum: { source: false }, 'road:street': { note: true } })
+    assert.deepEqual(loadPlaceAIFlags('two'), { 'region:ward': { note: true } })
+    savePlaceAIFlags('one', { ...loadPlaceAIFlags('one'), library: { note: true } })
+    saveSettings(ctx, { ...DEFAULT_SETTINGS, layerNoteAI: true, layerRegionNoteAI: false })
+    assert.deepEqual(loadPlaceAIFlags('one'), { museum: { source: false }, 'road:street': { note: true } })
+    assert.deepEqual(loadPlaceAIFlags('two'), {})
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage
+    else globalThis.localStorage = previousStorage
+  }
+})

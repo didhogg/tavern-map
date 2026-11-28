@@ -40,6 +40,7 @@ import {
 import { distanceUnitText, formatCellDistance, gridCellDistance } from './layer-distance'
 import {
   getLayerPackage,
+  getLayerPackageData,
   listLayerPackages,
   removeLayerImage,
   setLayerImage,
@@ -91,7 +92,7 @@ import {
   layerSourcePrefix,
   setGlobalNote,
 } from './notes-store'
-import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, loadSettings, saveSettings } from './settings'
+import { ITINERARY_RANGE_MAX, ITINERARY_RANGE_MIN, layerContextNeedsRefresh, layerContextRevision, loadSettings, saveSettings } from './settings'
 import {
   layerFavoriteKey,
   listFavorites,
@@ -706,7 +707,8 @@ export class LayerMapUI {
     result: LayerRegion[][]
   }
   private readonly itineraryNoteRegionIds = new Set<string>()
-  private syncRegionNoteAI?: () => void
+  private detailAIToggles: Array<() => void> = []
+  private automaticRoadAI = new Set<string>()
   /** Range while the slider or map handle is being dragged; saved to settings on release. */
   private itineraryRangeOverride: number | undefined
   /** Planning: the next leg added follows roads. Stays on until switched off. */
@@ -728,6 +730,7 @@ export class LayerMapUI {
   private saveTimer: number | undefined
   private resizeObserver: ResizeObserver | null = null
   private active = false
+  private contextLoading = false
   private dragging = false
   private moved = false
   private dragX = 0
@@ -982,7 +985,36 @@ export class LayerMapUI {
   }
 
   contextText(): string {
-    return buildLayerContext(this.state)
+    if (!layerContextNeedsRefresh(this.state, loadSettings(this.liveContext()))) {
+      return buildLayerContext(this.state)
+    }
+    if (!this.active && !this.pkg && !this.contextLoading) void this.refreshSavedContext()
+    return ''
+  }
+
+  private async refreshSavedContext(): Promise<void> {
+    const state = this.state
+    if (!state.packageId) return
+    this.contextLoading = true
+    try {
+      const pkg = await getLayerPackageData(state.packageId)
+      if (!pkg || this.state !== state || this.active || this.pkg || !this.panelEl.isConnected) return
+      this.ctx = this.liveContext()
+      this.pkg = pkg
+      try {
+        this.pinEdits = loadPinEdits(pkg.id)
+        this.placeAIFlags = loadPlaceAIFlags(pkg.id)
+        this.itinerary = state.itinerariesByPackage?.[pkg.id] ?? null
+        this.rebuildEffectiveMarkers()
+        this.refreshContext(false, true)
+      } finally {
+        this.pkg = null
+        this.itinerary = null
+      }
+      this.callbacks.onChange()
+    } finally {
+      this.contextLoading = false
+    }
   }
 
   isOpen(): boolean {
@@ -992,8 +1024,8 @@ export class LayerMapUI {
   handleSettingsChanged(): void {
     this.ctx = this.liveContext()
     if (!this.pkg) return
+    this.placeAIFlags = loadPlaceAIFlags(this.pkg.id)
     this.renderDetail()
-    this.renderItineraryShelf()
     this.refreshContext()
   }
 
@@ -3038,11 +3070,7 @@ export class LayerMapUI {
     return `road:${key}`
   }
 
-  private roadNotesGloballyEnabled(settings = loadSettings(this.liveContext())): boolean {
-    return settings.layerRoadNoteNearby || settings.layerRoadNoteCurrentLeg || settings.layerRoadNoteAllLegs
-  }
 
-  /** Source fields of a road for AI: each distinct set of line fields once, written as in the data. */
   private roadSourceText(key: string): string {
     const seen = new Set<string>()
     const parts: string[] = []
@@ -3136,8 +3164,12 @@ export class LayerMapUI {
    * in range). Each road appears once with every reason it was included.
    */
   private roadNotesForAI(settings: Settings): LayerContextRoadNote[] {
-    if (!this.pkg?.streets?.length || !this.roadNotesGloballyEnabled(settings)) return []
+    if (!this.pkg?.streets?.length) {
+      this.automaticRoadAI.clear()
+      return []
+    }
     const roads = this.roadAIScope(settings)
+    this.automaticRoadAI = new Set(roads.keys())
     // Roads ticked "给 AI" outside the automatic range are sent too.
     for (const key of Object.keys(this.placeAIFlags)) {
       if (!key.startsWith('road:')) continue
@@ -3153,7 +3185,7 @@ export class LayerMapUI {
       const inScope = !entry.tags.includes('pinned')
       const text = this.aiFlagSends(aiKey, 'note', inScope) ? this.roadNoteValue(key).trim() : ''
       const source =
-        settings.layerRoadSourceAI && this.aiFlagSends(aiKey, 'source', inScope) ? this.roadSourceText(key) : ''
+        this.aiFlagSends(aiKey, 'source', settings.layerRoadSourceAI && inScope) ? this.roadSourceText(key) : ''
       if (text || source) {
         result.push({ name: entry.name, type: entry.type, tags: entry.tags, text, source: source || undefined })
       }
@@ -4415,8 +4447,8 @@ export class LayerMapUI {
   }
 
   private renderDetail(): void {
+    this.detailAIToggles = []
     if (!this.detailEl) return
-    this.syncRegionNoteAI = undefined
     this.detailEl.replaceChildren()
     const pkg = this.pkg
     if (!pkg) {
@@ -4689,7 +4721,6 @@ export class LayerMapUI {
     source.open = true
     const summary = document.createElement('summary')
     summary.textContent = '来源资料（随道路显示）'
-    const settings = loadSettings(this.liveContext())
     const sourceAI = document.createElement('div')
     sourceAI.className = 'tml-road-source-ai'
     sourceAI.append(
@@ -4698,10 +4729,11 @@ export class LayerMapUI {
         'source',
         '道路来源资料',
         '道路',
-        settings.layerRoadSourceAI && this.roadNotesGloballyEnabled(settings),
-        () => this.roadAIScope(loadSettings(this.liveContext())).has(key),
-        '这条路不在你附近，也不在勾选的行程段里',
-      ).label,
+        () => {
+          const settings = loadSettings(this.liveContext())
+          return settings.layerRoadSourceAI && this.automaticRoadAI.has(key)
+        },
+      ),
     )
     source.append(summary, sourceAI)
     const withFields = lines.filter((line) => line.properties?.length)
@@ -4760,10 +4792,8 @@ export class LayerMapUI {
         'note',
         '道路笔记',
         '道路',
-        this.roadNotesGloballyEnabled(),
-        () => this.roadAIScope(loadSettings(this.liveContext())).has(key),
-        '这条路不在你附近，也不在勾选的行程段里',
-      ).label,
+        () => this.automaticRoadAI.has(key),
+      ),
     )
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写一段道路笔记…'
@@ -4826,6 +4856,8 @@ export class LayerMapUI {
       '区域',
       `layer-source:${pkg.id}:region:${region.id}`,
       region.description ?? '',
+      this.regionAIToggle(region, 'source'),
+      () => this.refreshContext(false),
     )
     const fields = (region.properties ?? []).filter(([, value]) => !sourceHttpUrl(value))
     if (fields.length) source.append(this.roadFieldList(fields))
@@ -4837,7 +4869,7 @@ export class LayerMapUI {
     const label = document.createElement('label')
     label.className = 'tml-note-label'
     label.textContent = '区域笔记'
-    noteHead.append(label, this.regionNoteAIToggle(region))
+    noteHead.append(label, this.regionAIToggle(region, 'note'))
     const textarea = document.createElement('textarea')
     textarea.placeholder = '写一段区域笔记…'
     textarea.setAttribute('aria-label', '区域笔记')
@@ -5237,111 +5269,104 @@ export class LayerMapUI {
     return `region:${region.id}`
   }
 
-  /**
-   * Area notes for AI: my area and the areas around it (unless unticked),
-   * plus any other area whose note was ticked "给 AI".
-   */
-  private areaNotesForAI(
+  private regionSourceText(region: LayerRegion): string {
+    const edited = globalNote(`layer-source:${this.pkg?.id}:region:${region.id}`)
+    const fields = (region.properties ?? [])
+      .filter(([, value]) => !sourceHttpUrl(value))
+      .map(([name, value]) => `${name}: ${value}`)
+    return [edited ?? region.description, ...fields].filter((text) => text?.trim()).join('\n')
+  }
+
+  private areaPartsForAI(
     chain: LayerRegion[],
-    settings: ReturnType<typeof loadSettings>,
+    part: 'note' | 'source',
+    settings: Settings,
   ): Array<{ name: string; text: string; other?: boolean }> {
-    if (!settings.layerRegionNoteAI || !this.pkg) return []
-    const result: Array<{ name: string; text: string; other?: boolean }> = []
-    const seen = new Set<string>()
-    for (const region of chain) {
-      if (seen.has(region.id)) continue
-      seen.add(region.id)
-      if (!this.aiFlagSends(this.regionAIKey(region), 'note', true)) continue
-      const text = this.regionNoteValue(region).trim()
-      if (text) result.push({ name: region.name, text })
+    if (!this.pkg) return []
+    const enabled = part === 'source' ? settings.layerRegionSourceAI : settings.layerRegionNoteAI
+    const ids = new Set(chain.map((region) => region.id))
+    const regions = new Map(chain.map((region) => [region.id, region]))
+    for (const [key, flags] of Object.entries(this.placeAIFlags)) {
+      if (!key.startsWith('region:') || flags[part] !== true) continue
+      const id = key.slice('region:'.length)
+      if (regions.has(id)) continue
+      const region = this.pkg.regions.find((item) => item.id === id)
+      if (region) regions.set(id, region)
     }
-    for (const region of this.pkg.regions) {
-      if (seen.has(region.id) || this.aiFlagState(this.regionAIKey(region), 'note') !== true) continue
-      seen.add(region.id)
-      const text = this.regionNoteValue(region).trim()
-      if (text) result.push({ name: region.name, text, other: true })
+    const result: Array<{ name: string; text: string; other?: boolean }> = []
+    for (const region of regions.values()) {
+      const inScope = enabled && ids.has(region.id)
+      if (!this.aiFlagSends(this.regionAIKey(region), part, inScope)) continue
+      if (!inScope && part === 'note' && this.itineraryNoteRegionIds.has(region.id)) continue
+      const text = part === 'note' ? this.regionNoteValue(region).trim() : this.regionSourceText(region)
+      if (text) result.push({ name: region.name, text, other: !ids.has(region.id) || undefined })
     }
     return result
   }
 
-  private aiPartGloballyEnabled(part: LayerAIPart): boolean {
-    const settings = loadSettings(this.liveContext())
-    const nearby = settings.layerNearbyAI
-    const favorites = settings.layerFavoritesAI
-    if (part === 'source') {
-      return (
-        settings.layerSourceAI ||
-        (nearby && settings.layerNearbySource) ||
-        (favorites && settings.layerFavoriteSource) ||
-        (settings.layerItineraryPoisShow && settings.layerItineraryPoiSource)
-      )
-    }
-    if (part === 'wiki') {
-      return (
-        settings.layerWikiAI ||
-        (nearby && settings.layerNearbyWiki) ||
-        (favorites && settings.layerFavoriteWiki)
-      )
-    }
-    return (
-      settings.layerNoteAI ||
-      (nearby && settings.layerNearbyNotes) ||
-      (favorites && settings.layerFavoriteNote) ||
-      (settings.layerItineraryPoisShow && settings.layerItineraryPoiNotes)
-    )
+  private placePartAutomatic(markerId: string, part: LayerAIPart, settings: Settings, context = this.state.context): boolean {
+    const current = { source: settings.layerSourceAI, wiki: settings.layerWikiAI, note: settings.layerNoteAI }
+    const nearby = { source: settings.layerNearbySource, wiki: settings.layerNearbyWiki, note: settings.layerNearbyNotes }
+    const favorites = { source: settings.layerFavoriteSource, wiki: settings.layerFavoriteWiki, note: settings.layerFavoriteNote }
+    const route = { source: settings.layerItineraryPoiSource, wiki: false, note: settings.layerItineraryPoiNotes }
+    return (current[part] && this.state.atPlaceId === markerId) ||
+      Boolean(nearby[part] && context?.nearby?.some((item) => item.id === markerId)) ||
+      Boolean(favorites[part] && this.pkg && context?.favorites?.some((item) => item.key === layerFavoriteKey(this.pkg!.id, markerId))) ||
+      Boolean(route[part] && context?.itinerary?.legs.some((leg) => leg.pois.some((item) => item.id === markerId)))
   }
 
-  /** `undefined` returns the part to the automatic rule. */
-  private setAIFlag(key: string, part: LayerAIPart, value: boolean | undefined): void {
-    const flags = { ...(this.placeAIFlags[key] ?? {}) }
-    if (value === undefined) delete flags[part]
-    else flags[part] = value
-    if (Object.keys(flags).length > 0) this.placeAIFlags[key] = flags
-    else delete this.placeAIFlags[key]
+  private pinnedPlacesForAI(context: LayerContextSnapshot, settings: Settings): LayerFavoritePlace[] {
+    const result: LayerFavoritePlace[] = []
+    for (const [id, flags] of Object.entries(this.placeAIFlags)) {
+      if (id === this.state.atPlaceId) continue
+      const marker = this.markerById(id)
+      if (!marker) continue
+      const pinned = (part: LayerAIPart): boolean => flags[part] === true && !this.placePartAutomatic(id, part, settings, context)
+      const note = pinned('note') ? this.markerNoteValue(marker).trim() : ''
+      const sourceMaterial = pinned('source') ? this.markerSourceValue(marker).trim() : ''
+      const wikiTexts = pinned('wiki') ? this.contextWikiTexts(marker, settings, true) : undefined
+      if (note || sourceMaterial || wikiTexts?.length) {
+        result.push({ key: id, name: marker.name, note, sourceMaterial, wikiTexts })
+      }
+    }
+    return result
+  }
+
+  private setAIFlag(key: string, part: LayerAIPart, value: boolean): void {
+    this.placeAIFlags[key] = { ...this.placeAIFlags[key], [part]: value }
     this.savePlaceAIFlagsForMap()
     this.refreshContext()
   }
 
   private aiContentToggle(marker: LayerMarker, part: LayerAIPart): HTMLElement {
-    const names: Record<LayerAIPart, string> = {
-      source: '来源资料',
-      wiki: 'Wiki 正文',
-      note: '笔记',
-    }
-    return this.aiFlagToggle(marker.id, part, names[part], '地点', this.aiPartGloballyEnabled(part)).label
-  }
-
-  private regionNoteAIToggle(region: LayerRegion): HTMLElement {
-    const settings = loadSettings(this.liveContext())
-    const inItinerary = () => this.itineraryNoteRegionIds.has(region.id)
-    const { label, sync } = this.aiFlagToggle(
-      this.regionAIKey(region),
-      'note',
-      '区域笔记',
-      '区域',
-      () => settings.layerRegionNoteAI || inItinerary(),
-      () => inItinerary() ||
-        (settings.layerRegionNoteAI && this.contextAreaChain().some((item) => item.id === region.id)),
-      '区域不在当前位置或行程的范围内',
+    const names: Record<LayerAIPart, string> = { source: '来源资料', wiki: 'Wiki 正文', note: '笔记' }
+    return this.aiFlagToggle(marker.id, part, names[part], '地点', () =>
+      this.placePartAutomatic(marker.id, part, loadSettings(this.liveContext())),
     )
-    this.syncRegionNoteAI = sync
-    return label
   }
 
-  /**
-   * "给 AI" checkbox. Places only narrow (ticked by default). Areas and roads
-   * pass `inScope`: ticked by default only inside the automatic range, and a
-   * tick outside it sends the content anyway — what the box shows is what AI gets.
-   */
+  private regionAIToggle(region: LayerRegion, part: 'note' | 'source'): HTMLElement {
+    return this.aiFlagToggle(
+      this.regionAIKey(region),
+      part,
+      part === 'source' ? '区域来源资料' : '区域笔记',
+      '区域',
+      () => {
+        const settings = loadSettings(this.liveContext())
+        return (part === 'note' && this.itineraryNoteRegionIds.has(region.id)) ||
+          ((part === 'note' ? settings.layerRegionNoteAI : settings.layerRegionSourceAI) &&
+            this.contextAreaChain().some((item) => item.id === region.id))
+      },
+    )
+  }
+
   private aiFlagToggle(
     key: string,
     part: LayerAIPart,
     name: string,
     scope: string,
-    globallyEnabled: boolean | (() => boolean),
-    inScope?: () => boolean,
-    outOfScopeText = '',
-  ): { label: HTMLElement; sync: () => void } {
+    automatic: () => boolean,
+  ): HTMLElement {
     const label = document.createElement('label')
     label.className = 'tml-ai-toggle'
     const checkbox = document.createElement('input')
@@ -5350,34 +5375,16 @@ export class LayerMapUI {
     const caption = document.createElement('span')
     caption.textContent = '给 AI'
     label.append(checkbox, caption)
-    const automatic = (): boolean => (inScope ? inScope() : true)
-    const enabled = () => typeof globallyEnabled === 'function' ? globallyEnabled() : globallyEnabled
     const sync = (): void => {
-      const isEnabled = enabled()
-      const on = isEnabled && this.aiFlagSends(key, part, automatic())
+      const on = this.aiFlagSends(key, part, automatic())
       checkbox.checked = on
-      checkbox.disabled = !isEnabled
       label.classList.toggle('is-off', !on)
-      label.classList.toggle('is-disabled', !isEnabled)
-      label.title = !isEnabled
-        ? `没有开启${name}的全局 AI 开关`
-        : on
-          ? `点击取消这个${scope}的${name}进入 AI`
-          : !automatic() && outOfScopeText
-            ? `${outOfScopeText}；勾上后也会把${name}发给 AI`
-            : `点击让这个${scope}的${name}进入 AI`
+      label.title = on ? `取消发送这个${scope}的${name}` : `单独发送这个${scope}的${name}`
     }
+    this.detailAIToggles.push(sync)
     sync()
-    checkbox.addEventListener('change', () => {
-      if (!enabled()) {
-        checkbox.checked = false
-        return
-      }
-      // Matching the automatic rule clears the explicit choice.
-      this.setAIFlag(key, part, checkbox.checked === automatic() ? undefined : checkbox.checked)
-      sync()
-    })
-    return { label, sync }
+    checkbox.addEventListener('change', () => this.setAIFlag(key, part, checkbox.checked))
+    return label
   }
 
   private sourceSection(marker: LayerMarker): HTMLElement {
@@ -5387,7 +5394,7 @@ export class LayerMapUI {
       marker.description ?? '',
       this.aiContentToggle(marker, 'source'),
       () => {
-        if (this.aiPartGloballyEnabled('source')) this.refreshContext(false)
+        this.refreshContext(false)
         if (this.state.selectedMarkerId === marker.id) this.renderPositionCard()
       },
     )
@@ -6323,6 +6330,7 @@ export class LayerMapUI {
           : undefined,
         pois: extras.has(index)
           ? (pois.get(index) ?? []).map((poi) => ({
+              id: poi.marker.id,
               name: poi.marker.name,
               category: this.categoryById(poi.marker.categoryId)?.name,
               along: this.itineraryAlongLabel(leg, 0, poi.along),
@@ -7361,7 +7369,7 @@ export class LayerMapUI {
     }
   }
 
-  private refreshContext(renderPosition = true): void {
+  private refreshContext(renderPosition = true, contextOnly = false): void {
     const pkg = this.pkg
     if (!pkg) {
       this.state.context = undefined
@@ -7379,7 +7387,6 @@ export class LayerMapUI {
     const positionRegion = user ? this.regionForPoint(user.x, user.y) : undefined
     const positionChain = user ? this.regionChain(positionRegion, user.x, user.y) : []
     const placeChain = marker ? this.regionChain(region, marker.x, marker.y) : []
-    const areaNotes = this.areaNotesForAI([...positionChain, ...placeChain], settings)
     const roadNotes = this.roadNotesForAI(settings)
     const road = user ? this.currentRoad() : undefined
     const contextGrid = this.gridConfig()
@@ -7387,13 +7394,15 @@ export class LayerMapUI {
     const nearbyRoads = user ? this.buildNearbyRoads(user, settings) : []
     this.itineraryNoteRegionIds.clear()
     const itinerary = this.itinerary ? this.itineraryContext(this.itinerary, settings) : undefined
-    this.syncRegionNoteAI?.()
+    const areaNotes = this.areaPartsForAI([...positionChain, ...placeChain], 'note', settings)
+    const areaSources = this.areaPartsForAI([...positionChain, ...placeChain], 'source', settings)
     const note =
-      settings.layerNoteAI && marker && this.placeAIPartAllowed(marker, 'note')
+      marker && this.aiFlagSends(marker.id, 'note', settings.layerNoteAI)
         ? this.markerNoteValue(marker)
         : undefined
     const favorites = this.favoriteContext(settings)
     const context: LayerContextSnapshot = {
+      aiRevision: layerContextRevision(settings),
       mapName: pkg.name,
       position: user
         ? {
@@ -7427,15 +7436,16 @@ export class LayerMapUI {
       region: region?.name,
       regionParents: this.regionChainNames(placeChain),
       areaNotes: areaNotes.length > 0 ? areaNotes : undefined,
+      areaSources: areaSources.length > 0 ? areaSources : undefined,
       roadNotes: roadNotes.length > 0 ? roadNotes : undefined,
       note: note?.trim() || undefined,
       sourceMaterial:
         marker &&
-        settings.layerSourceAI &&
-        this.placeAIPartAllowed(marker, 'source')
+        this.aiFlagSends(marker.id, 'source', settings.layerSourceAI)
           ? this.markerSourceValue(marker).trim() || undefined
           : undefined,
-      wikiTexts: marker ? this.contextWikiTexts(marker, settings) : undefined,
+      wikiTexts: marker && this.aiFlagSends(marker.id, 'wiki', settings.layerWikiAI)
+        ? this.contextWikiTexts(marker, settings, true) : undefined,
       favorites: favorites.length > 0 ? favorites : undefined,
       itinerary,
       nearby: nearby.length > 0 ? nearby : undefined,
@@ -7446,10 +7456,17 @@ export class LayerMapUI {
       grid: this.gridConfig() ? { ...this.gridConfig()! } : undefined,
       updatedAt: Date.now(),
     }
+    context.pinnedPlaces = this.pinnedPlacesForAI(context, settings)
     this.state.context = context
+    if (contextOnly) {
+      saveLayerState(this.ctx, this.state)
+      return
+    }
+    this.detailAIToggles.forEach((sync) => sync())
     this.persist()
     this.contextStatusEl.textContent =
-      context.currentPlace || context.position || context.nearby || context.favorites
+      context.currentPlace || context.position || context.nearby || context.favorites ||
+      context.pinnedPlaces?.length || context.areaNotes?.length || context.areaSources?.length || context.roadNotes?.length
         ? '图层上下文：已生成'
         : '图层上下文：待机'
     this.contextStatusEl.title = context.currentPlace

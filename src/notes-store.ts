@@ -113,6 +113,13 @@ export function globalNotesSnapshot(): Record<string, string> {
   return Object.fromEntries(cache.entries())
 }
 
+export function* globalNoteEntries(prefix: string): IterableIterator<[string, string]> {
+  if (!cache) return
+  for (const entry of cache) {
+    if (entry[0].startsWith(prefix)) yield entry
+  }
+}
+
 export function setGlobalNote(key: string, text: string): void {
   if (!cache) cache = new Map()
   cache.set(key, text)
