@@ -36456,6 +36456,14 @@ function UI(e) {
 		if (n.push(`Current place: ${Z(t.currentPlace)}${e}${r}${i}`), t.note && n.push(`Current place note: ${Z(t.note)}`), t.sourceMaterial && n.push(`Current place source: ${Z(t.sourceMaterial)}`), t.wikiTexts?.length) for (let e of t.wikiTexts) n.push(`Current place wiki (${Z(e.title)}): ${Z(e.text)}`);
 	} else t.region && !t.position?.region && n.push(`Area: ${BI(t.region, t.regionParents)}`);
 	for (let e of t.areaNotes ?? []) Z(e.text) && n.push(`Area note (${Z(e.name)}): ${Z(e.text)}`);
+	let r = (t.roadNotes ?? []).filter((e) => Z(e.text) || Z(e.source));
+	if (r.length > 0) {
+		n.push(r.some((e) => Z(e.source)) ? "Road notes and source:" : "Road notes:");
+		for (let e of r) {
+			let t = e.type ? ` (${Z(e.type)})` : "", r = e.tags.length > 0 ? ` [${e.tags.map(Z).join(" · ")}]` : "", i = Z(e.text) ? `: ${Z(e.text)}` : "";
+			n.push(`- ${Z(e.name) || "unnamed road"}${t}${r}${i}`), Z(e.source) && n.push(`  Source: ${Z(e.source)}`);
+		}
+	}
 	if (t.itinerary) {
 		let e = t.itinerary;
 		if (n.push("Itinerary (current, completed):"), n.push(`Start: ${Z(e.start)}`), n.push(`Destination: ${Z(e.destination)}`), n.push(`Stops: ${e.stops.length}`), n.push(`Total: ${Z(e.total)}`), e.current) {
@@ -37684,7 +37692,12 @@ function wR(e) {
 		if (!r) return;
 		let i = HL(r.properties), a = ZL(xR(i, SR)) ?? "", o = WL(xR(i, CR)) || void 0, s = HL(r.geometry), c = WL(s?.type);
 		if (!s || c !== "LineString" && c !== "MultiLineString") return;
-		let l = c === "LineString" ? [s.coordinates] : UL(s.coordinates), u = KL(i?.fid) || KL(i?.id) || KL(r.id) || String(n);
+		let l = c === "LineString" ? [s.coordinates] : UL(s.coordinates), u = KL(i?.fid) || KL(i?.id) || KL(r.id) || String(n), d = [];
+		for (let [e, t] of Object.entries(i ?? {})) {
+			if (t == null) continue;
+			let n = typeof t == "object" ? JSON.stringify(t) : String(t);
+			n && d.push([e, n]);
+		}
 		l.forEach((e, n) => {
 			let r = [];
 			for (let t of UL(e)) {
@@ -37695,7 +37708,8 @@ function wR(e) {
 				id: `mapgenie-street:${u}:${n}`,
 				name: a,
 				type: o,
-				points: r
+				points: r,
+				properties: d.length > 0 ? d : void 0
 			});
 		});
 	}), t;
@@ -40178,6 +40192,7 @@ function KB(e) {
 		itinerariesByPackage: JB(n.itinerariesByPackage),
 		nearbyRadius: typeof n.nearbyRadius == "number" && Number.isFinite(n.nearbyRadius) ? Math.min(.8, Math.max(.001, n.nearbyRadius)) : void 0,
 		selectedRegionId: typeof n.selectedRegionId == "string" ? n.selectedRegionId : void 0,
+		selectedRoadKey: typeof n.selectedRoadKey == "string" ? n.selectedRoadKey : void 0,
 		currentRegionId: typeof n.currentRegionId == "string" ? n.currentRegionId : void 0,
 		hiddenCategories: Array.isArray(n.hiddenCategories) ? n.hiddenCategories.filter((e) => typeof e == "string") : [],
 		showLabels: typeof n.showLabels != "boolean" || n.showLabels,
@@ -40281,6 +40296,7 @@ function XB(e) {
 	if (!e || typeof e != "object") return;
 	let t = e;
 	if (typeof t.name == "string" && Number.isFinite(t.distancePercent)) return {
+		key: typeof t.key == "string" && t.key ? t.key : void 0,
 		name: t.name,
 		type: typeof t.type == "string" && t.type ? t.type : void 0,
 		on: t.on === !0,
@@ -40333,6 +40349,13 @@ function QB(e) {
 		category: typeof t.category == "string" ? t.category : void 0,
 		region: typeof t.region == "string" ? t.region : void 0,
 		regionParents: ZB(t.regionParents),
+		roadNotes: Array.isArray(t.roadNotes) ? t.roadNotes.filter((e) => !!e && typeof e.name == "string" && typeof e.text == "string" && Array.isArray(e.tags)).map((e) => ({
+			name: e.name,
+			type: typeof e.type == "string" && e.type ? e.type : void 0,
+			tags: e.tags.filter((e) => typeof e == "string"),
+			text: e.text,
+			source: typeof e.source == "string" && e.source ? e.source : void 0
+		})) : void 0,
 		areaNotes: Array.isArray(t.areaNotes) ? t.areaNotes.filter((e) => !!e && typeof e.name == "string" && typeof e.text == "string") : void 0,
 		note: typeof t.note == "string" ? t.note : void 0,
 		sourceMaterial: typeof t.sourceMaterial == "string" && t.sourceMaterial.trim() ? t.sourceMaterial : void 0,
@@ -40402,6 +40425,10 @@ var eV = "tavern-map", tV = [
 	layerItineraryPoiMax: 8,
 	layerItineraryPoisShow: !0,
 	layerItineraryPoisCurrentOnly: !1,
+	layerRoadNoteNearby: !0,
+	layerRoadNoteCurrentLeg: !0,
+	layerRoadNoteAllLegs: !1,
+	layerRoadSourceAI: !1,
 	layerFavoritesAI: !1,
 	layerFavoriteType: !0,
 	layerFavoriteCoords: !0,
@@ -40449,6 +40476,10 @@ function aV(e) {
 		layerItineraryPoiMax: Math.round(r(n.layerItineraryPoiMax, iV.layerItineraryPoiMax, 1, 30)),
 		layerItineraryPoisShow: n.layerItineraryPoisShow !== !1,
 		layerItineraryPoisCurrentOnly: n.layerItineraryPoisCurrentOnly === !0,
+		layerRoadNoteNearby: n.layerRoadNoteNearby !== !1,
+		layerRoadNoteCurrentLeg: n.layerRoadNoteCurrentLeg !== !1,
+		layerRoadNoteAllLegs: n.layerRoadNoteAllLegs === !0,
+		layerRoadSourceAI: n.layerRoadSourceAI === !0,
 		layerFavoritesAI: n.layerFavoritesAI === !0,
 		layerFavoriteType: n.layerFavoriteType !== !1,
 		layerFavoriteCoords: n.layerFavoriteCoords !== !1,
@@ -41337,6 +41368,7 @@ var zH = `
 	routeSnapNext = !1;
 	routeRangeHandleEl;
 	rangeBandCanvas;
+	roadLinesCache;
 	rangeHandleDrag;
 	currentRoadCache;
 	tileMoving = !1;
@@ -41741,7 +41773,7 @@ var zH = `
 			return;
 		}
 		let n = this.state.packageId !== t.id;
-		if (n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null, this.packageLoadToken += 1), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.pkg && this.pkg.id !== t.id && jH.delete(this.pkg.id), this.pkg = t, this.pinEdits = AV(t.id), this.placeAIFlags = RV(t.id), this.itinerary = this.state.itinerariesByPackage?.[t.id] ?? null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.routeExpandedLeg = 0, this.rebuildEffectiveMarkers(), this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.atPlaceId && !this.markerById(this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.state.selectedMarkerId && !this.markerById(this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !this.markerById(this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.roadIndexCache = void 0, this.currentRoadCache = void 0, this.rebuildEffectiveMarkers(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.renderItineraryShelf(), this.requestDraw(), t.kind === "tiles") {
+		if (n && (this.tileViewPackageId = "", this.tileMoving = !1, this.saveTimer !== void 0 && (window.clearTimeout(this.saveTimer), this.saveTimer = void 0), this.rememberUserPosition(), this.state.packageId = t.id, this.state.selectedMarkerId = void 0, this.state.currentMarkerId = void 0, this.state.userPosition = void 0, this.state.atPlaceId = void 0, this.state.selectedRegionId = void 0, this.state.selectedRoadKey = void 0, this.state.currentRegionId = void 0, this.state.view = void 0, this.state.hiddenCategories = [], this.linkDraftVisible = !1, this.lastRemovedImage = null, this.packageLoadToken += 1), (n || !this.state.userPosition) && this.restoreUserPosition(t.id), !this.state.view && t.defaultView && (this.state.view = { ...t.defaultView }, this.view = { ...t.defaultView }), this.pkg && this.pkg.id !== t.id && jH.delete(this.pkg.id), this.pkg = t, this.pinEdits = AV(t.id), this.placeAIFlags = RV(t.id), this.itinerary = this.state.itinerariesByPackage?.[t.id] ?? null, this.itineraryDraft = null, this.itineraryEdit = !1, this.routeShelfOpen = !1, this.routeExpandedLeg = 0, this.rebuildEffectiveMarkers(), this.migrateLegacyNotes(t), await this.ensureIconFont(t), await this.ensureIconAtlas(t), this.state.atPlaceId && !this.markerById(this.state.atPlaceId) && (this.state.atPlaceId = void 0), this.state.selectedMarkerId && !this.markerById(this.state.selectedMarkerId) && (this.state.selectedMarkerId = void 0), this.state.currentMarkerId && !this.markerById(this.state.currentMarkerId) && (this.state.currentMarkerId = void 0), this.state.selectedRegionId && !t.regions.some((e) => e.id === this.state.selectedRegionId) && (this.state.selectedRegionId = void 0), this.state.currentRegionId && !t.regions.some((e) => e.id === this.state.currentRegionId) && (this.state.currentRegionId = void 0), this.panelEl.classList.remove("filters-open"), this.emptyMessage = "", this.emptyEl.hidden = !0, this.markerRegionCache.clear(), this.regionLabelCache.clear(), this.streetLabelCache.clear(), this.roadIndexCache = void 0, this.currentRoadCache = void 0, this.rebuildEffectiveMarkers(), this.clearTileCaches(), this.packageSelectEl.value = t.id, this.renderCategories(), this.refreshFavoriteMarkerIds(), this.renderFavorites(), this.renderDetail(), this.renderItineraryShelf(), this.syncToolButtons(), this.updatePackageInfo(), this.syncHeaderImage(), this.imagePanelOpen && this.renderImagePanel(), this.refreshContext(), this.renderItineraryShelf(), this.requestDraw(), t.kind === "tiles") {
 			this.clearImageResources();
 			let e = this.packageLoadToken;
 			this.loadTileMap(t, e).catch((e) => {
@@ -42090,7 +42122,7 @@ var zH = `
 	}
 	draw() {
 		let e = this.canvasEl, t = e.clientWidth || 1, n = e.clientHeight || 1, r = e.getContext("2d");
-		r && (r.clearRect(0, 0, t, n), this.pkg ? (this.pkg.kind === "image" ? (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawImageMap(r, t, n)) : this.maplibreMap || (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawTileMap(r, t, n)), this.drawGrid(r, t, n), this.drawRegions(r, t, n), this.drawRoads(r, t, n), this.drawItineraryLine(r, t, n), this.labelCells.clear(), this.drawRegionLabels(r, t, n), this.drawStreetLabels(r, t, n), this.drawMarkers(r, t, n), this.drawItineraryPoiRings(r, t, n), this.drawUserRadius(r, t, n), this.updateUserStamp(), this.positionRouteStopHandles(), this.updateGridHandles(), this.updateStatus()) : (r.fillStyle = "#0a0f14", r.fillRect(0, 0, t, n), this.updateStatus()));
+		r && (r.clearRect(0, 0, t, n), this.pkg ? (this.pkg.kind === "image" ? (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawImageMap(r, t, n)) : this.maplibreMap || (r.fillStyle = this.pkg.tile?.backgroundColor ?? "#0a0f14", r.fillRect(0, 0, t, n), this.drawTileMap(r, t, n)), this.drawGrid(r, t, n), this.drawRegions(r, t, n), this.drawRoads(r, t, n), this.drawItineraryLine(r, t, n), this.drawSelectedRoad(r, t, n), this.labelCells.clear(), this.drawRegionLabels(r, t, n), this.drawStreetLabels(r, t, n), this.drawMarkers(r, t, n), this.drawItineraryPoiRings(r, t, n), this.drawUserRadius(r, t, n), this.updateUserStamp(), this.positionRouteStopHandles(), this.updateGridHandles(), this.updateStatus()) : (r.fillStyle = "#0a0f14", r.fillRect(0, 0, t, n), this.updateStatus()));
 	}
 	drawGrid(e, t, n) {
 		let r = this.pkg?.grid;
@@ -42361,6 +42393,116 @@ var zH = `
 	}
 	roadDisplayName(e) {
 		return e.name || (e.type ? `无名道路（${e.type}）` : "无名道路");
+	}
+	roadKey(e) {
+		return e.name ? `name:${e.name}|${e.type ?? ""}` : `line:${e.id}`;
+	}
+	roadLines(e) {
+		let t = this.pkg?.streets;
+		if (!t?.length) return [];
+		if (this.roadLinesCache?.streets !== t) {
+			let e = /* @__PURE__ */ new Map();
+			for (let n of t) {
+				let t = this.roadKey(n), r = e.get(t);
+				r ? r.push(n) : e.set(t, [n]);
+			}
+			this.roadLinesCache = {
+				streets: t,
+				map: e
+			};
+		}
+		return this.roadLinesCache.map.get(e) ?? [];
+	}
+	roadNoteKey(e) {
+		return `${this.notePrefix()}road:${e}`;
+	}
+	roadNoteValue(e) {
+		let t = this.roadNoteKey(e), n = sI(t);
+		return n === void 0 ? this.state.notes?.[t] ?? "" : n;
+	}
+	roadAIKey(e) {
+		return `road:${e}`;
+	}
+	roadNotesGloballyEnabled(e = aV(this.liveContext())) {
+		return e.layerRoadNoteNearby || e.layerRoadNoteCurrentLeg || e.layerRoadNoteAllLegs;
+	}
+	roadSourceText(e) {
+		let t = /* @__PURE__ */ new Set(), n = [];
+		for (let r of this.roadLines(e)) {
+			let e = r.properties ?? [];
+			if (e.length === 0) continue;
+			let i = e.map(([e, t]) => `${e}=${t}`).join("; ");
+			t.has(i) || (t.add(i), n.push(i));
+		}
+		return n.join(" | ");
+	}
+	selectRoad(e, t = !1) {
+		let n = this.roadLines(e);
+		n.length !== 0 && (this.state.selectedRoadKey = e, this.state.selectedMarkerId = void 0, this.state.selectedRegionId = void 0, t && this.centerOnRoad(n), this.renderDetail(), this.persist(), this.requestDraw(), this.syncToolButtons());
+	}
+	centerOnRoad(e) {
+		let t = Infinity, n = Infinity, r = -Infinity, i = -Infinity;
+		for (let a of e) for (let [e, o] of a.points) t = Math.min(t, e), r = Math.max(r, e), n = Math.min(n, o), i = Math.max(i, o);
+		Number.isFinite(t) && this.centerOnPoint({
+			x: (t + r) / 2,
+			y: (n + i) / 2
+		});
+	}
+	hitRoad(e, t) {
+		if (this.state.showRoads !== !0) return;
+		let n = this.roadIndex();
+		if (!n) return;
+		let r = this.canvasEl.clientWidth || 1, i = this.canvasEl.clientHeight || 1, [a, o] = this.unproject(e, t, r, i), [s] = this.unproject(e + 7, t, r, i), c = Math.abs(s - a);
+		if (Number.isFinite(a) && Number.isFinite(o) && c > 0) return sL(n, a, o, c)?.street;
+	}
+	drawSelectedRoad(e, t, n) {
+		let r = this.state.selectedRoadKey;
+		if (!r) return;
+		let i = this.roadLines(r);
+		if (i.length !== 0) {
+			e.save(), e.lineJoin = "round", e.lineCap = "round", e.beginPath();
+			for (let r of i) r.points.forEach(([r, i], a) => {
+				let [o, s] = this.project(r, i, t, n);
+				a === 0 ? e.moveTo(o, s) : e.lineTo(o, s);
+			});
+			e.strokeStyle = "rgba(255, 214, 120, 0.35)", e.lineWidth = 15, e.stroke(), e.strokeStyle = "rgba(8, 13, 18, 0.9)", e.lineWidth = 8, e.stroke(), e.strokeStyle = "#fff2c4", e.lineWidth = 4.5, e.stroke(), e.restore();
+		}
+	}
+	roadNotesForAI(e) {
+		if (!this.pkg?.streets?.length || !this.roadNotesGloballyEnabled(e)) return [];
+		let t = /* @__PURE__ */ new Map(), n = (e, n, r, i) => {
+			if (!e) return;
+			let a = t.get(e) ?? {
+				name: n,
+				type: r,
+				tags: []
+			};
+			a.tags.includes(i) || a.tags.push(i), t.set(e, a);
+		}, r = this.state.userPosition;
+		if (e.layerRoadNoteNearby && r) for (let { street: e } of this.nearbyRoadHits(r)) n(this.roadKey(e), this.roadDisplayName(e), e.type || void 0, "near me");
+		let i = this.itinerary;
+		if (i && i.showToAI && (e.layerRoadNoteCurrentLeg || e.layerRoadNoteAllLegs)) {
+			let t = this.itineraryLegs(i), r = this.itineraryPosition(i), a = this.itineraryExtrasLegs(i, t.length, r), o = this.itineraryLegRoads(t), s = !r || r.atFinal ? void 0 : r.onRoute ? r.legIndex ?? 0 : 0;
+			t.forEach((t, r) => {
+				let i = r === s;
+				if (!e.layerRoadNoteAllLegs && !(e.layerRoadNoteCurrentLeg && i)) return;
+				let c = i && e.layerRoadNoteCurrentLeg ? "current leg" : `leg ${r + 1}`;
+				for (let e of t.pieces) e.kind === "road" && n(e.key, e.name ?? "", e.type, c);
+				if (a.has(r)) for (let e of o.get(r) ?? []) n(this.roadKey(e.street), this.roadDisplayName(e.street), e.street.type || void 0, c);
+			});
+		}
+		let a = [];
+		for (let [n, r] of t) {
+			let t = this.roadAIKey(n), i = this.aiFlagAllowed(t, "note") ? this.roadNoteValue(n).trim() : "", o = e.layerRoadSourceAI && this.aiFlagAllowed(t, "source") ? this.roadSourceText(n) : "";
+			(i || o) && a.push({
+				name: r.name,
+				type: r.type,
+				tags: r.tags,
+				text: i,
+				source: o || void 0
+			});
+		}
+		return a;
 	}
 	drawRoads(e, t, n) {
 		if (!this.pkg?.streets?.length || this.state.showRoads !== !0) return;
@@ -42769,8 +42911,13 @@ var zH = `
 			this.selectMarker(o);
 			return;
 		}
-		let s = this.hitRegion(r, i);
-		s ? (this.state.selectedRegionId = s.id, this.state.selectedMarkerId = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw(), this.syncToolButtons()) : (this.state.selectedMarkerId = void 0, this.state.selectedRegionId = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw(), this.syncToolButtons());
+		let s = this.hitRoad(r, i);
+		if (s) {
+			this.selectRoad(this.roadKey(s));
+			return;
+		}
+		let c = this.hitRegion(r, i);
+		c ? (this.state.selectedRegionId = c.id, this.state.selectedMarkerId = void 0, this.state.selectedRoadKey = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw(), this.syncToolButtons()) : (this.state.selectedMarkerId = void 0, this.state.selectedRegionId = void 0, this.state.selectedRoadKey = void 0, this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw(), this.syncToolButtons());
 	}
 	buildMarkerIndex() {
 		this.markerIndex.clear();
@@ -42816,7 +42963,7 @@ var zH = `
 		return s;
 	}
 	selectMarker(e, t = !1) {
-		this.state.selectedMarkerId = e.id, this.state.selectedRegionId = void 0, t && this.centerOnMarker(e), this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw(), this.syncToolButtons();
+		this.state.selectedMarkerId = e.id, this.state.selectedRegionId = void 0, this.state.selectedRoadKey = void 0, t && this.centerOnMarker(e), this.renderDetail(), this.refreshContext(), this.persist(), this.requestDraw(), this.syncToolButtons();
 	}
 	centerOnMarker(e) {
 		this.pkg?.kind === "tiles" && this.maplibreMap ? this.maplibreMap.easeTo({
@@ -42916,7 +43063,7 @@ var zH = `
 					return;
 				}
 			}
-			this.detailEl.append(HH("div", "tml-empty-small", "点地图上的地点查看详情；也可以搜索或使用左侧分类。"));
+			this.state.selectedRoadKey && this.roadLines(this.state.selectedRoadKey).length > 0 ? this.detailEl.append(this.roadDetail(this.state.selectedRoadKey)) : this.detailEl.append(HH("div", "tml-empty-small", "点地图上的地点查看详情；也可以搜索或使用左侧分类。"));
 		}
 	}
 	markerDetail(e) {
@@ -43013,6 +43160,71 @@ var zH = `
 				mV(e.key), this.refreshContext(), this.renderFavorites(), this.renderDetail(), this.requestDraw();
 			}), t.append(r, o), this.favoritesEl.append(t);
 		}
+	}
+	roadDetail(e) {
+		let t = this.roadLines(e), n = t[0], r = document.createElement("article");
+		r.className = "tml-detail-card tml-road-detail";
+		let i = document.createElement("header");
+		i.className = "tml-detail-head";
+		let a = document.createElement("div"), o = document.createElement("span");
+		o.className = "tml-kicker", o.textContent = "道路";
+		let s = document.createElement("h2");
+		s.textContent = this.roadDisplayName(n), a.append(o, s);
+		let c = document.createElement("button");
+		c.type = "button", c.className = "tml-close", c.textContent = "×", c.setAttribute("aria-label", "关闭道路详情"), c.addEventListener("click", () => {
+			this.state.selectedRoadKey = void 0, this.renderDetail(), this.persist(), this.requestDraw();
+		}), i.append(a, c);
+		let l = t.reduce((e, t) => e + this.itineraryPathMeasure(t.points.map(([e, t]) => ({
+			x: e,
+			y: t
+		}))), 0), u = document.createElement("div");
+		u.className = "tml-detail-meta", u.textContent = [
+			n.type,
+			`${t.length} 段`,
+			`全长 ${this.itineraryMeasureLabel(l)}`
+		].filter(Boolean).join(" · ");
+		let d = document.createElement("div");
+		d.className = "tml-detail-actions", d.append(this.actionButton("居中", () => this.centerOnRoad(t))), r.append(i, u, d);
+		let f = document.createElement("details");
+		f.className = "tml-source tml-road-source", f.open = !0;
+		let p = document.createElement("summary");
+		p.textContent = "来源资料（随道路显示）";
+		let m = aV(this.liveContext()), h = document.createElement("div");
+		h.className = "tml-road-source-ai", h.append(this.aiFlagToggle(this.roadAIKey(e), "source", "道路来源资料", "道路", m.layerRoadSourceAI && this.roadNotesGloballyEnabled(m))), f.append(p, h);
+		let g = t.filter((e) => e.properties?.length);
+		if (g.length === 0) f.append(HH("div", "tml-road-source-empty", "这张地图包导入时还没有保留道路的原始字段，重新导入地图包后会在这里显示。")), f.append(this.roadFieldList([["Name", n.name], ["Type", n.type ?? ""]].filter(([, e]) => e)));
+		else {
+			let e = /* @__PURE__ */ new Map();
+			for (let t of g) {
+				let n = t.properties ?? [], r = JSON.stringify(n), i = e.get(r);
+				i ? i.count += 1 : e.set(r, {
+					fields: n,
+					count: 1
+				});
+			}
+			let t = e.size > 1, n = 0;
+			for (let r of e.values()) n += 1, t && f.append(HH("div", "tml-road-source-head", `第 ${n} 组${r.count > 1 ? `（${r.count} 段）` : ""}`)), f.append(this.roadFieldList(r.fields));
+		}
+		r.append(f);
+		let _ = document.createElement("div");
+		_.className = "tml-note-section";
+		let v = document.createElement("div");
+		v.className = "tml-section-head";
+		let y = document.createElement("label");
+		y.className = "tml-note-label", y.textContent = "道路笔记", v.append(y, this.aiFlagToggle(this.roadAIKey(e), "note", "道路笔记", "道路", this.roadNotesGloballyEnabled()));
+		let b = document.createElement("textarea");
+		return b.placeholder = "写一段道路笔记…", b.setAttribute("aria-label", "道路笔记"), b.value = this.roadNoteValue(e), b.addEventListener("input", () => this.setNoteValue(this.roadNoteKey(e), b.value)), _.append(v, b), r.append(_), r;
+	}
+	roadFieldList(e) {
+		let t = document.createElement("dl");
+		t.className = "tml-road-fields";
+		for (let [n, r] of e) {
+			let e = document.createElement("dt");
+			e.textContent = n;
+			let i = document.createElement("dd");
+			i.textContent = r, t.append(e, i);
+		}
+		return t;
 	}
 	regionDetail(e) {
 		if (!this.pkg) return HH("div", "tml-empty-small", "");
@@ -43447,26 +43659,39 @@ var zH = `
 	nearbyRadiusMapUnits() {
 		return this.nearbyRadiusFraction() * this.mapSpan().w;
 	}
+	nearbyRoadHits(e) {
+		let t = this.roadIndex();
+		if (!t) return [];
+		let n = aV(this.liveContext()).layerNearbyMax, r = /* @__PURE__ */ new Set(), i = [];
+		for (let a of cL(t, e.x, e.y, this.nearbyRadiusMapUnits())) {
+			let e = t.streets[a.streetIndex], o = this.roadKey(e);
+			if (!r.has(o)) {
+				if (i.length >= n) break;
+				r.add(o), i.push({
+					street: e,
+					hit: a
+				});
+			}
+		}
+		return i;
+	}
 	buildNearbyRoads(e, t) {
 		let n = this.roadIndex();
 		if (!n || !t.layerNearbyAI) return [];
-		let r = this.mapSpan(), i = this.gridConfig(), a = /* @__PURE__ */ new Set(), o = [];
-		for (let s of cL(n, e.x, e.y, this.nearbyRadiusMapUnits())) {
-			let c = n.streets[s.streetIndex], l = `${this.roadDisplayName(c)}\u0000${c.type ?? ""}`;
-			if (a.has(l)) continue;
-			if (o.length >= t.layerNearbyMax) break;
-			a.add(l);
-			let u = s.distance <= r.w * pH;
-			o.push({
-				name: c.name,
-				type: t.layerNearbyType && c.type || void 0,
-				on: u,
+		let r = this.mapSpan(), i = this.gridConfig(), a = [];
+		for (let { street: o, hit: s } of this.nearbyRoadHits(e)) {
+			let c = s.distance <= r.w * pH;
+			a.push({
+				key: this.roadKey(o),
+				name: o.name,
+				type: t.layerNearbyType && o.type || void 0,
+				on: c,
 				distancePercent: s.distance / r.w * 100,
 				distanceCells: i ? NI(e, s, i) : void 0,
-				direction: u || !t.layerNearbyDirection ? void 0 : this.directionFor(s.x - e.x, (s.y - e.y) * n.yScale)
+				direction: c || !t.layerNearbyDirection ? void 0 : this.directionFor(s.x - e.x, (s.y - e.y) * n.yScale)
 			});
 		}
-		return o;
+		return a;
 	}
 	buildNearby(e, t, n) {
 		let r = this.pkg;
@@ -43578,9 +43803,10 @@ var zH = `
 		if (!o) return r;
 		let s = i.graph.index.streets, c = [];
 		for (let e of o) {
-			let t = e.kind === "road" ? s[e.street] : void 0, n = t ? this.roadDisplayName(t) : void 0, r = t?.type || void 0, i = c[c.length - 1];
-			i && i.kind === e.kind && i.name === n && i.type === r ? i.points.push(...e.points.slice(1)) : c.push({
+			let t = e.kind === "road" ? s[e.street] : void 0, n = t ? this.roadDisplayName(t) : void 0, r = t?.type || void 0, i = t ? this.roadKey(t) : void 0, a = c[c.length - 1];
+			a && a.kind === e.kind && a.key === i ? a.points.push(...e.points.slice(1)) : c.push({
 				kind: e.kind,
+				key: i,
 				name: n,
 				type: r,
 				points: e.points.slice()
@@ -43778,9 +44004,9 @@ var zH = `
 		if (!n) return t;
 		let r = n.graph.index, i = this.itineraryRangeUnits(), a = Math.min(30, Math.max(1, aV(this.liveContext()).layerItineraryPoiMax || 8));
 		for (let [n, o] of e.entries()) {
-			let e = new Set(o.pieces.filter((e) => e.kind === "road").map((e) => `${e.name}\u0000${e.type ?? ""}`)), s = /* @__PURE__ */ new Set(), c = [];
+			let e = new Set(o.pieces.filter((e) => e.kind === "road").map((e) => e.key)), s = /* @__PURE__ */ new Set(), c = [];
 			for (let t of mL(r, o.points, i)) {
-				let n = r.streets[t.streetIndex], i = `${this.roadDisplayName(n)}\u0000${n.type ?? ""}`;
+				let n = r.streets[t.streetIndex], i = this.roadKey(n);
 				if (!(e.has(i) || s.has(i)) && (s.add(i), c.push({
 					street: n,
 					distance: t.distance
@@ -44039,8 +44265,11 @@ var zH = `
 				if (o.append(v), this.routeExpandedLeg === s) {
 					let e = document.createElement("div");
 					if (e.className = "tml-route-pois", h.snap && h.pieces.forEach((t, n) => {
-						let r = document.createElement("div");
-						r.className = `tml-route-piece is-${t.kind}`;
+						let r = document.createElement(t.key ? "button" : "div");
+						if (r.className = `tml-route-piece is-${t.kind}`, r instanceof HTMLButtonElement && t.key) {
+							let e = t.key;
+							r.type = "button", r.title = "查看这条路", r.addEventListener("click", () => this.selectRoad(e, !0));
+						}
 						let i = this.itineraryPathLabel(t.points);
 						if (t.kind === "straight") r.textContent = n === 0 ? `┄ 直线 ${i}，走到路上` : n === h.pieces.length - 1 ? `┄ 直线 ${i}，到${this.itineraryStopName(h.toStop)}` : `┄ 无路相连，直线 ${i}`;
 						else {
@@ -44050,7 +44279,12 @@ var zH = `
 						e.append(r);
 					}), !g) e.append(HH("div", "tml-route-poi-empty", aV(this.liveContext()).layerItineraryPoisShow ? "设置为只显示当前所在段的沿途地点和道路。" : "沿途地点和道路已在设置中关闭。"));
 					else {
-						for (let t of i.get(s) ?? []) e.append(HH("div", "tml-route-piece is-near", `━ ${this.roadDisplayName(t.street)}${t.street.type ? `（${t.street.type}）` : ""} · ${this.roadTouches(t.distance) ? "与本段相接" : `距本段 ${this.roadUnitsLabel(t.distance)}`}`));
+						for (let t of i.get(s) ?? []) {
+							let n = document.createElement("button");
+							n.type = "button", n.className = "tml-route-piece is-near", n.title = "查看这条路", n.textContent = `━ ${this.roadDisplayName(t.street)}${t.street.type ? `（${t.street.type}）` : ""} · ${this.roadTouches(t.distance) ? "与本段相接" : `距本段 ${this.roadUnitsLabel(t.distance)}`}`;
+							let r = this.roadKey(t.street);
+							n.addEventListener("click", () => this.selectRoad(r, !0)), e.append(n);
+						}
 						let t = r.get(s) ?? [];
 						t.length === 0 && e.append(HH("div", "tml-route-poi-empty", "这段沿线暂无地点。"));
 						for (let n of t) {
@@ -44297,20 +44531,20 @@ var zH = `
 			this.state.context = void 0, this.persist(), this.renderPositionCard(), this.renderNearby(), this.callbacks.onChange();
 			return;
 		}
-		let n = aV(this.liveContext()), r = this.markerById(this.state.atPlaceId), i = r ? this.regionForMarker(r) : void 0, a = r ? this.categoryById(r.categoryId) : void 0, o = this.state.userPosition, s = o ? this.regionForPoint(o.x, o.y) : void 0, c = o ? this.regionChain(s, o.x, o.y) : [], l = r ? this.regionChain(i, r.x, r.y) : [], u = this.areaNotesForAI([...c, ...l], n), d = o ? this.currentRoad() : void 0, f = this.gridConfig(), p = o ? this.buildNearby(o, n, this.state.atPlaceId) : [], m = o ? this.buildNearbyRoads(o, n) : [], h = this.itinerary ? this.itineraryContext(this.itinerary) : void 0, g = n.layerNoteAI && r && this.placeAIPartAllowed(r, "note") ? this.markerNoteValue(r) : void 0, _ = this.favoriteContext(n), v = {
+		let n = aV(this.liveContext()), r = this.markerById(this.state.atPlaceId), i = r ? this.regionForMarker(r) : void 0, a = r ? this.categoryById(r.categoryId) : void 0, o = this.state.userPosition, s = o ? this.regionForPoint(o.x, o.y) : void 0, c = o ? this.regionChain(s, o.x, o.y) : [], l = r ? this.regionChain(i, r.x, r.y) : [], u = this.areaNotesForAI([...c, ...l], n), d = this.roadNotesForAI(n), f = o ? this.currentRoad() : void 0, p = this.gridConfig(), m = o ? this.buildNearby(o, n, this.state.atPlaceId) : [], h = o ? this.buildNearbyRoads(o, n) : [], g = this.itinerary ? this.itineraryContext(this.itinerary) : void 0, _ = n.layerNoteAI && r && this.placeAIPartAllowed(r, "note") ? this.markerNoteValue(r) : void 0, v = this.favoriteContext(n), y = {
 			mapName: t.name,
 			position: o ? {
 				x: o.x,
 				y: o.y,
 				region: s?.name,
 				regionParents: this.regionChainNames(c),
-				road: d ? {
-					name: d.road.street.name,
-					type: d.road.street.type,
-					on: d.on,
-					distancePercent: d.road.distance / this.mapSpan().w * 100,
-					distanceCells: f ? NI(o, d.road, f) : void 0,
-					direction: d.on ? void 0 : this.directionFor(d.road.x - o.x, (d.road.y - o.y) * (t.kind === "image" ? t.height / t.width : 1))
+				road: f ? {
+					name: f.road.street.name,
+					type: f.road.street.type,
+					on: f.on,
+					distancePercent: f.road.distance / this.mapSpan().w * 100,
+					distanceCells: p ? NI(o, f.road, p) : void 0,
+					direction: f.on ? void 0 : this.directionFor(f.road.x - o.x, (f.road.y - o.y) * (t.kind === "image" ? t.height / t.width : 1))
 				} : void 0
 			} : void 0,
 			currentPlace: r?.name,
@@ -44320,20 +44554,21 @@ var zH = `
 			region: i?.name,
 			regionParents: this.regionChainNames(l),
 			areaNotes: u.length > 0 ? u : void 0,
-			note: g?.trim() || void 0,
+			roadNotes: d.length > 0 ? d : void 0,
+			note: _?.trim() || void 0,
 			sourceMaterial: r && n.layerSourceAI && this.placeAIPartAllowed(r, "source") && this.markerSourceValue(r).trim() || void 0,
 			wikiTexts: r ? this.contextWikiTexts(r, n) : void 0,
-			favorites: _.length > 0 ? _ : void 0,
-			itinerary: h,
-			nearby: p.length > 0 ? p : void 0,
-			nearbyRoads: m.length > 0 ? m : void 0,
+			favorites: v.length > 0 ? v : void 0,
+			itinerary: g,
+			nearby: m.length > 0 ? m : void 0,
+			nearbyRoads: h.length > 0 ? h : void 0,
 			nearbyAnchor: o ? "my position" : void 0,
 			nearbyScope: "radius",
 			nearbyCoords: n.layerNearbyCoords,
 			grid: this.gridConfig() ? { ...this.gridConfig() } : void 0,
 			updatedAt: Date.now()
 		};
-		this.state.context = v, this.persist(), this.contextStatusEl.textContent = v.currentPlace || v.position || v.nearby || v.favorites ? "图层上下文：已生成" : "图层上下文：待机", this.contextStatusEl.title = v.currentPlace ? "所在地点会进入图层地图 AI 上下文" : "拖动“我”到地点，或调整附近范围后生成", e && this.renderPositionCard(), this.renderNearby(), this.routeShelfEl && this.renderItineraryShelf(), this.contextModalEl.hidden || (this.renderContextControls(), this.renderContextPreview()), this.callbacks.onChange();
+		this.state.context = y, this.persist(), this.contextStatusEl.textContent = y.currentPlace || y.position || y.nearby || y.favorites ? "图层上下文：已生成" : "图层上下文：待机", this.contextStatusEl.title = y.currentPlace ? "所在地点会进入图层地图 AI 上下文" : "拖动“我”到地点，或调整附近范围后生成", e && this.renderPositionCard(), this.renderNearby(), this.routeShelfEl && this.renderItineraryShelf(), this.contextModalEl.hidden || (this.renderContextControls(), this.renderContextPreview()), this.callbacks.onChange();
 	}
 	renderPositionCard() {
 		if (!this.positionEl) return;
@@ -44412,8 +44647,11 @@ var zH = `
 		o.className = "tml-nearby-list";
 		let s = this.gridConfig();
 		for (let e of n) {
-			let t = document.createElement("div");
-			t.className = "tml-nearby-row is-road";
+			let t = document.createElement("button");
+			if (t.type = "button", t.className = "tml-nearby-row is-road", e.key) {
+				let n = e.key;
+				t.addEventListener("click", () => this.selectRoad(n, !0));
+			}
 			let n = document.createElement("span");
 			n.className = "tml-nearby-name", n.textContent = `━ ${e.name || (e.type ? `无名道路（${e.type}）` : "无名道路")}`;
 			let r = document.createElement("span");
@@ -46775,7 +47013,7 @@ var xW = `
     <pre id="tm-preview-text"></pre>
   </div>
 </div>
-`, SW = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">地图上下文（二选一，可都不选）\n        <div class=\"tm-context-options\">\n          <label><input type=\"checkbox\" id=\"tm-set-real-context\"> 现实地图上下文</label>\n          <label><input type=\"checkbox\" id=\"tm-set-layer-context\"> 图层地图上下文</label>\n        </div>\n      </div>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNoteAI\"> 地点笔记进入 AI</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyAI\"> 半径内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyDistance\"> 附带距离</label>\n        <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"25\" max=\"1000\" step=\"5\"></label>\n        <label class=\"tm-row\">周围地点最多<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoriteNote\"> 附带笔记</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">注入深度</div>\n        <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerSourceAI\"> 来源资料进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerWikiAI\"> Wiki 正文进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNoteAI\"> 笔记进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerRegionNoteAI\"> 区域笔记进入 AI（所在区域和它的上级区域）</label>\n        <div class=\"tm-hint\">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选；每个区域的详情里可以单独取消区域笔记。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyAI\"> 半径圈内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyDirection\"> 附带方位 / 距离</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyCoords\"> 附带 XY / 网格坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyNotes\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbySource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyWiki\"> 附带 Wiki 正文</label>\n        <label class=\"tm-row\">最多地点数<input type=\"number\" data-layer-setting=\"layerNearbyMax\" min=\"1\" max=\"50\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 行程</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerItineraryPoisShow\"> 显示沿途地点和道路（列表、地图金圈、AI 一起）</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerItineraryPoisCurrentOnly\"> 只显示当前所在段的沿途地点和道路</label>\n        <label class=\"tm-row\">沿途范围\n          <input id=\"tm-set-itinerary-poi-radius\" type=\"number\" data-layer-setting=\"layerItineraryPoiRadius\" min=\"0.1\" max=\"40\" step=\"0.1\">\n          <span>% 地图宽</span>\n        </label>\n        <label class=\"tm-row\">每段最多显示\n          <input id=\"tm-set-itinerary-poi-max\" type=\"number\" data-layer-setting=\"layerItineraryPoiMax\" min=\"1\" max=\"30\" step=\"1\">\n          <span>个地点 / 条道路</span>\n        </label>\n        <div class=\"tm-hint\">沿途范围也可以在规划行程时用面板滑条或地图上的范围拉手调整，三处是同一个数。行程面板里可以单独关闭本次行程的 AI 发送。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteCoords\"> 附带区域 / 坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteNote\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteSource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteWiki\"> 附带 Wiki 正文</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">显示</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerAutoExpandWiki\"> 详情中自动展开已抓取 Wiki 正文</label>\n      </div>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", CW = class {
+`, SW = "\n<div id=\"tm-settings\" class=\"tm-settings\">\n  <div class=\"inline-drawer\">\n    <div class=\"inline-drawer-toggle inline-drawer-header\">\n      <b>Tavern Map</b>\n      <div class=\"inline-drawer-icon fa-solid fa-circle-chevron-down\"></div>\n    </div>\n    <div class=\"inline-drawer-content\">\n      <label class=\"checkbox_label\"><input type=\"checkbox\" id=\"tm-set-enabled\"> 启用 AI 注入（地图仍可查看）</label>\n      <div class=\"tm-row tm-row-stack\">地图上下文（二选一，可都不选）\n        <div class=\"tm-context-options\">\n          <label><input type=\"checkbox\" id=\"tm-set-real-context\"> 现实地图上下文</label>\n          <label><input type=\"checkbox\" id=\"tm-set-layer-context\"> 图层地图上下文</label>\n        </div>\n      </div>\n      <div class=\"tm-row tm-row-stack\">Wiki 搜索语言（可多选）\n        <div class=\"tm-lang-options\">\n          <label><input type=\"checkbox\" data-tm-lang value=\"en\"> English</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"ja\"> 日本語</label>\n          <label><input type=\"checkbox\" data-tm-lang value=\"zh\"> 中文</label>\n        </div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNoteAI\"> 地点笔记进入 AI</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyAI\"> 半径内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realNearbyDistance\"> 附带距离</label>\n        <label class=\"tm-row\">周边半径（米）<input type=\"number\" id=\"tm-set-radius\" min=\"25\" max=\"1000\" step=\"5\"></label>\n        <label class=\"tm-row\">周围地点最多<input type=\"number\" id=\"tm-set-nearby\" min=\"0\" max=\"12\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">现实地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-real-setting=\"realFavoriteNote\"> 附带笔记</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">注入深度</div>\n        <label class=\"tm-row\">注入深度<input type=\"number\" id=\"tm-set-depth\" min=\"0\" max=\"10\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 所在地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerSourceAI\"> 来源资料进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerWikiAI\"> Wiki 正文进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNoteAI\"> 笔记进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerRegionNoteAI\"> 区域笔记进入 AI（所在区域和它的上级区域）</label>\n        <div class=\"tm-hint\">每个地点的详情里可以单独取消来源资料、Wiki 正文和笔记的 AI 勾选；每个区域的详情里可以单独取消区域笔记。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 周围地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyAI\"> 半径圈内地点进入 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyDirection\"> 附带方位 / 距离</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyCoords\"> 附带 XY / 网格坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyNotes\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbySource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerNearbyWiki\"> 附带 Wiki 正文</label>\n        <label class=\"tm-row\">最多地点数<input type=\"number\" data-layer-setting=\"layerNearbyMax\" min=\"1\" max=\"50\" step=\"1\"></label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 行程</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerItineraryPoisShow\"> 显示沿途地点和道路（列表、地图金圈、AI 一起）</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerItineraryPoisCurrentOnly\"> 只显示当前所在段的沿途地点和道路</label>\n        <label class=\"tm-row\">沿途范围\n          <input id=\"tm-set-itinerary-poi-radius\" type=\"number\" data-layer-setting=\"layerItineraryPoiRadius\" min=\"0.1\" max=\"40\" step=\"0.1\">\n          <span>% 地图宽</span>\n        </label>\n        <label class=\"tm-row\">每段最多显示\n          <input id=\"tm-set-itinerary-poi-max\" type=\"number\" data-layer-setting=\"layerItineraryPoiMax\" min=\"1\" max=\"30\" step=\"1\">\n          <span>个地点 / 条道路</span>\n        </label>\n        <div class=\"tm-hint\">沿途范围也可以在规划行程时用面板滑条或地图上的范围拉手调整，三处是同一个数。行程面板里可以单独关闭本次行程的 AI 发送。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 道路笔记与来源资料</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerRoadNoteNearby\"> 当前位置附近道路的笔记（在路上的那条和附近列表里的道路）</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerRoadNoteCurrentLeg\"> 行程当前段道路的笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerRoadNoteAllLegs\"> 行程所有段道路的笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerRoadSourceAI\"> 道路来源资料一起发给 AI（只发上面勾选范围内的道路）</label>\n        <div class=\"tm-hint\">一段行程的道路 = 这一段实际走过的路 + 范围内列出的路。同一条路只发一次；每条路的详情里，笔记和来源资料各有一个“给 AI”可以单独取消。</div>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">图层地图 · 收藏地点</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoritesAI\"> 把收藏地点发给 AI</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteType\"> 附带类型</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteCoords\"> 附带区域 / 坐标</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteNote\"> 附带笔记</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteSource\"> 附带来源资料</label>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerFavoriteWiki\"> 附带 Wiki 正文</label>\n      </div>\n\n      <div class=\"tm-settings-group\">\n        <div class=\"tm-settings-group-title\">显示</div>\n        <label class=\"checkbox_label\"><input type=\"checkbox\" data-layer-setting=\"layerAutoExpandWiki\"> 详情中自动展开已抓取 Wiki 正文</label>\n      </div>\n      <div class=\"tm-settings-actions\">\n        <button type=\"button\" id=\"tm-open\">打开地图</button>\n        <button type=\"button\" id=\"tm-clear\">清空本聊天地图</button>\n        <button type=\"button\" id=\"tm-preview-settings\">预览 AI 上下文</button>\n      </div>\n      <div class=\"tm-hint\">默认使用 OpenStreetMap / Photon / Overpass / Wikipedia；不需要 API key。</div>\n    </div>\n  </div>\n</div>\n", CW = class {
 	ctx;
 	settings;
 	state;

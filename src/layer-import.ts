@@ -780,6 +780,13 @@ function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
         : array(geometry.coordinates)
     const sourceId =
       idValue(properties?.fid) || idValue(properties?.id) || idValue(feature.id) || String(featureIndex)
+    // Every original property, as written in the map data (shown as the road's source material).
+    const sourceProperties: Array<[string, string]> = []
+    for (const [key, value] of Object.entries(properties ?? {})) {
+      if (value == null) continue
+      const shown = typeof value === 'object' ? JSON.stringify(value) : String(value)
+      if (shown) sourceProperties.push([key, shown])
+    }
     lines.forEach((lineRaw, lineIndex) => {
       const points: Array<[number, number]> = []
       for (const pointRaw of array(lineRaw)) {
@@ -794,6 +801,7 @@ function parseStreetFeatures(raw: unknown[]): LayerStreet[] {
         name,
         type,
         points,
+        properties: sourceProperties.length > 0 ? sourceProperties : undefined,
       })
     })
   })

@@ -206,6 +206,14 @@ export type Settings = {
   layerItineraryPoisShow: boolean
   /** Only the leg I am on (or the first leg before setting off). */
   layerItineraryPoisCurrentOnly: boolean
+  /** Notes of roads near my position (on it or in the nearby radius). */
+  layerRoadNoteNearby: boolean
+  /** Notes of the roads of the itinerary leg I am on. */
+  layerRoadNoteCurrentLeg: boolean
+  /** Notes of the roads of every itinerary leg. */
+  layerRoadNoteAllLegs: boolean
+  /** Also send the road's source fields (for the roads chosen by the three switches above). */
+  layerRoadSourceAI: boolean
   layerFavoritesAI: boolean
   layerFavoriteType: boolean
   layerFavoriteCoords: boolean

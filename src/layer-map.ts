@@ -16,7 +16,7 @@ import {
   type RoadGraph,
   type RoadRoutePiece,
 } from './layer-road-route'
-import { buildRoadIndex, nearestRoad, roadRank, roadsInRect, roadsNearPoint, type NearestRoad, type RoadIndex } from './layer-roads'
+import { buildRoadIndex, nearestRoad, roadRank, roadsInRect, roadsNearPoint, type NearestRoad, type RoadHit, type RoadIndex } from './layer-roads'
 import { estimateTokens } from './context'
 import { errorMessage } from './http'
 import {
@@ -56,6 +56,7 @@ import {
   type LayerCategoryGroup,
   type LayerChatState,
   type LayerContextRoad,
+  type LayerContextRoadNote,
   type LayerContextSnapshot,
   type LayerCustomPin,
   type LayerImageFit,
@@ -161,6 +162,8 @@ const CUSTOM_PIN_GROUP: LayerCategoryGroup = {
 /** One stretch of a leg: along one named road, or a straight line. */
 type ItineraryPieceView = {
   kind: 'road' | 'straight'
+  /** Road identity (see roadKey) for road pieces. */
+  key?: string
   name?: string
   type?: string
   points: Pt[]
@@ -681,6 +684,7 @@ export class LayerMapUI {
   private routeSnapNext = false
   private routeRangeHandleEl: HTMLButtonElement | undefined
   private rangeBandCanvas: HTMLCanvasElement | undefined
+  private roadLinesCache: { streets: LayerStreet[]; map: Map<string, LayerStreet[]> } | undefined
   private rangeHandleDrag: number | undefined
   private currentRoadCache: { key: string; road: NearestRoad | undefined } | undefined
   private tileMoving = false
@@ -1613,6 +1617,7 @@ export class LayerMapUI {
       this.state.userPosition = undefined
       this.state.atPlaceId = undefined
       this.state.selectedRegionId = undefined
+      this.state.selectedRoadKey = undefined
       this.state.currentRegionId = undefined
       this.state.view = undefined
       this.state.hiddenCategories = []
@@ -2306,6 +2311,7 @@ export class LayerMapUI {
     this.drawRegions(context, width, height)
     this.drawRoads(context, width, height)
     this.drawItineraryLine(context, width, height)
+    this.drawSelectedRoad(context, width, height)
     this.labelCells.clear()
     this.drawRegionLabels(context, width, height)
     this.drawStreetLabels(context, width, height)
@@ -2919,6 +2925,195 @@ export class LayerMapUI {
   private roadDisplayName(street: LayerStreet): string {
     return street.name || (street.type ? `无名道路（${street.type}）` : '无名道路')
   }
+
+  /**
+   * One road: every line with the same name and type (data often splits a
+   * road into several lines); an unnamed line is a road of its own. Used for
+   * highlighting, road notes and de-duplicating roads in AI.
+   */
+  private roadKey(street: LayerStreet): string {
+    return street.name ? `name:${street.name}|${street.type ?? ''}` : `line:${street.id}`
+  }
+
+  private roadLines(key: string): LayerStreet[] {
+    const streets = this.pkg?.streets
+    if (!streets?.length) return []
+    if (this.roadLinesCache?.streets !== streets) {
+      const map = new Map<string, LayerStreet[]>()
+      for (const street of streets) {
+        const roadKey = this.roadKey(street)
+        const list = map.get(roadKey)
+        if (list) list.push(street)
+        else map.set(roadKey, [street])
+      }
+      this.roadLinesCache = { streets, map }
+    }
+    return this.roadLinesCache.map.get(key) ?? []
+  }
+
+  private roadNoteKey(key: string): string {
+    return `${this.notePrefix()}road:${key}`
+  }
+
+  private roadNoteValue(key: string): string {
+    const noteKey = this.roadNoteKey(key)
+    const global = globalNote(noteKey)
+    if (global !== undefined) return global
+    return this.state.notes?.[noteKey] ?? ''
+  }
+
+  private roadAIKey(key: string): string {
+    return `road:${key}`
+  }
+
+  private roadNotesGloballyEnabled(settings = loadSettings(this.liveContext())): boolean {
+    return settings.layerRoadNoteNearby || settings.layerRoadNoteCurrentLeg || settings.layerRoadNoteAllLegs
+  }
+
+  /** Source fields of a road for AI: each distinct set of line fields once, written as in the data. */
+  private roadSourceText(key: string): string {
+    const seen = new Set<string>()
+    const parts: string[] = []
+    for (const line of this.roadLines(key)) {
+      const fields = line.properties ?? []
+      if (fields.length === 0) continue
+      const text = fields.map(([name, value]) => `${name}=${value}`).join('; ')
+      if (seen.has(text)) continue
+      seen.add(text)
+      parts.push(text)
+    }
+    return parts.join(' | ')
+  }
+
+  /** Select a road (from the map or a list); the detail panel shows it and the map highlights it. */
+  private selectRoad(key: string, center = false): void {
+    const lines = this.roadLines(key)
+    if (lines.length === 0) return
+    this.state.selectedRoadKey = key
+    this.state.selectedMarkerId = undefined
+    this.state.selectedRegionId = undefined
+    if (center) this.centerOnRoad(lines)
+    this.renderDetail()
+    this.persist()
+    this.requestDraw()
+    this.syncToolButtons()
+  }
+
+  private centerOnRoad(lines: LayerStreet[]): void {
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const line of lines) {
+      for (const [x, y] of line.points) {
+        minX = Math.min(minX, x)
+        maxX = Math.max(maxX, x)
+        minY = Math.min(minY, y)
+        maxY = Math.max(maxY, y)
+      }
+    }
+    if (Number.isFinite(minX)) this.centerOnPoint({ x: (minX + maxX) / 2, y: (minY + maxY) / 2 })
+  }
+
+  /** The road under a screen point (a few pixels of tolerance), only while the road layer is shown. */
+  private hitRoad(sx: number, sy: number): LayerStreet | undefined {
+    if (this.state.showRoads !== true) return undefined
+    const index = this.roadIndex()
+    if (!index) return undefined
+    const width = this.canvasEl.clientWidth || 1
+    const height = this.canvasEl.clientHeight || 1
+    const [x, y] = this.unproject(sx, sy, width, height)
+    const [x2] = this.unproject(sx + 7, sy, width, height)
+    const tolerance = Math.abs(x2 - x)
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !(tolerance > 0)) return undefined
+    return nearestRoad(index, x, y, tolerance)?.street
+  }
+
+  /** The selected road drawn on top, also when the road layer is off. */
+  private drawSelectedRoad(context: CanvasRenderingContext2D, width: number, height: number): void {
+    const key = this.state.selectedRoadKey
+    if (!key) return
+    const lines = this.roadLines(key)
+    if (lines.length === 0) return
+    context.save()
+    context.lineJoin = 'round'
+    context.lineCap = 'round'
+    context.beginPath()
+    for (const line of lines) {
+      line.points.forEach(([px, py], index) => {
+        const [x, y] = this.project(px, py, width, height)
+        if (index === 0) context.moveTo(x, y)
+        else context.lineTo(x, y)
+      })
+    }
+    context.strokeStyle = 'rgba(255, 214, 120, 0.35)'
+    context.lineWidth = 15
+    context.stroke()
+    context.strokeStyle = 'rgba(8, 13, 18, 0.9)'
+    context.lineWidth = 8
+    context.stroke()
+    context.strokeStyle = '#fff2c4'
+    context.lineWidth = 4.5
+    context.stroke()
+    context.restore()
+  }
+
+  /**
+   * Road notes for AI. Sources: roads near my position, roads of the current
+   * itinerary leg, roads of every leg (travelled roads plus the roads listed
+   * in range). Each road appears once with every reason it was included.
+   */
+  private roadNotesForAI(settings: Settings): LayerContextRoadNote[] {
+    if (!this.pkg?.streets?.length || !this.roadNotesGloballyEnabled(settings)) return []
+    const roads = new Map<string, { name: string; type?: string; tags: string[] }>()
+    const add = (key: string | undefined, name: string, type: string | undefined, tag: string): void => {
+      if (!key) return
+      const entry = roads.get(key) ?? { name, type, tags: [] }
+      if (!entry.tags.includes(tag)) entry.tags.push(tag)
+      roads.set(key, entry)
+    }
+    const user = this.state.userPosition
+    if (settings.layerRoadNoteNearby && user) {
+      for (const { street } of this.nearbyRoadHits(user)) {
+        add(this.roadKey(street), this.roadDisplayName(street), street.type || undefined, 'near me')
+      }
+    }
+    const route = this.itinerary
+    if (route && route.showToAI && (settings.layerRoadNoteCurrentLeg || settings.layerRoadNoteAllLegs)) {
+      const legs = this.itineraryLegs(route)
+      const position = this.itineraryPosition(route)
+      const extras = this.itineraryExtrasLegs(route, legs.length, position)
+      const legRoads = this.itineraryLegRoads(legs)
+      // Same rule as "only the current leg": before setting off it is leg 1; none at the destination.
+      const current =
+        !position || position.atFinal ? undefined : position.onRoute ? position.legIndex ?? 0 : 0
+      legs.forEach((leg, index) => {
+        const isCurrent = index === current
+        if (!settings.layerRoadNoteAllLegs && !(settings.layerRoadNoteCurrentLeg && isCurrent)) return
+        const tag = isCurrent && settings.layerRoadNoteCurrentLeg ? 'current leg' : `leg ${index + 1}`
+        for (const piece of leg.pieces) {
+          if (piece.kind === 'road') add(piece.key, piece.name ?? '', piece.type, tag)
+        }
+        if (extras.has(index)) {
+          for (const road of legRoads.get(index) ?? []) {
+            add(this.roadKey(road.street), this.roadDisplayName(road.street), road.street.type || undefined, tag)
+          }
+        }
+      })
+    }
+    const result: LayerContextRoadNote[] = []
+    for (const [key, entry] of roads) {
+      const aiKey = this.roadAIKey(key)
+      const text = this.aiFlagAllowed(aiKey, 'note') ? this.roadNoteValue(key).trim() : ''
+      const source =
+        settings.layerRoadSourceAI && this.aiFlagAllowed(aiKey, 'source') ? this.roadSourceText(key) : ''
+      if (text || source) {
+        result.push({ name: entry.name, type: entry.type, tags: entry.tags, text, source: source || undefined })
+      }
+    }
+    return result
+  }
+
 
   /** Road lines in view; the road "I" am on is highlighted. */
   private drawRoads(context: CanvasRenderingContext2D, width: number, height: number): void {
@@ -3857,10 +4052,16 @@ export class LayerMapUI {
       this.selectMarker(marker)
       return
     }
+    const road = this.hitRoad(sx, sy)
+    if (road) {
+      this.selectRoad(this.roadKey(road))
+      return
+    }
     const region = this.hitRegion(sx, sy)
     if (region) {
       this.state.selectedRegionId = region.id
       this.state.selectedMarkerId = undefined
+      this.state.selectedRoadKey = undefined
       this.renderDetail()
       this.refreshContext()
       this.persist()
@@ -3870,6 +4071,7 @@ export class LayerMapUI {
     }
     this.state.selectedMarkerId = undefined
     this.state.selectedRegionId = undefined
+    this.state.selectedRoadKey = undefined
     this.renderDetail()
     this.refreshContext()
     this.persist()
@@ -3980,6 +4182,7 @@ export class LayerMapUI {
   private selectMarker(marker: LayerMarker, center = false): void {
     this.state.selectedMarkerId = marker.id
     this.state.selectedRegionId = undefined
+    this.state.selectedRoadKey = undefined
     if (center) this.centerOnMarker(marker)
     this.renderDetail()
     this.refreshContext()
@@ -4151,6 +4354,10 @@ export class LayerMapUI {
         this.detailEl.append(this.regionDetail(region))
         return
       }
+    }
+    if (this.state.selectedRoadKey && this.roadLines(this.state.selectedRoadKey).length > 0) {
+      this.detailEl.append(this.roadDetail(this.state.selectedRoadKey))
+      return
     }
     this.detailEl.append(
       textElement('div', 'tml-empty-small', '点地图上的地点查看详情；也可以搜索或使用左侧分类。'),
@@ -4352,6 +4559,136 @@ export class LayerMapUI {
       row.append(title, remove)
       this.favoritesEl.append(row)
     }
+  }
+
+  /** Right panel for a road: name, length, source fields from the map data, road note. */
+  private roadDetail(key: string): HTMLElement {
+    const lines = this.roadLines(key)
+    const first = lines[0]
+    const wrap = document.createElement('article')
+    wrap.className = 'tml-detail-card tml-road-detail'
+    const head = document.createElement('header')
+    head.className = 'tml-detail-head'
+    const titleWrap = document.createElement('div')
+    const kicker = document.createElement('span')
+    kicker.className = 'tml-kicker'
+    kicker.textContent = '道路'
+    const title = document.createElement('h2')
+    title.textContent = this.roadDisplayName(first)
+    titleWrap.append(kicker, title)
+    const close = document.createElement('button')
+    close.type = 'button'
+    close.className = 'tml-close'
+    close.textContent = '×'
+    close.setAttribute('aria-label', '关闭道路详情')
+    close.addEventListener('click', () => {
+      this.state.selectedRoadKey = undefined
+      this.renderDetail()
+      this.persist()
+      this.requestDraw()
+    })
+    head.append(titleWrap, close)
+    const length = lines.reduce(
+      (total, line) => total + this.itineraryPathMeasure(line.points.map(([x, y]) => ({ x, y }))),
+      0,
+    )
+    const meta = document.createElement('div')
+    meta.className = 'tml-detail-meta'
+    meta.textContent = [first.type, `${lines.length} 段`, `全长 ${this.itineraryMeasureLabel(length)}`]
+      .filter(Boolean)
+      .join(' · ')
+    const actions = document.createElement('div')
+    actions.className = 'tml-detail-actions'
+    actions.append(this.actionButton('居中', () => this.centerOnRoad(lines)))
+    wrap.append(head, meta, actions)
+
+    const source = document.createElement('details')
+    source.className = 'tml-source tml-road-source'
+    source.open = true
+    const summary = document.createElement('summary')
+    summary.textContent = '来源资料（随道路显示）'
+    const settings = loadSettings(this.liveContext())
+    const sourceAI = document.createElement('div')
+    sourceAI.className = 'tml-road-source-ai'
+    sourceAI.append(
+      this.aiFlagToggle(
+        this.roadAIKey(key),
+        'source',
+        '道路来源资料',
+        '道路',
+        settings.layerRoadSourceAI && this.roadNotesGloballyEnabled(settings),
+      ),
+    )
+    source.append(summary, sourceAI)
+    const withFields = lines.filter((line) => line.properties?.length)
+    if (withFields.length === 0) {
+      source.append(
+        textElement(
+          'div',
+          'tml-road-source-empty',
+          '这张地图包导入时还没有保留道路的原始字段，重新导入地图包后会在这里显示。',
+        ),
+      )
+      source.append(this.roadFieldList([
+        ['Name', first.name],
+        ['Type', first.type ?? ''],
+      ].filter(([, value]) => value) as Array<[string, string]>))
+    } else {
+      // Lines of one road often share their fields; show each distinct set once.
+      const groups = new Map<string, { fields: Array<[string, string]>; count: number }>()
+      for (const line of withFields) {
+        const fields = line.properties ?? []
+        const signature = JSON.stringify(fields)
+        const group = groups.get(signature)
+        if (group) group.count += 1
+        else groups.set(signature, { fields, count: 1 })
+      }
+      const many = groups.size > 1
+      let index = 0
+      for (const group of groups.values()) {
+        index += 1
+        if (many) {
+          source.append(
+            textElement('div', 'tml-road-source-head', `第 ${index} 组${group.count > 1 ? `（${group.count} 段）` : ''}`),
+          )
+        }
+        source.append(this.roadFieldList(group.fields))
+      }
+    }
+    wrap.append(source)
+
+    const noteWrap = document.createElement('div')
+    noteWrap.className = 'tml-note-section'
+    const noteHead = document.createElement('div')
+    noteHead.className = 'tml-section-head'
+    const label = document.createElement('label')
+    label.className = 'tml-note-label'
+    label.textContent = '道路笔记'
+    noteHead.append(
+      label,
+      this.aiFlagToggle(this.roadAIKey(key), 'note', '道路笔记', '道路', this.roadNotesGloballyEnabled()),
+    )
+    const textarea = document.createElement('textarea')
+    textarea.placeholder = '写一段道路笔记…'
+    textarea.setAttribute('aria-label', '道路笔记')
+    textarea.value = this.roadNoteValue(key)
+    textarea.addEventListener('input', () => this.setNoteValue(this.roadNoteKey(key), textarea.value))
+    noteWrap.append(noteHead, textarea)
+    wrap.append(noteWrap)
+    return wrap
+  }
+
+  private roadFieldList(fields: Array<[string, string]>): HTMLElement {
+    const list = document.createElement('dl')
+    list.className = 'tml-road-fields'
+    for (const [name, value] of fields) {
+      const term = document.createElement('dt')
+      term.textContent = name
+      const detail = document.createElement('dd')
+      detail.textContent = value
+      list.append(term, detail)
+    }
+    return list
   }
 
   private regionDetail(region: LayerRegion): HTMLElement {
@@ -5140,22 +5477,35 @@ export class LayerMapUI {
     return this.nearbyRadiusFraction() * this.mapSpan().w
   }
 
-  /** Roads inside the nearby radius, one per road name, nearest first. */
+  /** Roads inside the nearby radius, one entry per road, nearest first, up to the nearby limit. */
+  private nearbyRoadHits(anchor: Pt): Array<{ street: LayerStreet; hit: RoadHit }> {
+    const index = this.roadIndex()
+    if (!index) return []
+    const max = loadSettings(this.liveContext()).layerNearbyMax
+    const seen = new Set<string>()
+    const result: Array<{ street: LayerStreet; hit: RoadHit }> = []
+    for (const hit of roadsNearPoint(index, anchor.x, anchor.y, this.nearbyRadiusMapUnits())) {
+      const street = index.streets[hit.streetIndex]
+      const key = this.roadKey(street)
+      if (seen.has(key)) continue
+      if (result.length >= max) break
+      seen.add(key)
+      result.push({ street, hit })
+    }
+    return result
+  }
+
+  /** Roads inside the nearby radius for the nearby list and AI. */
   private buildNearbyRoads(anchor: Pt, settings: Settings): LayerContextRoad[] {
     const index = this.roadIndex()
     if (!index || !settings.layerNearbyAI) return []
     const span = this.mapSpan()
     const grid = this.gridConfig()
-    const seen = new Set<string>()
     const result: LayerContextRoad[] = []
-    for (const hit of roadsNearPoint(index, anchor.x, anchor.y, this.nearbyRadiusMapUnits())) {
-      const street = index.streets[hit.streetIndex]
-      const key = `${this.roadDisplayName(street)}\u0000${street.type ?? ''}`
-      if (seen.has(key)) continue
-      if (result.length >= settings.layerNearbyMax) break
-      seen.add(key)
+    for (const { street, hit } of this.nearbyRoadHits(anchor)) {
       const on = hit.distance <= span.w * ON_ROAD_SPAN_FRACTION
       result.push({
+        key: this.roadKey(street),
         name: street.name,
         type: settings.layerNearbyType ? street.type || undefined : undefined,
         on,
@@ -5365,11 +5715,12 @@ export class LayerMapUI {
       const street = piece.kind === 'road' ? streets[piece.street] : undefined
       const name = street ? this.roadDisplayName(street) : undefined
       const type = street?.type || undefined
+      const key = street ? this.roadKey(street) : undefined
       const last = pieces[pieces.length - 1]
-      if (last && last.kind === piece.kind && last.name === name && last.type === type) {
+      if (last && last.kind === piece.kind && last.key === key) {
         last.points.push(...piece.points.slice(1))
       } else {
-        pieces.push({ kind: piece.kind, name, type, points: piece.points.slice() })
+        pieces.push({ kind: piece.kind, key, name, type, points: piece.points.slice() })
       }
     }
     return pieces
@@ -5680,13 +6031,13 @@ export class LayerMapUI {
     const max = Math.min(30, Math.max(1, loadSettings(this.liveContext()).layerItineraryPoiMax || 8))
     for (const [legIndex, leg] of legs.entries()) {
       const used = new Set(
-        leg.pieces.filter((piece) => piece.kind === 'road').map((piece) => `${piece.name}\u0000${piece.type ?? ''}`),
+        leg.pieces.filter((piece) => piece.kind === 'road').map((piece) => piece.key),
       )
       const seen = new Set<string>()
       const list: Array<{ street: LayerStreet; distance: number }> = []
       for (const hit of roadsNearPolyline(index, leg.points, units)) {
         const street = index.streets[hit.streetIndex]
-        const key = `${this.roadDisplayName(street)}\u0000${street.type ?? ''}`
+        const key = this.roadKey(street)
         if (used.has(key) || seen.has(key)) continue
         seen.add(key)
         list.push({ street, distance: hit.distance })
@@ -6226,8 +6577,14 @@ export class LayerMapUI {
           poiList.className = 'tml-route-pois'
           if (leg.snap) {
             leg.pieces.forEach((piece, pieceIndex) => {
-              const line = document.createElement('div')
+              const line = document.createElement(piece.key ? 'button' : 'div')
               line.className = `tml-route-piece is-${piece.kind}`
+              if (line instanceof HTMLButtonElement && piece.key) {
+                const key = piece.key
+                line.type = 'button'
+                line.title = '查看这条路'
+                line.addEventListener('click', () => this.selectRoad(key, true))
+              }
               const distance = this.itineraryPathLabel(piece.points)
               if (piece.kind === 'straight') {
                 line.textContent =
@@ -6257,13 +6614,14 @@ export class LayerMapUI {
             )
           } else {
             for (const road of legRoads.get(index) ?? []) {
-              poiList.append(
-                textElement(
-                  'div',
-                  'tml-route-piece is-near',
-                  `━ ${this.roadDisplayName(road.street)}${road.street.type ? `（${road.street.type}）` : ''} · ${this.roadTouches(road.distance) ? '与本段相接' : `距本段 ${this.roadUnitsLabel(road.distance)}`}`,
-                ),
-              )
+              const button = document.createElement('button')
+              button.type = 'button'
+              button.className = 'tml-route-piece is-near'
+              button.title = '查看这条路'
+              button.textContent = `━ ${this.roadDisplayName(road.street)}${road.street.type ? `（${road.street.type}）` : ''} · ${this.roadTouches(road.distance) ? '与本段相接' : `距本段 ${this.roadUnitsLabel(road.distance)}`}`
+              const key = this.roadKey(road.street)
+              button.addEventListener('click', () => this.selectRoad(key, true))
+              poiList.append(button)
             }
             const legPois = pois.get(index) ?? []
             if (legPois.length === 0) {
@@ -6794,6 +7152,7 @@ export class LayerMapUI {
     const positionChain = user ? this.regionChain(positionRegion, user.x, user.y) : []
     const placeChain = marker ? this.regionChain(region, marker.x, marker.y) : []
     const areaNotes = this.areaNotesForAI([...positionChain, ...placeChain], settings)
+    const roadNotes = this.roadNotesForAI(settings)
     const road = user ? this.currentRoad() : undefined
     const contextGrid = this.gridConfig()
     const nearby = user ? this.buildNearby(user, settings, this.state.atPlaceId) : []
@@ -6838,6 +7197,7 @@ export class LayerMapUI {
       region: region?.name,
       regionParents: this.regionChainNames(placeChain),
       areaNotes: areaNotes.length > 0 ? areaNotes : undefined,
+      roadNotes: roadNotes.length > 0 ? roadNotes : undefined,
       note: note?.trim() || undefined,
       sourceMaterial:
         marker &&
@@ -7022,8 +7382,13 @@ export class LayerMapUI {
     list.className = 'tml-nearby-list'
     const grid = this.gridConfig()
     for (const road of roads) {
-      const row = document.createElement('div')
+      const row = document.createElement('button')
+      row.type = 'button'
       row.className = 'tml-nearby-row is-road'
+      if (road.key) {
+        const key = road.key
+        row.addEventListener('click', () => this.selectRoad(key, true))
+      }
       const name = document.createElement('span')
       name.className = 'tml-nearby-name'
       name.textContent = `━ ${road.name || (road.type ? `无名道路（${road.type}）` : '无名道路')}`

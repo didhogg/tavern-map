@@ -133,6 +133,17 @@ export function buildLayerContext(state: LayerChatState): string {
   for (const area of snapshot.areaNotes ?? []) {
     if (clean(area.text)) lines.push(`Area note (${clean(area.name)}): ${clean(area.text)}`)
   }
+  const roadNotes = (snapshot.roadNotes ?? []).filter((road) => clean(road.text) || clean(road.source))
+  if (roadNotes.length > 0) {
+    lines.push(roadNotes.some((road) => clean(road.source)) ? 'Road notes and source:' : 'Road notes:')
+    for (const road of roadNotes) {
+      const type = road.type ? ` (${clean(road.type)})` : ''
+      const tags = road.tags.length > 0 ? ` [${road.tags.map(clean).join(' · ')}]` : ''
+      const note = clean(road.text) ? `: ${clean(road.text)}` : ''
+      lines.push(`- ${clean(road.name) || 'unnamed road'}${type}${tags}${note}`)
+      if (clean(road.source)) lines.push(`  Source: ${clean(road.source)}`)
+    }
+  }
   if (snapshot.itinerary) {
     const itinerary = snapshot.itinerary
     lines.push('Itinerary (current, completed):')

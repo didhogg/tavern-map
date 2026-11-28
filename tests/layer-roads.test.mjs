@@ -97,6 +97,35 @@ test('road GeoJSON: FeatureCollection, other name/type keys, unnamed lines kept'
   assert.equal(pkg.streets.length, 3)
   assert.deepEqual(pkg.streets.map((s) => [s.name, s.type]), [['High Road', 'primary'], ['', 'footway'], ['', 'footway']])
   assert.equal(pkg.streets[0].id, 'mapgenie-street:w1:0')
+  // Every original property is kept, in source order, as the road's source material.
+  assert.deepEqual(pkg.streets[0].properties, [['name', 'High Road'], ['highway', 'primary']])
+  assert.deepEqual(pkg.streets[1].properties, [['class', 'footway']])
+})
+
+test('AI text lists road notes once with why each road is included', () => {
+  const text = buildLayerContext({
+    version: 1,
+    context: {
+      mapName: 'Skyrim',
+      roadNotes: [
+        { name: '河木镇 – 白漫城 大路', type: 'Main', tags: ['near me', 'current leg'], text: '常有帝国巡逻' },
+        { name: '', tags: ['leg 2'], text: '泥泞' },
+        { name: '空笔记', tags: ['leg 3'], text: '   ' },
+      ],
+      updatedAt: 1,
+    },
+  })
+  assert.match(text, /^Road notes:\n- 河木镇 – 白漫城 大路 \(Main\) \[near me · current leg\]: 常有帝国巡逻\n- unnamed road \[leg 2\]: 泥泞$/m)
+  assert.doesNotMatch(text, /空笔记/)
+  const withSource = buildLayerContext({
+    version: 1,
+    context: {
+      mapName: 'Skyrim',
+      roadNotes: [{ name: 'A 大路', type: 'Main', tags: ['near me'], text: '', source: 'Name=A 大路; From=河木镇' }],
+      updatedAt: 1,
+    },
+  })
+  assert.match(withSource, /^Road notes and source:\n- A 大路 \(Main\) \[near me\]\n  Source: Name=A 大路; From=河木镇$/m)
 })
 
 test('AI context says which road I am on, or the nearest one', () => {

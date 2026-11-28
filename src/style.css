@@ -6219,10 +6219,6 @@
   display: none !important;
 }
 
-.tml-nearby-row.is-road {
-  cursor: default;
-}
-
 .tml-nearby-row.is-road .tml-nearby-name {
   color: var(--tm-brass-strong);
 }
@@ -6236,4 +6232,68 @@
     width: 22px;
     height: 22px;
   }
+}
+
+/* 0.9.0 · road detail, clickable road rows */
+.tml-road-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 6px 0 2px;
+  font-size: 10.5px;
+}
+
+.tml-road-fields dt {
+  color: var(--tm-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.tml-road-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--tm-text);
+}
+
+.tml-road-source-empty,
+.tml-road-source-head {
+  margin-top: 6px;
+  color: var(--tm-muted);
+  font-size: 10px;
+}
+
+.tml-road-source-head {
+  color: var(--tm-brass-strong);
+}
+
+button.tml-route-piece {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.tml-route-piece:hover {
+  background: rgba(230, 181, 106, 0.08);
+  color: var(--tm-brass-strong);
+}
+
+button.tml-route-piece:focus-visible,
+.tml-nearby-row.is-road:focus-visible {
+  outline: 2px solid rgba(243, 200, 127, 0.76);
+  outline-offset: 1px;
+}
+
+.tml-nearby-row.is-road {
+  cursor: pointer;
+}
+
+.tml-road-source-ai {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
 }

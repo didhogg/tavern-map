@@ -110,6 +110,8 @@ export type LayerStreet = {
   type?: string
   /** Normalized polyline coordinates, [x, y] in 0..1. */
   points: Array<[number, number]>
+  /** Original properties of the road feature, in source order (absent in packages imported before 0.9.0). */
+  properties?: Array<[string, string]>
 }
 
 export type LayerLinkKind = 'wikipedia' | 'official' | 'review' | 'source' | 'custom'
@@ -382,7 +384,20 @@ export type LayerItineraryContext = {
   legs: LayerItineraryContextLeg[]
 }
 
+export type LayerContextRoadNote = {
+  name: string
+  type?: string
+  /** Why the road is included: 'near me', 'current leg', 'leg 2' … */
+  tags: string[]
+  /** The road note; empty when only the source is sent. */
+  text: string
+  /** The road's source fields from the map data, when allowed. */
+  source?: string
+}
+
 export type LayerContextRoad = {
+  /** Road identity (same name and type, or one unnamed line), for selecting it from lists. */
+  key?: string
   /** Empty when the road line has no name. */
   name: string
   type?: string
@@ -414,6 +429,8 @@ export type LayerContextSnapshot = {
   regionParents?: string[]
   /** Area notes allowed into AI, for my area and the areas around it. */
   areaNotes?: Array<{ name: string; text: string }>
+  /** Road notes allowed into AI, each road once, with why it is included. */
+  roadNotes?: LayerContextRoadNote[]
   note?: string
   /** User-edited source material, only when explicitly included. */
   sourceMaterial?: string
@@ -481,6 +498,8 @@ export type LayerChatState = {
   /** Nearby radius as a fraction of the map span width. */
   nearbyRadius?: number
   selectedRegionId?: string
+  /** Selected road: all lines with the same name and type, or one unnamed line. */
+  selectedRoadKey?: string
   currentRegionId?: string
   hiddenCategories?: string[]
   showLabels?: boolean
@@ -649,6 +668,8 @@ export function loadLayerState(ctx: StContext): LayerChatState {
         : undefined,
     selectedRegionId:
       typeof value.selectedRegionId === 'string' ? value.selectedRegionId : undefined,
+    selectedRoadKey:
+      typeof value.selectedRoadKey === 'string' ? value.selectedRoadKey : undefined,
     currentRegionId:
       typeof value.currentRegionId === 'string' ? value.currentRegionId : undefined,
     hiddenCategories: Array.isArray(value.hiddenCategories)
@@ -837,6 +858,7 @@ function validContextRoad(raw: unknown): LayerContextRoad | undefined {
   const road = raw as Partial<LayerContextRoad>
   if (typeof road.name !== 'string' || !Number.isFinite(road.distancePercent)) return undefined
   return {
+    key: typeof road.key === 'string' && road.key ? road.key : undefined,
     name: road.name,
     type: typeof road.type === 'string' && road.type ? road.type : undefined,
     on: road.on === true,
@@ -930,6 +952,23 @@ function validContext(raw: unknown): LayerContextSnapshot | undefined {
     category: typeof value.category === 'string' ? value.category : undefined,
     region: typeof value.region === 'string' ? value.region : undefined,
     regionParents: stringList(value.regionParents),
+    roadNotes: Array.isArray(value.roadNotes)
+      ? value.roadNotes
+          .filter(
+            (item): item is LayerContextRoadNote =>
+              Boolean(item) &&
+              typeof item.name === 'string' &&
+              typeof item.text === 'string' &&
+              Array.isArray(item.tags),
+          )
+          .map((item) => ({
+            name: item.name,
+            type: typeof item.type === 'string' && item.type ? item.type : undefined,
+            tags: item.tags.filter((tag): tag is string => typeof tag === 'string'),
+            text: item.text,
+            source: typeof item.source === 'string' && item.source ? item.source : undefined,
+          }))
+      : undefined,
     areaNotes: Array.isArray(value.areaNotes)
       ? value.areaNotes.filter(
           (item): item is { name: string; text: string } =>

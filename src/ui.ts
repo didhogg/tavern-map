@@ -358,6 +358,15 @@ const SETTINGS_HTML = `
       </div>
 
       <div class="tm-settings-group">
+        <div class="tm-settings-group-title">图层地图 · 道路笔记与来源资料</div>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadNoteNearby"> 当前位置附近道路的笔记（在路上的那条和附近列表里的道路）</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadNoteCurrentLeg"> 行程当前段道路的笔记</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadNoteAllLegs"> 行程所有段道路的笔记</label>
+        <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerRoadSourceAI"> 道路来源资料一起发给 AI（只发上面勾选范围内的道路）</label>
+        <div class="tm-hint">一段行程的道路 = 这一段实际走过的路 + 范围内列出的路。同一条路只发一次；每条路的详情里，笔记和来源资料各有一个“给 AI”可以单独取消。</div>
+      </div>
+
+      <div class="tm-settings-group">
         <div class="tm-settings-group-title">图层地图 · 收藏地点</div>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoritesAI"> 把收藏地点发给 AI</label>
         <label class="checkbox_label"><input type="checkbox" data-layer-setting="layerFavoriteType"> 附带类型</label>
