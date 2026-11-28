@@ -5883,6 +5883,18 @@
   margin-right: auto;
 }
 
+.tml-grid-row > .tml-distance-unit {
+  width: 100%;
+  margin: 0;
+  font-size: inherit;
+}
+
+.tml-distance-unit-fields:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .tml-distance-unit input {
   box-sizing: border-box;
   height: 20px;

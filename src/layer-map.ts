@@ -466,6 +466,7 @@ const PANEL_HTML = `
             <label>X 偏移 <input id="tml-grid-x" type="number" step="0.1" value="0">%</label>
             <label>Y 偏移 <input id="tml-grid-y" type="number" step="0.1" value="0">%</label>
           </div>
+          <div id="tml-grid-distance" class="tml-grid-row"></div>
           <div class="tml-grid-row tml-grid-hint">
             <span>拖 0,0 移动 · 拖右下角缩放点缩放 · Alt+滚轮缩放网格 · 普通滚轮缩放地图</span>
           </div>
@@ -491,7 +492,20 @@ const PANEL_HTML = `
       </div>
     </main>
     <aside id="tml-inspector" class="tml-inspector">
-      <div id="tml-position"></div>
+      <div id="tml-position">
+        <section id="tml-position-card" class="tml-position-card" hidden>
+          <div id="tml-position-content"></div>
+          <div id="tml-distance-unit" class="tml-distance-unit">
+            <span>距离换算</span>
+            <span id="tml-distance-hint" class="tml-distance-unit-hint">先用“# 网格”校准格子</span>
+            <span id="tml-distance-fields" class="tml-distance-unit-fields" hidden>
+              <span>1 格 ≈</span>
+              <input id="tml-distance-amount" type="number" min="0" step="any" aria-label="每格换算数值">
+              <input id="tml-distance-label" type="text" list="tml-grid-units" placeholder="米" aria-label="换算单位">
+            </span>
+          </div>
+        </section>
+      </div>
       <div id="tml-detail"></div>
       <div id="tml-nearby" class="tml-nearby" hidden></div>
     </aside>
@@ -772,12 +786,20 @@ export class LayerMapUI {
   private contextTextEl!: HTMLElement
   private contextTokensEl!: HTMLElement
   private positionEl!: HTMLElement
+  private positionCardEl!: HTMLElement
+  private positionContentEl!: HTMLElement
+  private distanceUnitEl!: HTMLElement
+  private distanceHintEl!: HTMLElement
+  private distanceFieldsEl!: HTMLElement
+  private distanceAmountEl!: HTMLInputElement
+  private distanceLabelEl!: HTMLInputElement
   private nearbyEl!: HTMLElement
   private placeBarEl!: HTMLElement
   private placeTextEl!: HTMLElement
   private routeStopsEl!: HTMLElement
   private routeShelfEl!: HTMLElement
   private gridPanelEl!: HTMLElement
+  private gridDistanceEl!: HTMLElement
   private gridOriginHandleEl!: HTMLButtonElement
   private gridScaleHandleEl!: HTMLButtonElement
   private gridRangeEl!: HTMLInputElement
@@ -1118,12 +1140,20 @@ export class LayerMapUI {
     this.contextTextEl = document.getElementById('tml-context-text') as HTMLElement
     this.contextTokensEl = document.getElementById('tml-context-tokens') as HTMLElement
     this.positionEl = document.getElementById('tml-position') as HTMLElement
+    this.positionCardEl = document.getElementById('tml-position-card') as HTMLElement
+    this.positionContentEl = document.getElementById('tml-position-content') as HTMLElement
+    this.distanceUnitEl = document.getElementById('tml-distance-unit') as HTMLElement
+    this.distanceHintEl = document.getElementById('tml-distance-hint') as HTMLElement
+    this.distanceFieldsEl = document.getElementById('tml-distance-fields') as HTMLElement
+    this.distanceAmountEl = document.getElementById('tml-distance-amount') as HTMLInputElement
+    this.distanceLabelEl = document.getElementById('tml-distance-label') as HTMLInputElement
     this.nearbyEl = document.getElementById('tml-nearby') as HTMLElement
     this.placeBarEl = document.getElementById('tml-place-bar') as HTMLElement
     this.placeTextEl = document.getElementById('tml-place-text') as HTMLElement
     this.routeStopsEl = document.getElementById('tml-route-stops') as HTMLElement
     this.routeShelfEl = document.getElementById('tml-route-shelf') as HTMLElement
     this.gridPanelEl = document.getElementById('tml-grid-panel') as HTMLElement
+    this.gridDistanceEl = document.getElementById('tml-grid-distance') as HTMLElement
     this.userStampEl = document.getElementById('tml-user-stamp') as HTMLButtonElement
     this.gridOriginHandleEl = document.getElementById('tml-grid-origin') as HTMLButtonElement
     this.gridScaleHandleEl = document.getElementById('tml-grid-scale') as HTMLButtonElement
@@ -1266,6 +1296,10 @@ export class LayerMapUI {
     for (const input of [this.gridCellEl, this.gridXEl, this.gridYEl, this.gridShowEl]) {
       input.addEventListener('input', () => this.applyGridInputs())
       input.addEventListener('change', () => this.applyGridInputs())
+    }
+    for (const input of [this.distanceAmountEl, this.distanceLabelEl]) {
+      input.addEventListener('input', () => this.applyDistanceInputs(false))
+      input.addEventListener('change', () => this.applyDistanceInputs(true))
     }
     this.gridRangeEl.addEventListener('input', () => {
       this.gridCellEl.value = this.gridRangeEl.value
@@ -7309,13 +7343,14 @@ export class LayerMapUI {
 
 
   private renderPositionCard(): void {
-    if (!this.positionEl) return
-    this.positionEl.replaceChildren()
+    if (!this.positionContentEl) return
     const pkg = this.pkg
+    this.positionCardEl.hidden = !pkg
+    const content = this.positionContentEl
+    content.replaceChildren()
     if (!pkg) return
+    this.syncDistanceInputs(true)
     const user = this.state.userPosition
-    const card = document.createElement('section')
-    card.className = 'tml-position-card'
     const head = document.createElement('div')
     head.className = 'tml-position-head'
     const flag = document.createElement('span')
@@ -7332,7 +7367,7 @@ export class LayerMapUI {
         : this.pointText(user.x, user.y)
       : '未设置'
     head.append(flag, title, value)
-    card.append(head)
+    content.append(head)
     if (user) {
       const area = this.regionChain(this.regionForPoint(user.x, user.y), user.x, user.y)
         .map((item) => item.name)
@@ -7341,7 +7376,7 @@ export class LayerMapUI {
         const areaEl = document.createElement('div')
         areaEl.className = 'tml-position-area'
         areaEl.textContent = atPlace ? `我在这里 · 区域：${area}` : `区域：${area}`
-        card.append(areaEl)
+        content.append(areaEl)
       }
       const radiusRow = document.createElement('label')
       radiusRow.className = 'tml-position-radius'
@@ -7361,7 +7396,7 @@ export class LayerMapUI {
         this.requestDraw()
       })
       radiusRow.append(radiusText, radiusInput)
-      card.append(radiusRow)
+      content.append(radiusRow)
       const actions = document.createElement('div')
       actions.className = 'tml-position-actions'
       actions.append(
@@ -7369,66 +7404,36 @@ export class LayerMapUI {
         this.actionButton('移动', () => this.startUserPlacement()),
         this.actionButton('清除', () => this.clearUserPosition()),
       )
-      card.append(actions)
+      content.append(actions)
     } else {
-      card.append(
+      content.append(
         this.actionButton('在地图上放置', () => this.startUserPlacement(), false, 'tml-position-place'),
       )
     }
-    card.append(this.distanceUnitRow())
-    this.positionEl.append(card)
   }
 
-  /**
-   * "距离换算 1 格 ≈ [5] [米]": a display conversion only. It never moves or
-   * resizes the grid; it changes how distances read in the UI and AI context.
-   */
-  private distanceUnitRow(): HTMLElement {
-    const row = document.createElement('div')
-    row.className = 'tml-distance-unit'
-    const label = document.createElement('span')
-    label.textContent = '距离换算'
-    row.append(label)
+  private syncDistanceInputs(preserveTyping = false): void {
     const grid = this.gridConfig()
-    if (!grid) {
-      const hint = document.createElement('span')
-      hint.className = 'tml-distance-unit-hint'
-      hint.textContent = '先用“# 网格”校准格子'
-      row.append(hint)
-      return row
+    this.distanceHintEl.hidden = Boolean(grid)
+    this.distanceFieldsEl.hidden = !grid
+    if (!grid) return
+    if (!preserveTyping || document.activeElement !== this.distanceAmountEl) {
+      this.distanceAmountEl.value = String(grid.unitValue)
     }
-    const prefix = document.createElement('span')
-    prefix.textContent = '1 格 ≈'
-    const amount = document.createElement('input')
-    amount.type = 'number'
-    amount.min = '0'
-    amount.step = 'any'
-    amount.value = String(grid.unitValue)
-    amount.setAttribute('aria-label', '每格换算数值')
-    const unit = document.createElement('input')
-    unit.type = 'text'
-    unit.value = grid.unitLabel
-    unit.setAttribute('list', 'tml-grid-units')
-    unit.setAttribute('aria-label', '换算单位')
-    unit.placeholder = '米'
-    const apply = (rerender: boolean): void => {
-      const current = this.gridConfig()
-      if (!current) return
-      const value = Number(amount.value)
-      current.unitValue = Number.isFinite(value) && value > 0 ? value : 1
-      current.unitLabel = unit.value.trim() || '格'
-      this.scheduleGridSave()
-      this.updateStatus()
-      // While typing, refresh the AI context and nearby list but keep this
-      // card (and the focused input); re-render it once editing is done.
-      this.refreshContext(rerender)
+    if (!preserveTyping || document.activeElement !== this.distanceLabelEl) {
+      this.distanceLabelEl.value = grid.unitLabel
     }
-    for (const input of [amount, unit]) {
-      input.addEventListener('input', () => apply(false))
-      input.addEventListener('change', () => apply(true))
-    }
-    row.append(prefix, amount, unit)
-    return row
+  }
+
+  private applyDistanceInputs(renderPosition: boolean): void {
+    const grid = this.gridConfig()
+    if (!grid) return
+    const value = Number(this.distanceAmountEl.value)
+    grid.unitValue = Number.isFinite(value) && value > 0 ? value : 1
+    grid.unitLabel = this.distanceLabelEl.value.trim() || '格'
+    this.scheduleGridSave()
+    this.updateStatus()
+    this.refreshContext(renderPosition)
   }
 
   private renderNearby(): void {
@@ -8504,6 +8509,7 @@ export class LayerMapUI {
     if (collapse) collapse.textContent = compact ? '展开' : '收起'
     this.gridPanelEl.hidden = false
     this.gridPanelEl.classList.remove('dragging')
+    this.gridDistanceEl.append(this.distanceUnitEl)
     this.syncGridInputs()
     this.refreshContext()
     this.requestDraw()
@@ -8519,6 +8525,7 @@ export class LayerMapUI {
     this.gridPanelOpen = false
     this.readGridInputs()
     this.gridPanelEl.hidden = true
+    this.positionCardEl.append(this.distanceUnitEl)
     this.panelEl.classList.remove('tml-grid-mode', 'tml-grid-collapsed')
     const collapse = this.gridPanelEl.querySelector<HTMLElement>('[data-grid-action="collapse"]')
     if (collapse) collapse.textContent = '收起'
@@ -8535,6 +8542,7 @@ export class LayerMapUI {
     if (!pkg) return
     pkg.grid = this.defaultGrid(pkg)
     this.syncGridInputs()
+    this.syncDistanceInputs()
     this.refreshContext()
     this.requestDraw()
     this.scheduleGridSave()

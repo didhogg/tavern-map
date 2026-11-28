@@ -41204,6 +41204,7 @@ var zH = `
             <label>X 偏移 <input id="tml-grid-x" type="number" step="0.1" value="0">%</label>
             <label>Y 偏移 <input id="tml-grid-y" type="number" step="0.1" value="0">%</label>
           </div>
+          <div id="tml-grid-distance" class="tml-grid-row"></div>
           <div class="tml-grid-row tml-grid-hint">
             <span>拖 0,0 移动 · 拖右下角缩放点缩放 · Alt+滚轮缩放网格 · 普通滚轮缩放地图</span>
           </div>
@@ -41229,7 +41230,20 @@ var zH = `
       </div>
     </main>
     <aside id="tml-inspector" class="tml-inspector">
-      <div id="tml-position"></div>
+      <div id="tml-position">
+        <section id="tml-position-card" class="tml-position-card" hidden>
+          <div id="tml-position-content"></div>
+          <div id="tml-distance-unit" class="tml-distance-unit">
+            <span>距离换算</span>
+            <span id="tml-distance-hint" class="tml-distance-unit-hint">先用“# 网格”校准格子</span>
+            <span id="tml-distance-fields" class="tml-distance-unit-fields" hidden>
+              <span>1 格 ≈</span>
+              <input id="tml-distance-amount" type="number" min="0" step="any" aria-label="每格换算数值">
+              <input id="tml-distance-label" type="text" list="tml-grid-units" placeholder="米" aria-label="换算单位">
+            </span>
+          </div>
+        </section>
+      </div>
       <div id="tml-detail"></div>
       <div id="tml-nearby" class="tml-nearby" hidden></div>
     </aside>
@@ -41444,12 +41458,20 @@ var zH = `
 	contextTextEl;
 	contextTokensEl;
 	positionEl;
+	positionCardEl;
+	positionContentEl;
+	distanceUnitEl;
+	distanceHintEl;
+	distanceFieldsEl;
+	distanceAmountEl;
+	distanceLabelEl;
 	nearbyEl;
 	placeBarEl;
 	placeTextEl;
 	routeStopsEl;
 	routeShelfEl;
 	gridPanelEl;
+	gridDistanceEl;
 	gridOriginHandleEl;
 	gridScaleHandleEl;
 	gridRangeEl;
@@ -41545,7 +41567,7 @@ var zH = `
 			let e = document.createElement("template");
 			e.innerHTML = zH.trim(), document.body.append(e.content);
 		}
-		this.panelEl = document.getElementById(iH), this.canvasEl = document.getElementById("tml-canvas"), this.maplibreEl = document.getElementById("tml-maplibre"), this.viewportEl = document.getElementById("tml-viewport"), this.packageSelectEl = document.getElementById("tml-package"), this.layerPaneEl = document.getElementById("tml-layer-pane"), this.favoritesEl = document.getElementById("tml-favorites"), this.favoriteCountEl = document.getElementById("tml-favorite-count"), this.categoriesEl = document.getElementById("tml-categories"), this.categoryFilterEl = document.getElementById("tml-filter"), this.detailEl = document.getElementById("tml-detail"), this.emptyEl = document.getElementById("tml-empty"), this.searchEl = document.getElementById("tml-search"), this.searchResultsEl = document.getElementById("tml-search-results"), this.visibleCountEl = document.getElementById("tml-visible-count"), this.zoomEl = document.getElementById("tml-zoom"), this.scaleEl = document.getElementById("tml-scale"), this.packageInfoEl = document.getElementById("tml-package-info"), this.attributionEl = document.getElementById("tml-attribution"), this.contextStatusEl = document.getElementById("tml-context-status"), this.contextModalEl = document.getElementById("tml-context"), this.contextTextEl = document.getElementById("tml-context-text"), this.contextTokensEl = document.getElementById("tml-context-tokens"), this.positionEl = document.getElementById("tml-position"), this.nearbyEl = document.getElementById("tml-nearby"), this.placeBarEl = document.getElementById("tml-place-bar"), this.placeTextEl = document.getElementById("tml-place-text"), this.routeStopsEl = document.getElementById("tml-route-stops"), this.routeShelfEl = document.getElementById("tml-route-shelf"), this.gridPanelEl = document.getElementById("tml-grid-panel"), this.userStampEl = document.getElementById("tml-user-stamp"), this.gridOriginHandleEl = document.getElementById("tml-grid-origin"), this.gridScaleHandleEl = document.getElementById("tml-grid-scale"), this.gridShowEl = document.getElementById("tml-grid-show"), this.gridCellEl = document.getElementById("tml-grid-cell"), this.gridRangeEl = document.getElementById("tml-grid-range"), this.gridXEl = document.getElementById("tml-grid-x"), this.gridYEl = document.getElementById("tml-grid-y"), this.contextPositionEl = document.getElementById("tml-context-position"), this.contextXEl = document.getElementById("tml-context-x"), this.contextYEl = document.getElementById("tml-context-y"), this.contextInjectEl = document.getElementById("tml-context-inject"), this.contextGridEl = document.getElementById("tml-context-grid");
+		this.panelEl = document.getElementById(iH), this.canvasEl = document.getElementById("tml-canvas"), this.maplibreEl = document.getElementById("tml-maplibre"), this.viewportEl = document.getElementById("tml-viewport"), this.packageSelectEl = document.getElementById("tml-package"), this.layerPaneEl = document.getElementById("tml-layer-pane"), this.favoritesEl = document.getElementById("tml-favorites"), this.favoriteCountEl = document.getElementById("tml-favorite-count"), this.categoriesEl = document.getElementById("tml-categories"), this.categoryFilterEl = document.getElementById("tml-filter"), this.detailEl = document.getElementById("tml-detail"), this.emptyEl = document.getElementById("tml-empty"), this.searchEl = document.getElementById("tml-search"), this.searchResultsEl = document.getElementById("tml-search-results"), this.visibleCountEl = document.getElementById("tml-visible-count"), this.zoomEl = document.getElementById("tml-zoom"), this.scaleEl = document.getElementById("tml-scale"), this.packageInfoEl = document.getElementById("tml-package-info"), this.attributionEl = document.getElementById("tml-attribution"), this.contextStatusEl = document.getElementById("tml-context-status"), this.contextModalEl = document.getElementById("tml-context"), this.contextTextEl = document.getElementById("tml-context-text"), this.contextTokensEl = document.getElementById("tml-context-tokens"), this.positionEl = document.getElementById("tml-position"), this.positionCardEl = document.getElementById("tml-position-card"), this.positionContentEl = document.getElementById("tml-position-content"), this.distanceUnitEl = document.getElementById("tml-distance-unit"), this.distanceHintEl = document.getElementById("tml-distance-hint"), this.distanceFieldsEl = document.getElementById("tml-distance-fields"), this.distanceAmountEl = document.getElementById("tml-distance-amount"), this.distanceLabelEl = document.getElementById("tml-distance-label"), this.nearbyEl = document.getElementById("tml-nearby"), this.placeBarEl = document.getElementById("tml-place-bar"), this.placeTextEl = document.getElementById("tml-place-text"), this.routeStopsEl = document.getElementById("tml-route-stops"), this.routeShelfEl = document.getElementById("tml-route-shelf"), this.gridPanelEl = document.getElementById("tml-grid-panel"), this.gridDistanceEl = document.getElementById("tml-grid-distance"), this.userStampEl = document.getElementById("tml-user-stamp"), this.gridOriginHandleEl = document.getElementById("tml-grid-origin"), this.gridScaleHandleEl = document.getElementById("tml-grid-scale"), this.gridShowEl = document.getElementById("tml-grid-show"), this.gridCellEl = document.getElementById("tml-grid-cell"), this.gridRangeEl = document.getElementById("tml-grid-range"), this.gridXEl = document.getElementById("tml-grid-x"), this.gridYEl = document.getElementById("tml-grid-y"), this.contextPositionEl = document.getElementById("tml-context-position"), this.contextXEl = document.getElementById("tml-context-x"), this.contextYEl = document.getElementById("tml-context-y"), this.contextInjectEl = document.getElementById("tml-context-inject"), this.contextGridEl = document.getElementById("tml-context-grid");
 		let e = this.positionEl.parentElement;
 		e && e.insertBefore(this.gridPanelEl, this.positionEl), this.headerImageEl = document.getElementById("tml-header-image"), this.headerImageEmptyEl = document.getElementById("tml-header-image-empty"), this.headerImageButtonEl = this.panelEl.querySelector("[data-action=\"image-panel\"]"), this.imagePanelEl = document.getElementById("tml-image-panel"), this.imagePanelBodyEl = document.getElementById("tml-image-panel-body"), this.lightboxEl = document.getElementById("tml-image-lightbox"), this.lightboxImageEl = document.getElementById("tml-lightbox-image"), this.alignBarEl = document.getElementById("tml-align-bar"), this.imageInput = document.createElement("input"), this.imageInput.type = "file", this.imageInput.accept = ".png,.jpg,.jpeg,.webp,.avif,.gif,image/*", this.imageInput.hidden = !0, this.tilesInput = document.createElement("input"), this.tilesInput.type = "file", this.tilesInput.multiple = !0, this.tilesInput.setAttribute("webkitdirectory", ""), this.tilesInput.hidden = !0, this.imagePanelEl.append(this.imageInput, this.tilesInput);
 	}
@@ -41593,6 +41615,7 @@ var zH = `
 			this.gridYEl,
 			this.gridShowEl
 		]) e.addEventListener("input", () => this.applyGridInputs()), e.addEventListener("change", () => this.applyGridInputs());
+		for (let e of [this.distanceAmountEl, this.distanceLabelEl]) e.addEventListener("input", () => this.applyDistanceInputs(!1)), e.addEventListener("change", () => this.applyDistanceInputs(!0));
 		this.gridRangeEl.addEventListener("input", () => {
 			this.gridCellEl.value = this.gridRangeEl.value, this.applyGridInputs();
 		}), this.gridOriginHandleEl.addEventListener("pointerdown", this.onGridHandleDown), this.gridOriginHandleEl.addEventListener("pointermove", this.onGridHandleMove), this.gridOriginHandleEl.addEventListener("pointerup", this.onGridHandleUp), this.gridOriginHandleEl.addEventListener("pointercancel", this.onGridHandleUp), this.gridScaleHandleEl.addEventListener("pointerdown", this.onGridHandleDown), this.gridScaleHandleEl.addEventListener("pointermove", this.onGridHandleMove), this.gridScaleHandleEl.addEventListener("pointerup", this.onGridHandleUp), this.gridScaleHandleEl.addEventListener("pointercancel", this.onGridHandleUp), this.viewportEl.addEventListener("wheel", this.onGridWheel, {
@@ -44612,24 +44635,24 @@ var zH = `
 		this.state.context = y, this.persist(), this.contextStatusEl.textContent = y.currentPlace || y.position || y.nearby || y.favorites ? "图层上下文：已生成" : "图层上下文：待机", this.contextStatusEl.title = y.currentPlace ? "所在地点会进入图层地图 AI 上下文" : "拖动“我”到地点，或调整附近范围后生成", e && this.renderPositionCard(), this.renderNearby(), this.routeShelfEl && this.renderItineraryShelf(), this.contextModalEl.hidden || (this.renderContextControls(), this.renderContextPreview()), this.callbacks.onChange();
 	}
 	renderPositionCard() {
-		if (!this.positionEl) return;
-		this.positionEl.replaceChildren();
+		if (!this.positionContentEl) return;
 		let e = this.pkg;
-		if (!e) return;
-		let t = this.state.userPosition, n = document.createElement("section");
-		n.className = "tml-position-card";
-		let r = document.createElement("div");
+		this.positionCardEl.hidden = !e;
+		let t = this.positionContentEl;
+		if (t.replaceChildren(), !e) return;
+		this.syncDistanceInputs(!0);
+		let n = this.state.userPosition, r = document.createElement("div");
 		r.className = "tml-position-head";
 		let i = document.createElement("span");
 		i.className = "tml-position-flag", i.textContent = "◎";
 		let a = this.markerById(this.state.atPlaceId), o = document.createElement("strong");
 		o.textContent = "我";
 		let s = document.createElement("span");
-		if (s.className = "tml-position-value", s.textContent = t ? a ? a.name : this.pointText(t.x, t.y) : "未设置", r.append(i, o, s), n.append(r), t) {
-			let r = this.regionChain(this.regionForPoint(t.x, t.y), t.x, t.y).map((e) => e.name).join(" · ");
+		if (s.className = "tml-position-value", s.textContent = n ? a ? a.name : this.pointText(n.x, n.y) : "未设置", r.append(i, o, s), t.append(r), n) {
+			let r = this.regionChain(this.regionForPoint(n.x, n.y), n.x, n.y).map((e) => e.name).join(" · ");
 			if (r) {
 				let e = document.createElement("div");
-				e.className = "tml-position-area", e.textContent = a ? `我在这里 · 区域：${r}` : `区域：${r}`, n.append(e);
+				e.className = "tml-position-area", e.textContent = a ? `我在这里 · 区域：${r}` : `区域：${r}`, t.append(e);
 			}
 			let i = document.createElement("label");
 			i.className = "tml-position-radius";
@@ -44638,36 +44661,20 @@ var zH = `
 			let s = document.createElement("input");
 			s.type = "range", s.min = e.kind === "tiles" ? "0.001" : "0.01", s.max = "0.4", s.step = e.kind === "tiles" ? "0.001" : "0.005", s.value = String(this.nearbyRadiusFraction()), s.setAttribute("aria-label", "附近半径"), s.addEventListener("input", () => {
 				this.state.nearbyRadius = Number(s.value), o.textContent = `附近 ${this.radiusLabel()}`, this.refreshContext(!1), this.requestDraw();
-			}), i.append(o, s), n.append(i);
+			}), i.append(o, s), t.append(i);
 			let c = document.createElement("div");
-			c.className = "tml-position-actions", c.append(this.actionButton("居中", () => this.centerOnUserPosition()), this.actionButton("移动", () => this.startUserPlacement()), this.actionButton("清除", () => this.clearUserPosition())), n.append(c);
-		} else n.append(this.actionButton("在地图上放置", () => this.startUserPlacement(), !1, "tml-position-place"));
-		n.append(this.distanceUnitRow()), this.positionEl.append(n);
+			c.className = "tml-position-actions", c.append(this.actionButton("居中", () => this.centerOnUserPosition()), this.actionButton("移动", () => this.startUserPlacement()), this.actionButton("清除", () => this.clearUserPosition())), t.append(c);
+		} else t.append(this.actionButton("在地图上放置", () => this.startUserPlacement(), !1, "tml-position-place"));
 	}
-	distanceUnitRow() {
-		let e = document.createElement("div");
-		e.className = "tml-distance-unit";
-		let t = document.createElement("span");
-		t.textContent = "距离换算", e.append(t);
-		let n = this.gridConfig();
-		if (!n) {
-			let t = document.createElement("span");
-			return t.className = "tml-distance-unit-hint", t.textContent = "先用“# 网格”校准格子", e.append(t), e;
-		}
-		let r = document.createElement("span");
-		r.textContent = "1 格 ≈";
-		let i = document.createElement("input");
-		i.type = "number", i.min = "0", i.step = "any", i.value = String(n.unitValue), i.setAttribute("aria-label", "每格换算数值");
-		let a = document.createElement("input");
-		a.type = "text", a.value = n.unitLabel, a.setAttribute("list", "tml-grid-units"), a.setAttribute("aria-label", "换算单位"), a.placeholder = "米";
-		let o = (e) => {
-			let t = this.gridConfig();
-			if (!t) return;
-			let n = Number(i.value);
-			t.unitValue = Number.isFinite(n) && n > 0 ? n : 1, t.unitLabel = a.value.trim() || "格", this.scheduleGridSave(), this.updateStatus(), this.refreshContext(e);
-		};
-		for (let e of [i, a]) e.addEventListener("input", () => o(!1)), e.addEventListener("change", () => o(!0));
-		return e.append(r, i, a), e;
+	syncDistanceInputs(e = !1) {
+		let t = this.gridConfig();
+		this.distanceHintEl.hidden = !!t, this.distanceFieldsEl.hidden = !t, t && (e && document.activeElement === this.distanceAmountEl || (this.distanceAmountEl.value = String(t.unitValue)), e && document.activeElement === this.distanceLabelEl || (this.distanceLabelEl.value = t.unitLabel));
+	}
+	applyDistanceInputs(e) {
+		let t = this.gridConfig();
+		if (!t) return;
+		let n = Number(this.distanceAmountEl.value);
+		t.unitValue = Number.isFinite(n) && n > 0 ? n : 1, t.unitLabel = this.distanceLabelEl.value.trim() || "格", this.scheduleGridSave(), this.updateStatus(), this.refreshContext(e);
 	}
 	renderNearby() {
 		if (!this.nearbyEl) return;
@@ -45264,16 +45271,16 @@ var zH = `
 		let e = this.panelEl.classList.contains("tml-compact") || this.panelEl.classList.contains("tml-mobile");
 		this.panelEl.classList.toggle("tml-grid-collapsed", e);
 		let t = this.gridPanelEl.querySelector("[data-grid-action=\"collapse\"]");
-		t && (t.textContent = e ? "展开" : "收起"), this.gridPanelEl.hidden = !1, this.gridPanelEl.classList.remove("dragging"), this.syncGridInputs(), this.refreshContext(), this.requestDraw(), this.syncToolButtons(), this.updateGridHandles();
+		t && (t.textContent = e ? "展开" : "收起"), this.gridPanelEl.hidden = !1, this.gridPanelEl.classList.remove("dragging"), this.gridDistanceEl.append(this.distanceUnitEl), this.syncGridInputs(), this.refreshContext(), this.requestDraw(), this.syncToolButtons(), this.updateGridHandles();
 	}
 	closeGridPanel() {
-		this.gridSaveTimer !== void 0 && (window.clearTimeout(this.gridSaveTimer), this.gridSaveTimer = void 0), this.gridPanelOpen = !1, this.readGridInputs(), this.gridPanelEl.hidden = !0, this.panelEl.classList.remove("tml-grid-mode", "tml-grid-collapsed");
+		this.gridSaveTimer !== void 0 && (window.clearTimeout(this.gridSaveTimer), this.gridSaveTimer = void 0), this.gridPanelOpen = !1, this.readGridInputs(), this.gridPanelEl.hidden = !0, this.positionCardEl.append(this.distanceUnitEl), this.panelEl.classList.remove("tml-grid-mode", "tml-grid-collapsed");
 		let e = this.gridPanelEl.querySelector("[data-grid-action=\"collapse\"]");
 		e && (e.textContent = "收起"), this.gridOriginHandleEl.hidden = !0, this.gridScaleHandleEl.hidden = !0, this.saveGridNow(), this.refreshContext(), this.requestDraw(), this.syncToolButtons();
 	}
 	resetGrid() {
 		let e = this.pkg;
-		e && (e.grid = this.defaultGrid(e), this.syncGridInputs(), this.refreshContext(), this.requestDraw(), this.scheduleGridSave());
+		e && (e.grid = this.defaultGrid(e), this.syncGridInputs(), this.syncDistanceInputs(), this.refreshContext(), this.requestDraw(), this.scheduleGridSave());
 	}
 	openImport() {
 		this.closeImagePanel(), this.closeLightbox(), this.aligning && this.cancelAlign(), this.importUI?.open();
